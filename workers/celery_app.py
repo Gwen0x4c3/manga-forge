@@ -31,6 +31,7 @@ celery_app.conf.update(
         "workers.tasks.script_gen.*": {"queue": "script"},
         "workers.tasks.layout.*": {"queue": "layout"},
         "workers.tasks.ocr.*": {"queue": "ocr"},
+        "workers.tasks.writeback.*": {"queue": "understand"},
     },
 )
 

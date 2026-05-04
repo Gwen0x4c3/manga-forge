@@ -19,6 +19,7 @@ async def _layout_episode(self, run_id: str, episode_id: str, template_override:
     from app.config import settings
     from app.core.layout_engine import LayoutEngine, PanelImage
     from app.database import async_session
+    from app.models.episode import Episode
     from app.models.episode_memory import EpisodeMemory
     from app.models.generated_image import GeneratedImage
     from app.models.generation_run import GenerationRun
@@ -32,6 +33,11 @@ async def _layout_episode(self, run_id: str, episode_id: str, template_override:
             await db.commit()
 
         try:
+            result = await db.execute(select(Episode).where(Episode.id == episode_id))
+            episode = result.scalar_one_or_none()
+            if not episode:
+                raise ValueError(f"Episode {episode_id} not found")
+            project_id = episode.project_id
             result = await db.execute(
                 select(EpisodeMemory)
                 .where(EpisodeMemory.episode_id == episode_id, EpisodeMemory.type == "storyboard_json")
@@ -95,13 +101,17 @@ async def _layout_episode(self, run_id: str, episode_id: str, template_override:
                             "speaker": d.get("speaker", ""),
                             "text": d.get("text", ""),
                             "type": d.get("type", "speech"),
+                            "speaker_position": d.get("speaker_position", "center"),
                         })
+
+                    face_zones = panel.get("face_zones", [])
 
                     panel_images.append(PanelImage(
                         image_data=image_data,
                         panel_id=panel_id,
                         dialogues=dialogues,
-                        position_hint="center",
+                        position_hint=panel.get("position_hint", "center"),
+                        face_zones=face_zones,
                     ))
 
                 composed = engine.compose_page(layout, panel_images, page_number)
@@ -138,6 +148,9 @@ async def _layout_episode(self, run_id: str, episode_id: str, template_override:
                 state="SUCCESS",
                 meta={"episode_id": episode_id, "run_id": run_id, "page_count": len(composed_pages_data)},
             )
+
+            from workers.pipelines.writeback_pipeline import run_writeback
+            run_writeback.delay(episode_id=episode_id, project_id=project_id)
 
         except Exception as e:
             logger.exception("Episode layout failed")

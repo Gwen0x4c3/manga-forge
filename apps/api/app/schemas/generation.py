@@ -76,6 +76,25 @@ class ComposedPageResponse(BaseModel):
     layout: str
 
 
+class ContinueFromEpisodeRequest(BaseModel):
+    project_id: str
+    branch_id: str
+    base_episode_number: int = Field(description="Continue from this episode number, new episode will be base_episode_number + 1")
+    tone: str = Field(default="main", description="main|daily|climax|filler|pit_resolve")
+    custom_instructions: str | None = Field(default=None, description="Additional user instructions")
+    title: str | None = Field(default=None, description="Optional title for the new episode")
+    image_backend: str | None = Field(default=None, description="Override image backend")
+    image_model: str | None = Field(default=None, description="Override image model")
+    image_size: str = Field(default="1024x1024", description="Image size for generation")
+
+
+class ContinueFromEpisodeResponse(BaseModel):
+    episode_id: str
+    episode_number: int
+    task_id: str
+    status: str = "queued"
+
+
 class GenerationRunResponse(BaseModel):
     id: str
     episode_id: str

@@ -2,10 +2,10 @@ import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Tabs, TabPane, Typography, Spin, Button, Table, Tag, Modal, Form, Select, Toast, Empty, Input, TextArea } from '@douyinfe/semi-ui'
 import type { TagColor } from '@douyinfe/semi-ui/lib/es/tag'
-import { IconPlus } from '@douyinfe/semi-icons'
+import { IconPlus, IconForward } from '@douyinfe/semi-icons'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { projectService, branchService, episodeService, memoryService } from '@/services/project'
-import type { Episode } from '@/services/project'
+import { projectService, branchService, episodeService, memoryService, generationService, pitService } from '@/services/project'
+import type { Episode, Pit } from '@/services/project'
 
 const { Title, Paragraph } = Typography
 
@@ -15,6 +15,14 @@ const STATUS_COLORS: Record<string, TagColor> = {
     scripted: 'green',
     rendered: 'orange',
     published: 'purple',
+    draft: 'grey',
+    generating: 'violet',
+}
+
+const PIT_STATUS_COLORS: Record<string, TagColor> = {
+    open: 'blue',
+    resolved: 'green',
+    abandoned: 'grey',
 }
 
 interface ImportFormValues {
@@ -28,12 +36,26 @@ export default function ProjectDetail() {
     const navigate = useNavigate()
     const queryClient = useQueryClient()
     const [showImport, setShowImport] = useState(false)
+    const [showContinue, setShowContinue] = useState(false)
+    const [showCreatePit, setShowCreatePit] = useState(false)
+    const [showResolvePit, setShowResolvePit] = useState(false)
+    const [resolvingPit, setResolvingPit] = useState<Pit | null>(null)
     const [selectedBranch, setSelectedBranch] = useState<string | undefined>()
     const [uploadFiles, setUploadFiles] = useState<File[]>([])
     const [canonRules, setCanonRules] = useState<Record<string, unknown>>({})
     const [canonValid, setCanonValid] = useState(true)
     const [ragQuery, setRagQuery] = useState('')
     const [ragResults, setRagResults] = useState<Array<{ score: number; payload: Record<string, unknown> }>>([])
+    const [pitStatusFilter, setPitStatusFilter] = useState<string | undefined>('open')
+    const [continueForm, setContinueForm] = useState({
+        base_episode_id: '',
+        tone: 'main',
+        custom_instructions: '',
+        title: '',
+        image_backend: undefined as string | undefined,
+        image_model: undefined as string | undefined,
+        image_size: undefined as string | undefined,
+    })
 
     const { data: project, isLoading: projectLoading } = useQuery({
         queryKey: ['project', projectId],
@@ -50,6 +72,12 @@ export default function ProjectDetail() {
     const { data: episodesData, isLoading: episodesLoading } = useQuery({
         queryKey: ['episodes', projectId, selectedBranch],
         queryFn: () => episodeService.list(projectId!, selectedBranch),
+        enabled: !!projectId,
+    })
+
+    const { data: pitsData, isLoading: pitsLoading } = useQuery({
+        queryKey: ['pits', projectId, pitStatusFilter],
+        queryFn: () => pitService.list(projectId!, pitStatusFilter),
         enabled: !!projectId,
     })
 
@@ -71,6 +99,54 @@ export default function ProjectDetail() {
             Toast.success('Episode imported')
         },
         onError: () => Toast.error('Failed to import episode'),
+    })
+
+    const continueMutation = useMutation({
+        mutationFn: () => {
+            const baseEpisode = episodesData?.items?.find((e: Episode) => e.id === continueForm.base_episode_id)
+            if (!baseEpisode) return Promise.reject(new Error('No base episode selected'))
+            return generationService.triggerContinue({
+                project_id: projectId!,
+                branch_id: baseEpisode.branch_id,
+                base_episode_number: baseEpisode.number,
+                tone: continueForm.tone,
+                custom_instructions: continueForm.custom_instructions || undefined,
+                title: continueForm.title || undefined,
+                image_backend: continueForm.image_backend,
+                image_model: continueForm.image_model,
+                image_size: continueForm.image_size,
+            })
+        },
+        onSuccess: (data) => {
+            queryClient.invalidateQueries({ queryKey: ['episodes', projectId] })
+            setShowContinue(false)
+            Toast.success('Continue generation started')
+            navigate(`/projects/${projectId}/episodes/${data.episode_id}/generate`)
+        },
+        onError: () => Toast.error('Failed to start continue generation'),
+    })
+
+    const createPitMutation = useMutation({
+        mutationFn: (data: { title: string; description?: string; priority?: number; introduced_episode_id: string; trigger_hint?: string }) =>
+            pitService.create(projectId!, data),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['pits', projectId] })
+            setShowCreatePit(false)
+            Toast.success('Pit created')
+        },
+        onError: () => Toast.error('Failed to create pit'),
+    })
+
+    const resolvePitMutation = useMutation({
+        mutationFn: (data: { pitId: string; resolvedEpisodeId: string }) =>
+            pitService.resolve(data.pitId, data.resolvedEpisodeId),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['pits', projectId] })
+            setShowResolvePit(false)
+            setResolvingPit(null)
+            Toast.success('Pit resolved')
+        },
+        onError: () => Toast.error('Failed to resolve pit'),
     })
 
     if (projectLoading) return <Spin size="large" />
@@ -99,6 +175,43 @@ export default function ProjectDetail() {
                 <Button size="small" onClick={() => navigate(`/projects/${projectId}/episodes/${record.id}`)}>
                     View
                 </Button>
+            ),
+        },
+    ]
+
+    const pitColumns = [
+        { title: 'Title', dataIndex: 'title', key: 'title' },
+        { title: 'Priority', dataIndex: 'priority', key: 'priority', width: 80 },
+        {
+            title: 'Status',
+            dataIndex: 'status',
+            key: 'status',
+            width: 100,
+            render: (text: string) => <Tag color={PIT_STATUS_COLORS[text] || 'default'}>{text}</Tag>,
+        },
+        {
+            title: 'Introduced Episode',
+            dataIndex: 'introduced_episode_id',
+            key: 'introduced_episode_id',
+            width: 160,
+            render: (text: string) => <Button size="small" onClick={() => navigate(`/projects/${projectId}/episodes/${text}`)}>View Episode</Button>,
+        },
+        {
+            title: 'Trigger Hint',
+            dataIndex: 'trigger_hint',
+            key: 'trigger_hint',
+            render: (text: string) => text || '-',
+        },
+        {
+            title: 'Actions',
+            key: 'actions',
+            width: 100,
+            render: (_: unknown, record: Pit) => (
+                record.status === 'open' ? (
+                    <Button size="small" theme="solid" onClick={() => { setResolvingPit(record); setShowResolvePit(true) }}>
+                        Resolve
+                    </Button>
+                ) : null
             ),
         },
     ]
@@ -137,9 +250,14 @@ export default function ProjectDetail() {
                                 ))}
                             </select>
                         </div>
-                        <Button icon={<IconPlus />} theme="solid" onClick={() => setShowImport(true)}>
-                            Import Episode
-                        </Button>
+                        <div className="flex gap-2">
+                            <Button icon={<IconForward />} onClick={() => setShowContinue(true)}>
+                                Continue from Episode
+                            </Button>
+                            <Button icon={<IconPlus />} theme="solid" onClick={() => setShowImport(true)}>
+                                Import Episode
+                            </Button>
+                        </div>
                     </div>
 
                     <Table
@@ -156,7 +274,31 @@ export default function ProjectDetail() {
                 </TabPane>
 
                 <TabPane tab="Pits" itemKey="pits">
-                    <Empty description="Pit tracking coming in M3" />
+                    <div className="flex justify-between items-center mb-4">
+                        <div className="flex gap-2 items-center">
+                            <span>Status:</span>
+                            <Select
+                                value={pitStatusFilter}
+                                onChange={(v: string | string[] | undefined) => setPitStatusFilter(v ? String(v) : undefined)}
+                                style={{ width: 120 }}
+                            >
+                                <Select.Option value="">All</Select.Option>
+                                <Select.Option value="open">Open</Select.Option>
+                                <Select.Option value="resolved">Resolved</Select.Option>
+                                <Select.Option value="abandoned">Abandoned</Select.Option>
+                            </Select>
+                        </div>
+                        <Button icon={<IconPlus />} theme="solid" onClick={() => setShowCreatePit(true)}>
+                            Create Pit
+                        </Button>
+                    </div>
+                    <Table
+                        columns={pitColumns}
+                        dataSource={pitsData?.items || []}
+                        loading={pitsLoading}
+                        rowKey="id"
+                        pagination={{ pageSize: 20 }}
+                    />
                 </TabPane>
 
                 <TabPane tab="Memory" itemKey="memory">
@@ -270,6 +412,184 @@ export default function ProjectDetail() {
                         <Button htmlType="submit" theme="solid" loading={importMutation.isPending}>Import</Button>
                     </div>
                 </Form>
+            </Modal>
+
+            <Modal
+                title="Continue from Episode"
+                visible={showContinue}
+                onCancel={() => setShowContinue(false)}
+                footer={null}
+                width={520}
+            >
+                <div className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium mb-1">Base Episode</label>
+                        <Select
+                            value={continueForm.base_episode_id}
+                            onChange={(v: string | string[] | undefined) => setContinueForm({ ...continueForm, base_episode_id: String(v || '') })}
+                            style={{ width: '100%' }}
+                            placeholder="Select an episode"
+                        >
+                            {(episodesData?.items || []).map((e: Episode) => (
+                                <Select.Option key={e.id} value={e.id}>
+                                    Episode {e.number} - {e.title || e.status}
+                                </Select.Option>
+                            ))}
+                        </Select>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium mb-1">Tone</label>
+                        <Select
+                            value={continueForm.tone}
+                            onChange={(v: string | string[] | undefined) => setContinueForm({ ...continueForm, tone: String(v || 'main') })}
+                            style={{ width: '100%' }}
+                        >
+                            <Select.Option value="main">Main Plot</Select.Option>
+                            <Select.Option value="daily">Daily / Slice of Life</Select.Option>
+                            <Select.Option value="climax">Climax</Select.Option>
+                            <Select.Option value="filler">Filler</Select.Option>
+                            <Select.Option value="pit_resolve">Resolve Foreshadowing</Select.Option>
+                        </Select>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium mb-1">Custom Instructions (optional)</label>
+                        <TextArea
+                            value={continueForm.custom_instructions}
+                            onChange={(v: string) => setContinueForm({ ...continueForm, custom_instructions: v })}
+                            placeholder="Any specific requirements for the next episode..."
+                            rows={3}
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium mb-1">Title (optional)</label>
+                        <Input
+                            value={continueForm.title}
+                            onChange={(v: string) => setContinueForm({ ...continueForm, title: v })}
+                            placeholder="Episode title"
+                        />
+                    </div>
+                    <div className="grid grid-cols-3 gap-4">
+                        <div>
+                            <label className="block text-sm font-medium mb-1">Image Backend</label>
+                            <Select
+                                value={continueForm.image_backend}
+                                onChange={(v: string | string[] | undefined) => setContinueForm({ ...continueForm, image_backend: v ? String(v) : undefined })}
+                                style={{ width: '100%' }}
+                                placeholder="Default"
+                            >
+                                <Select.Option value="openai">OpenAI</Select.Option>
+                                <Select.Option value="custom">Custom HTTP</Select.Option>
+                                <Select.Option value="mock">Mock</Select.Option>
+                            </Select>
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium mb-1">Image Model</label>
+                            <Select
+                                value={continueForm.image_model}
+                                onChange={(v: string | string[] | undefined) => setContinueForm({ ...continueForm, image_model: v ? String(v) : undefined })}
+                                style={{ width: '100%' }}
+                                placeholder="Default"
+                            >
+                                <Select.Option value="gpt-image-2">GPT-Image-2</Select.Option>
+                                <Select.Option value="dall-e-3">DALL-E 3</Select.Option>
+                            </Select>
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium mb-1">Image Size</label>
+                            <Select
+                                value={continueForm.image_size}
+                                onChange={(v: string | string[] | undefined) => setContinueForm({ ...continueForm, image_size: v ? String(v) : undefined })}
+                                style={{ width: '100%' }}
+                                placeholder="Default"
+                            >
+                                <Select.Option value="1024x1024">1024x1024</Select.Option>
+                                <Select.Option value="1024x1792">1024x1792</Select.Option>
+                                <Select.Option value="1792x1024">1792x1024</Select.Option>
+                            </Select>
+                        </div>
+                    </div>
+                    <div className="flex justify-end gap-2">
+                        <Button onClick={() => setShowContinue(false)}>Cancel</Button>
+                        <Button
+                            theme="solid"
+                            loading={continueMutation.isPending}
+                            disabled={!continueForm.base_episode_id}
+                            onClick={() => continueMutation.mutate()}
+                        >
+                            Continue Generation
+                        </Button>
+                    </div>
+                </div>
+            </Modal>
+
+            <Modal
+                title="Create Pit"
+                visible={showCreatePit}
+                onCancel={() => setShowCreatePit(false)}
+                footer={null}
+            >
+                <Form
+                    onSubmit={(values: Record<string, unknown>) => {
+                        createPitMutation.mutate({
+                            title: String(values.title || ''),
+                            description: values.description ? String(values.description) : undefined,
+                            priority: values.priority ? Number(values.priority) : 0,
+                            introduced_episode_id: String(values.introduced_episode_id || ''),
+                            trigger_hint: values.trigger_hint ? String(values.trigger_hint) : undefined,
+                        })
+                    }}
+                    initValues={{ priority: 0 }}
+                >
+                    <Form.Input field="title" label="Title" rules={[{ required: true }]} />
+                    <Form.TextArea field="description" label="Description (optional)" />
+                    <Form.InputNumber field="priority" label="Priority" min={0} max={10} />
+                    <Form.Select field="introduced_episode_id" label="Introduced Episode" style={{ width: '100%' }} rules={[{ required: true }]}>
+                        {(episodesData?.items || []).map((e: Episode) => (
+                            <Select.Option key={e.id} value={e.id}>
+                                Episode {e.number} - {e.title || e.status}
+                            </Select.Option>
+                        ))}
+                    </Form.Select>
+                    <Form.Input field="trigger_hint" label="Trigger Hint (optional)" />
+                    <div className="flex justify-end gap-2">
+                        <Button onClick={() => setShowCreatePit(false)}>Cancel</Button>
+                        <Button htmlType="submit" theme="solid" loading={createPitMutation.isPending}>Create</Button>
+                    </div>
+                </Form>
+            </Modal>
+
+            <Modal
+                title="Resolve Pit"
+                visible={showResolvePit}
+                onCancel={() => { setShowResolvePit(false); setResolvingPit(null) }}
+                footer={null}
+            >
+                {resolvingPit && (
+                    <Form
+                        onSubmit={(values: Record<string, unknown>) => {
+                            resolvePitMutation.mutate({
+                                pitId: resolvingPit.id,
+                                resolvedEpisodeId: String(values.resolved_episode_id || ''),
+                            })
+                        }}
+                    >
+                        <div className="mb-4">
+                            <Tag color="blue">{resolvingPit.title}</Tag>
+                            <span className="ml-2 text-sm text-gray-600">{resolvingPit.description}</span>
+                        </div>
+                        <Form.Select field="resolved_episode_id" label="Resolved Episode" style={{ width: '100%' }} rules={[{ required: true }]}>
+                            {(episodesData?.items || []).map((e: Episode) => (
+                                <Select.Option key={e.id} value={e.id}>
+                                    Episode {e.number} - {e.title || e.status}
+                                </Select.Option>
+                            ))}
+                        </Form.Select>
+                        <div className="flex justify-end gap-2">
+                            <Button onClick={() => { setShowResolvePit(false); setResolvingPit(null) }}>Cancel</Button>
+                            <Button htmlType="submit" theme="solid" loading={resolvePitMutation.isPending}>Resolve</Button>
+                        </div>
+                    </Form>
+                )}
             </Modal>
         </div>
     )

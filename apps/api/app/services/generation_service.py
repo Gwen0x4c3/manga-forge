@@ -6,10 +6,12 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.asset import Asset
 from app.models.episode import Episode
 from app.models.episode_memory import EpisodeMemory
 from app.models.generated_image import GeneratedImage
 from app.models.generation_run import GenerationRun
+from app.models.pit import Pit
 from app.models.project import Project
 
 
@@ -189,3 +191,49 @@ async def get_layout_result(
         ).order_by(EpisodeMemory.created_at.desc())
     )
     return result.scalar_one_or_none()
+
+
+async def auto_discover_assets(
+    db: AsyncSession,
+    project_id: str,
+    episode_id: str,
+    new_assets: list[dict],
+) -> list[Asset]:
+    assets = []
+    for asset_data in new_assets:
+        asset = Asset(
+            id=str(uuid.uuid4()),
+            project_id=project_id,
+            type=asset_data.get("asset_type", "character"),
+            name=asset_data.get("name", ""),
+            description=asset_data.get("description", ""),
+            tags={"visual_tags": asset_data.get("visual_tags", [])},
+        )
+        db.add(asset)
+        assets.append(asset)
+    await db.commit()
+    return assets
+
+
+async def auto_discover_pits(
+    db: AsyncSession,
+    project_id: str,
+    episode_id: str,
+    pit_discoveries: list[dict],
+) -> list[Pit]:
+    pits = []
+    for pit_data in pit_discoveries:
+        pit = Pit(
+            id=str(uuid.uuid4()),
+            project_id=project_id,
+            title=pit_data.get("description", "")[:255],
+            description=pit_data.get("description", ""),
+            priority={"low": 0, "medium": 5, "high": 10}.get(pit_data.get("priority", "medium"), 5),
+            introduced_episode_id=episode_id,
+            trigger_hint=pit_data.get("trigger_hint"),
+            status="open",
+        )
+        db.add(pit)
+        pits.append(pit)
+    await db.commit()
+    return pits
