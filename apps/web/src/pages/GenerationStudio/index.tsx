@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Typography, Spin, Empty, Button, Select, TextArea, Steps, Toast, Tag, Collapse, Descriptions, Image } from '@douyinfe/semi-ui'
+import { IconForward } from '@douyinfe/semi-icons'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { episodeService, generationService } from '@/services/project'
 import type { GenerationRun, GeneratedImage, ComposedPage } from '@/services/project'
@@ -8,7 +9,7 @@ import type { GenerationRun, GeneratedImage, ComposedPage } from '@/services/pro
 const { Title, Paragraph } = Typography
 
 export default function GenerationStudio() {
-    const { episodeId } = useParams<{ projectId: string; episodeId: string }>()
+    const { projectId, episodeId } = useParams<{ projectId: string; episodeId: string }>()
     const navigate = useNavigate()
     const [tone, setTone] = useState('main')
     const [customInstructions, setCustomInstructions] = useState('')
@@ -17,6 +18,7 @@ export default function GenerationStudio() {
     const [imageModel, setImageModel] = useState<string | undefined>(undefined)
     const [renderTriggered, setRenderTriggered] = useState(false)
     const [layoutTriggered, setLayoutTriggered] = useState(false)
+    const [writebackTriggered, setWritebackTriggered] = useState(false)
 
     const { data: episode, isLoading: episodeLoading } = useQuery({
         queryKey: ['episode', episodeId],
@@ -34,7 +36,7 @@ export default function GenerationStudio() {
         queryKey: ['generation-runs', episodeId],
         queryFn: () => generationService.listEpisodeRuns(episodeId!),
         enabled: !!episodeId,
-        refetchInterval: activeStep === 1 || (activeStep === 3 && renderTriggered) || (activeStep === 4 && layoutTriggered) ? 3000 : false,
+        refetchInterval: activeStep === 1 || (activeStep === 3 && renderTriggered) || (activeStep === 4 && layoutTriggered) || (activeStep === 5 && writebackTriggered) ? 3000 : false,
     })
 
     const { data: generatedImagesData } = useQuery({
@@ -89,6 +91,19 @@ export default function GenerationStudio() {
         onError: () => Toast.error('Failed to start layout'),
     })
 
+    const continueMutation = useMutation({
+        mutationFn: () => generationService.triggerContinue({
+            project_id: projectId!,
+            branch_id: episode?.branch_id || '',
+            base_episode_number: episode?.number || 1,
+        }),
+        onSuccess: (data) => {
+            Toast.success('Continue generation started')
+            navigate(`/projects/${projectId}/episodes/${data.episode_id}/generate`)
+        },
+        onError: () => Toast.error('Failed to start continue generation'),
+    })
+
     if (episodeLoading) return <Spin size="large" />
     if (!episode) return <Empty description="Episode not found" />
 
@@ -96,15 +111,18 @@ export default function GenerationStudio() {
     const scriptRuns = runs?.items?.filter((r: GenerationRun) => r.stage === 'script') || []
     const renderRuns = runs?.items?.filter((r: GenerationRun) => r.stage === 'render') || []
     const layoutRuns = runs?.items?.filter((r: GenerationRun) => r.stage === 'layout') || []
+    const writebackRuns = runs?.items?.filter((r: GenerationRun) => r.stage === 'writeback') || []
     const latestScriptRun = scriptRuns[0]
     const latestRenderRun = renderRuns[0]
     const latestLayoutRun = layoutRuns[0]
+    const latestWritebackRun = writebackRuns[0]
 
     const generatedImages: GeneratedImage[] = generatedImagesData?.items || []
     const composedPages: ComposedPage[] = layoutResult?.pages || []
 
     const renderSucceeded = latestRenderRun?.status === 'succeeded'
     const layoutSucceeded = latestLayoutRun?.status === 'succeeded'
+    const writebackSucceeded = latestWritebackRun?.status === 'succeeded'
 
     return (
         <div>
@@ -119,6 +137,7 @@ export default function GenerationStudio() {
                 <Steps.Step title="Script Review" description="Review generated script" />
                 <Steps.Step title="Render" description="Generate panel images" />
                 <Steps.Step title="Layout & Export" description="Compose final pages" />
+                <Steps.Step title="Writeback" description="Auto-discover understanding" />
             </Steps>
 
             {activeStep === 0 && (
@@ -385,6 +404,13 @@ export default function GenerationStudio() {
                                 >
                                     Start Over
                                 </Button>
+                                <Button
+                                    theme="solid"
+                                    icon={<IconForward />}
+                                    onClick={() => setActiveStep(5)}
+                                >
+                                    Continue Next Episode
+                                </Button>
                             </div>
                         </div>
                     )}
@@ -392,6 +418,90 @@ export default function GenerationStudio() {
                     {layoutSucceeded && composedPages.length === 0 && (
                         <div className="text-center py-8">
                             <Paragraph>Layout completed but no pages found. Try refreshing.</Paragraph>
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {activeStep === 5 && (
+                <div className="max-w-4xl">
+                    <Title heading={5}>Writeback</Title>
+
+                    {!writebackTriggered && !writebackSucceeded && (
+                        <div className="space-y-4">
+                            <Paragraph>Writeback automatically discovers understanding results from the generated episode, updating project memory with new characters, events, and state changes.</Paragraph>
+                            {latestWritebackRun && latestWritebackRun.status === 'succeeded' ? (
+                                <div>
+                                    <Tag color="green" size="large">Writeback Already Complete</Tag>
+                                    <div className="mt-4 flex gap-2">
+                                        <Button
+                                            theme="solid"
+                                            icon={<IconForward />}
+                                            loading={continueMutation.isPending}
+                                            onClick={() => continueMutation.mutate()}
+                                        >
+                                            Continue Next Episode
+                                        </Button>
+                                        <Button onClick={() => { setLayoutTriggered(false); setRenderTriggered(false); setActiveStep(0) }}>
+                                            Start Over
+                                        </Button>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="flex gap-2">
+                                    <Button
+                                        theme="solid"
+                                        size="large"
+                                        icon={<IconForward />}
+                                        loading={continueMutation.isPending}
+                                        onClick={() => continueMutation.mutate()}
+                                    >
+                                        Continue Next Episode
+                                    </Button>
+                                    <Button onClick={() => { setLayoutTriggered(false); setRenderTriggered(false); setActiveStep(0) }}>
+                                        Start Over
+                                    </Button>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {writebackTriggered && !writebackSucceeded && (
+                        <div className="text-center py-12">
+                            <Spin size="large" />
+                            <Paragraph className="mt-4">Running writeback pipeline...</Paragraph>
+                            {latestWritebackRun && (
+                                <div className="mt-4">
+                                    <Tag color={latestWritebackRun.status === 'running' ? 'blue' : latestWritebackRun.status === 'succeeded' ? 'green' : 'red'}>
+                                        {latestWritebackRun.status}
+                                    </Tag>
+                                    {latestWritebackRun.status === 'failed' && (
+                                        <Paragraph type="danger" className="mt-2">{latestWritebackRun.error || 'Writeback failed'}</Paragraph>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {writebackSucceeded && (
+                        <div>
+                            <div className="mb-4">
+                                <Tag color="green" size="large">Writeback Complete</Tag>
+                            </div>
+                            <Paragraph>Project memory has been updated with auto-discovered understanding from this episode.</Paragraph>
+                            <div className="mt-4 flex gap-2">
+                                <Button
+                                    theme="solid"
+                                    icon={<IconForward />}
+                                    loading={continueMutation.isPending}
+                                    onClick={() => continueMutation.mutate()}
+                                >
+                                    Continue Next Episode
+                                </Button>
+                                <Button onClick={() => { setWritebackTriggered(false); setLayoutTriggered(false); setRenderTriggered(false); setActiveStep(0) }}>
+                                    Start Over
+                                </Button>
+                            </div>
                         </div>
                     )}
                 </div>

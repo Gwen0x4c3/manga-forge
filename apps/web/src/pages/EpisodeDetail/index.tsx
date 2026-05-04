@@ -1,7 +1,8 @@
+import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Typography, Spin, Empty, Tag, Image, Tabs, TabPane, Button, Descriptions, Collapse, Toast } from '@douyinfe/semi-ui'
+import { Typography, Spin, Empty, Tag, Image, Tabs, TabPane, Button, Descriptions, Collapse, Toast, Modal, Select, TextArea } from '@douyinfe/semi-ui'
 import type { TagColor } from '@douyinfe/semi-ui/lib/es/tag'
-import { IconBolt } from '@douyinfe/semi-icons'
+import { IconBolt, IconForward } from '@douyinfe/semi-icons'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { episodeService, generationService } from '@/services/project'
 import type { EpisodeMemory } from '@/services/project'
@@ -14,12 +15,17 @@ const STATUS_COLORS: Record<string, TagColor> = {
     scripted: 'green',
     rendered: 'orange',
     published: 'purple',
+    draft: 'grey',
+    generating: 'violet',
 }
 
 export default function EpisodeDetail() {
     const { projectId, episodeId } = useParams<{ projectId: string; episodeId: string }>()
     const navigate = useNavigate()
     const queryClient = useQueryClient()
+    const [showContinue, setShowContinue] = useState(false)
+    const [continueTone, setContinueTone] = useState('main')
+    const [continueInstructions, setContinueInstructions] = useState('')
 
     const { data: episode, isLoading: episodeLoading } = useQuery({
         queryKey: ['episode', episodeId],
@@ -78,6 +84,23 @@ export default function EpisodeDetail() {
         onError: () => Toast.error('Failed to start layout'),
     })
 
+    const continueMutation = useMutation({
+        mutationFn: () => generationService.triggerContinue({
+            project_id: projectId!,
+            branch_id: episode?.branch_id || '',
+            base_episode_number: episode?.number || 1,
+            tone: continueTone,
+            custom_instructions: continueInstructions || undefined,
+        }),
+        onSuccess: (data) => {
+            queryClient.invalidateQueries({ queryKey: ['episodes', projectId] })
+            setShowContinue(false)
+            Toast.success('Continue generation started')
+            navigate(`/projects/${projectId}/episodes/${data.episode_id}/generate`)
+        },
+        onError: () => Toast.error('Failed to start continue generation'),
+    })
+
     if (episodeLoading) return <Spin size="large" />
     if (!episode) return <Empty description="Episode not found" />
 
@@ -85,6 +108,7 @@ export default function EpisodeDetail() {
     const eventsMemory = memories?.find((m: EpisodeMemory) => m.type === 'events')
     const stateMemory = memories?.find((m: EpisodeMemory) => m.type === 'state_snapshot')
     const storyboardMemory = memories?.find((m: EpisodeMemory) => m.type === 'storyboard_json')
+    const writebackMemories = memories?.filter((m: EpisodeMemory) => m.type === 'writeback') || []
 
     return (
         <div>
@@ -150,6 +174,14 @@ export default function EpisodeDetail() {
                             onClick={() => navigate(`/projects/${projectId}/studio`)}
                         >
                             View in Studio
+                        </Button>
+                    )}
+                    {(episode.status === 'published' || episode.status === 'understood') && (
+                        <Button
+                            icon={<IconForward />}
+                            onClick={() => setShowContinue(true)}
+                        >
+                            Continue from Here
                         </Button>
                     )}
                 </div>
@@ -282,6 +314,28 @@ export default function EpisodeDetail() {
                     )}
                 </TabPane>
 
+                <TabPane tab="Writeback" itemKey="writeback">
+                    {memoriesLoading && <Spin />}
+                    {!memoriesLoading && writebackMemories.length === 0 && (
+                        <Empty description="No writeback data yet. Writeback runs automatically after layout." />
+                    )}
+                    {!memoriesLoading && writebackMemories.length > 0 && (
+                        <div className="max-w-4xl space-y-4">
+                            {writebackMemories.map((wb, i) => (
+                                <div key={wb.id} className="border rounded p-4">
+                                    <div className="flex items-center gap-2 mb-2">
+                                        <Tag color="violet">Writeback</Tag>
+                                        <span className="text-sm text-gray-500">{new Date(wb.created_at).toLocaleString()}</span>
+                                    </div>
+                                    <pre className="text-sm bg-gray-50 p-3 rounded overflow-auto max-h-96">
+                                        {JSON.stringify(wb.content, null, 2)}
+                                    </pre>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </TabPane>
+
                 <TabPane tab="Generated Images" itemKey="generated">
                     {imagesLoading && <Spin />}
                     {!imagesLoading && (!generatedImages?.items || generatedImages.items.length === 0) && (
@@ -329,6 +383,51 @@ export default function EpisodeDetail() {
                     )}
                 </TabPane>
             </Tabs>
+
+            <Modal
+                title="Continue from Here"
+                visible={showContinue}
+                onCancel={() => setShowContinue(false)}
+                footer={null}
+                width={480}
+            >
+                <div className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium mb-1">Tone</label>
+                        <Select
+                            value={continueTone}
+                            onChange={(v: string | string[] | undefined) => setContinueTone(String(v || 'main'))}
+                            style={{ width: '100%' }}
+                        >
+                            <Select.Option value="main">Main Plot</Select.Option>
+                            <Select.Option value="daily">Daily / Slice of Life</Select.Option>
+                            <Select.Option value="climax">Climax</Select.Option>
+                            <Select.Option value="filler">Filler</Select.Option>
+                            <Select.Option value="pit_resolve">Resolve Foreshadowing</Select.Option>
+                        </Select>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium mb-1">Custom Instructions (optional)</label>
+                        <TextArea
+                            value={continueInstructions}
+                            onChange={(v: string) => setContinueInstructions(v)}
+                            placeholder="Any specific requirements for the next episode..."
+                            rows={3}
+                        />
+                    </div>
+                    <div className="flex justify-end gap-2">
+                        <Button onClick={() => setShowContinue(false)}>Cancel</Button>
+                        <Button
+                            theme="solid"
+                            icon={<IconForward />}
+                            loading={continueMutation.isPending}
+                            onClick={() => continueMutation.mutate()}
+                        >
+                            Continue Generation
+                        </Button>
+                    </div>
+                </div>
+            </Modal>
         </div>
     )
 }

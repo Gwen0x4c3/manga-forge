@@ -9,6 +9,8 @@ from app.models.episode import Episode
 from app.models.episode_memory import EpisodeMemory
 from app.models.generation_run import GenerationRun
 from app.schemas.generation import (
+    ContinueFromEpisodeRequest,
+    ContinueFromEpisodeResponse,
     GeneratedImageResponse,
     GenerationRunResponse,
     LayoutRequest,
@@ -21,8 +23,52 @@ from app.schemas.generation import (
     UnderstandResponse,
 )
 from app.services import generation_service
+from app.services import episode_service
 
 router = APIRouter()
+
+
+@router.post("/continue", response_model=ContinueFromEpisodeResponse)
+async def continue_from_episode(request: ContinueFromEpisodeRequest, db: AsyncSession = Depends(get_db)):
+    base_episode = await episode_service.find_episode(db, request.project_id, request.branch_id, request.base_episode_number)
+    if not base_episode:
+        raise HTTPException(status_code=404, detail="Base episode not found")
+    new_number = request.base_episode_number + 1
+    new_episode = Episode(
+        project_id=request.project_id,
+        branch_id=request.branch_id,
+        number=new_number,
+        title=request.title or f"Episode {new_number}",
+        source="generated",
+        status="draft",
+        parent_episode_id=str(base_episode.id),
+    )
+    db.add(new_episode)
+    await db.commit()
+    await db.refresh(new_episode)
+    run = await generation_service.create_generation_run(
+        db, episode_id=str(new_episode.id), stage="continue", backend="openai",
+    )
+    try:
+        from workers.pipelines.continue_pipeline import run_continue
+        task = run_continue.delay(
+            str(new_episode.id),
+            request.branch_id,
+            request.base_episode_number,
+            request.tone,
+            request.custom_instructions,
+            request.image_backend,
+            request.image_model,
+            request.image_size,
+        )
+    except Exception:
+        task = None
+    return ContinueFromEpisodeResponse(
+        episode_id=str(new_episode.id),
+        episode_number=new_number,
+        task_id=task.id if task else str(run.id),
+        status="queued",
+    )
 
 
 @router.post("/understand", response_model=UnderstandResponse)

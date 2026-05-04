@@ -34,6 +34,28 @@ async def get_episode(db: AsyncSession, episode_id: str) -> Episode | None:
     return result.scalar_one_or_none()
 
 
+async def find_episode(db: AsyncSession, project_id: str, branch_id: str, number: int) -> Episode | None:
+    result = await db.execute(
+        select(Episode).where(
+            Episode.project_id == project_id,
+            Episode.branch_id == branch_id,
+            Episode.number == number,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_next_episode_number(db: AsyncSession, project_id: str, branch_id: str) -> int:
+    result = await db.execute(
+        select(func.max(Episode.number)).where(
+            Episode.project_id == project_id,
+            Episode.branch_id == branch_id,
+        )
+    )
+    max_number = result.scalar()
+    return (max_number or 0) + 1
+
+
 async def update_episode(db: AsyncSession, episode: Episode, data: EpisodeUpdate) -> Episode:
     for key, value in data.model_dump(exclude_unset=True).items():
         setattr(episode, key, value)

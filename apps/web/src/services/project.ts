@@ -97,6 +97,20 @@ export const storageService = {
     },
 }
 
+export interface Pit {
+    id: string
+    project_id: string
+    title: string
+    description?: string
+    priority: number
+    introduced_episode_id: string
+    resolved_episode_id?: string
+    status: string
+    trigger_hint?: string
+    created_at: string
+    updated_at: string
+}
+
 export interface EpisodeMemory {
     id: string
     episode_id: string
@@ -168,8 +182,26 @@ export const generationService = {
     triggerScriptGeneration: (data: { episode_id: string; branch_id: string; base_episode_number: number; tone?: string; custom_instructions?: string }) => api.post<{ task_id: string; episode_id: string; status: string }>('/generation/script', data),
     triggerRender: (data: { episode_id: string; storyboard_memory_id?: string; image_backend?: string; image_model?: string; image_size?: string }) => api.post<{ task_id: string; episode_id: string; status: string; panel_count: number }>('/generation/render', data),
     triggerLayout: (data: { episode_id: string; template_override?: Record<number, string> }) => api.post<{ task_id: string; episode_id: string; status: string; page_count: number }>('/generation/layout', data),
+    triggerContinue: (data: {
+        project_id: string;
+        branch_id: string;
+        base_episode_number: number;
+        tone?: string;
+        custom_instructions?: string;
+        title?: string;
+        image_backend?: string;
+        image_model?: string;
+        image_size?: string;
+    }) => api.post<{ episode_id: string; episode_number: number; task_id: string; status: string }>('/generation/continue', data),
     getRun: (runId: string) => api.get<GenerationRun>(`/generation/runs/${runId}`),
     listEpisodeRuns: (episodeId: string) => api.get<{ items: GenerationRun[] }>(`/generation/episodes/${episodeId}/runs`),
     getGeneratedImages: (episodeId: string) => api.get<{ items: GeneratedImage[] }>(`/generation/episodes/${episodeId}/images`),
     getLayoutResult: (episodeId: string) => api.get<{ pages: ComposedPage[] }>(`/generation/episodes/${episodeId}/layout`),
+}
+
+export const pitService = {
+    list: (projectId: string, status?: string) => api.get<{ items: Pit[]; total: number }>(`/projects/${projectId}/pits`, { params: { status } }),
+    create: (projectId: string, data: { title: string; description?: string; priority?: number; introduced_episode_id: string; trigger_hint?: string }) => api.post<Pit>(`/projects/${projectId}/pits`, data),
+    update: (pitId: string, data: { title?: string; description?: string; priority?: number; status?: string; trigger_hint?: string }) => api.put<Pit>(`/pits/${pitId}`, data),
+    resolve: (pitId: string, resolvedEpisodeId: string) => api.post<Pit>(`/pits/${pitId}/resolve`, null, { params: { resolved_episode_id: resolvedEpisodeId } }),
 }

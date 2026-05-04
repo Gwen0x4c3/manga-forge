@@ -12,7 +12,7 @@ class EpisodeImport(BaseModel):
 
 class EpisodeUpdate(BaseModel):
     title: str | None = None
-    status: str | None = Field(None, pattern="^(imported|understood|scripted|rendered|published)$")
+    status: str | None = Field(None, pattern="^(imported|understood|scripted|rendered|published|draft|generating)$")
 
 
 class EpisodeResponse(BaseModel):
