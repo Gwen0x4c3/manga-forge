@@ -1,4 +1,4 @@
-VENV := .venv/bin/
+VENV := $(CURDIR)/.venv/bin/
 
 .PHONY: help dev infra up down migrate api web worker install lint
 
