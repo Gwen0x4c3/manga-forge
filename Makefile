@@ -24,7 +24,7 @@ worker:         ## Start Celery worker
 	cd workers && celery -A celery_app worker --loglevel=info
 
 install:        ## Install all dependencies (uv + npm)
-	uv venv
+	uv venv --python 3.12
 	uv pip install -e "apps/api[dev]" -e "workers[dev]"
 	cd apps/web && npm install
 
