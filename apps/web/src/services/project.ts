@@ -128,6 +128,22 @@ export interface StoryboardPage {
     panels: StoryboardPanel[]
 }
 
+export interface GeneratedImage {
+    id: string
+    generation_run_id: string
+    episode_id: string
+    panel_id: string | null
+    image_path: string
+    meta: Record<string, unknown> | null
+    created_at: string | null
+}
+
+export interface ComposedPage {
+    page_number: number
+    image_path: string
+    layout: string
+}
+
 export interface StoryboardPanel {
     panel_id: string
     scene: string
@@ -150,6 +166,10 @@ export const memoryService = {
 export const generationService = {
     triggerUnderstand: (episodeId: string) => api.post<{ task_id: string; episode_id: string; status: string }>('/generation/understand', { episode_id: episodeId }),
     triggerScriptGeneration: (data: { episode_id: string; branch_id: string; base_episode_number: number; tone?: string; custom_instructions?: string }) => api.post<{ task_id: string; episode_id: string; status: string }>('/generation/script', data),
+    triggerRender: (data: { episode_id: string; storyboard_memory_id?: string; image_backend?: string; image_model?: string; image_size?: string }) => api.post<{ task_id: string; episode_id: string; status: string; panel_count: number }>('/generation/render', data),
+    triggerLayout: (data: { episode_id: string; template_override?: Record<number, string> }) => api.post<{ task_id: string; episode_id: string; status: string; page_count: number }>('/generation/layout', data),
     getRun: (runId: string) => api.get<GenerationRun>(`/generation/runs/${runId}`),
     listEpisodeRuns: (episodeId: string) => api.get<{ items: GenerationRun[] }>(`/generation/episodes/${episodeId}/runs`),
+    getGeneratedImages: (episodeId: string) => api.get<{ items: GeneratedImage[] }>(`/generation/episodes/${episodeId}/images`),
+    getLayoutResult: (episodeId: string) => api.get<{ pages: ComposedPage[] }>(`/generation/episodes/${episodeId}/layout`),
 }

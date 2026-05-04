@@ -39,6 +39,18 @@ export default function EpisodeDetail() {
         enabled: !!episodeId,
     })
 
+    const { data: generatedImages, isLoading: imagesLoading } = useQuery({
+        queryKey: ['generated-images', episodeId],
+        queryFn: () => generationService.getGeneratedImages(episodeId!),
+        enabled: !!episodeId,
+    })
+
+    const { data: layoutResult, isLoading: layoutLoading } = useQuery({
+        queryKey: ['layout-result', episodeId],
+        queryFn: () => generationService.getLayoutResult(episodeId!),
+        enabled: !!episodeId,
+    })
+
     const understandMutation = useMutation({
         mutationFn: () => generationService.triggerUnderstand(episodeId!),
         onSuccess: () => {
@@ -46,6 +58,24 @@ export default function EpisodeDetail() {
             queryClient.invalidateQueries({ queryKey: ['episode', episodeId] })
         },
         onError: () => Toast.error('Failed to start understanding'),
+    })
+
+    const renderMutation = useMutation({
+        mutationFn: () => generationService.triggerRender({ episode_id: episodeId! }),
+        onSuccess: () => {
+            Toast.success('Render task started')
+            queryClient.invalidateQueries({ queryKey: ['episode', episodeId] })
+        },
+        onError: () => Toast.error('Failed to start rendering'),
+    })
+
+    const layoutMutation = useMutation({
+        mutationFn: () => generationService.triggerLayout({ episode_id: episodeId! }),
+        onSuccess: () => {
+            Toast.success('Layout task started')
+            queryClient.invalidateQueries({ queryKey: ['episode', episodeId] })
+        },
+        onError: () => Toast.error('Failed to start layout'),
     })
 
     if (episodeLoading) return <Spin size="large" />
@@ -82,6 +112,44 @@ export default function EpisodeDetail() {
                             onClick={() => navigate(`/projects/${projectId}/episodes/${episodeId}/generate`)}
                         >
                             Generate Script
+                        </Button>
+                    )}
+                    {episode.status === 'scripted' && (
+                        <Button
+                            icon={<IconBolt />}
+                            theme="solid"
+                            loading={renderMutation.isPending}
+                            onClick={() => renderMutation.mutate()}
+                        >
+                            Render Images
+                        </Button>
+                    )}
+                    {episode.status === 'rendered' && (
+                        <Button
+                            icon={<IconBolt />}
+                            theme="solid"
+                            disabled
+                        >
+                            Render Images
+                        </Button>
+                    )}
+                    {episode.status === 'rendered' && (
+                        <Button
+                            icon={<IconBolt />}
+                            theme="solid"
+                            loading={layoutMutation.isPending}
+                            onClick={() => layoutMutation.mutate()}
+                        >
+                            Layout & Export
+                        </Button>
+                    )}
+                    {episode.status === 'published' && (
+                        <Button
+                            icon={<IconBolt />}
+                            theme="solid"
+                            onClick={() => navigate(`/projects/${projectId}/studio`)}
+                        >
+                            View in Studio
                         </Button>
                     )}
                 </div>
@@ -210,6 +278,53 @@ export default function EpisodeDetail() {
                                     : <pre className="text-sm bg-gray-50 p-3 rounded">{JSON.stringify(storyboardMemory.content, null, 2)}</pre>
                                 }
                             </Collapse>
+                        </div>
+                    )}
+                </TabPane>
+
+                <TabPane tab="Generated Images" itemKey="generated">
+                    {imagesLoading && <Spin />}
+                    {!imagesLoading && (!generatedImages?.items || generatedImages.items.length === 0) && (
+                        <Empty description="No rendered images yet. Generate script first, then render." />
+                    )}
+                    {!imagesLoading && generatedImages?.items && generatedImages.items.length > 0 && (
+                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                            {generatedImages.items.map((img) => (
+                                <div key={img.id} className="border rounded p-2">
+                                    <Image
+                                        src={`/api/v1/storage/mangaforge/${img.image_path}`}
+                                        alt={img.panel_id || ''}
+                                        className="w-full"
+                                    />
+                                    <div className="text-center text-sm text-gray-500 mt-1">
+                                        {img.panel_id || 'Unknown'}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </TabPane>
+
+                <TabPane tab="Final Pages" itemKey="layout">
+                    {layoutLoading && <Spin />}
+                    {!layoutLoading && (!layoutResult?.pages || layoutResult.pages.length === 0) && (
+                        <Empty description="No composed pages yet. Render images first, then layout." />
+                    )}
+                    {!layoutLoading && layoutResult?.pages && layoutResult.pages.length > 0 && (
+                        <div className="space-y-4">
+                            {layoutResult.pages.map((page) => (
+                                <div key={page.page_number} className="border rounded p-4">
+                                    <div className="flex items-center gap-3 mb-2">
+                                        <span className="font-medium">Page {page.page_number}</span>
+                                        <Tag>{page.layout}</Tag>
+                                    </div>
+                                    <Image
+                                        src={`/api/v1/storage/mangaforge/${page.image_path}`}
+                                        alt={`Page ${page.page_number}`}
+                                        className="w-full max-w-2xl"
+                                    />
+                                </div>
+                            ))}
                         </div>
                     )}
                 </TabPane>
