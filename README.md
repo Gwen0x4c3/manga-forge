@@ -44,10 +44,14 @@ Browser (React SPA)          FastAPI (API Server)           Celery Workers
 
 ### Prerequisites
 
-- Python 3.12+
-- [uv](https://docs.astral.sh/uv/) — fast Python package manager
-- Node.js 18+
+- [uv](https://docs.astral.sh/uv/) — Python package manager (auto-downloads Python 3.12)
+- Node.js 18+ & npm
 - Docker & Docker Compose
+- **Linux only**: increase inotify watches if `make web` fails with `ENOSPC`:
+  ```bash
+  echo fs.inotify.max_user_watches=524288 | sudo tee -a /etc/sysctl.conf
+  sudo sysctl -p
+  ```
 
 ### 1. Clone & Install
 
