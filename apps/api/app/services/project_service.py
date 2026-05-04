@@ -20,7 +20,7 @@ async def list_projects(db: AsyncSession, keyword: str | None = None, page: int 
 async def create_project(db: AsyncSession, data: ProjectCreate) -> Project:
     project = Project(**data.model_dump())
     db.add(project)
-    # Also create default "main" branch
+    await db.flush()
     from app.models.branch import Branch
     branch = Branch(project_id=project.id, name="main")
     db.add(branch)
