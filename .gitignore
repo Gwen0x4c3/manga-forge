@@ -24,6 +24,7 @@ dist/
 out/
 .nuxt/
 .turbo/
+package-lock.json
 
 # IDE
 .idea/
