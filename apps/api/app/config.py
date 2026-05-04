@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     LLM_BACKEND: str = "openai"
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o"
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    OPENAI_BASE_URL: str | None = None
+    QDRANT_API_KEY: str = ""
 
     COMFYUI_URL: str = "http://localhost:8188"
 
