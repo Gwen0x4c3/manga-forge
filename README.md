@@ -11,8 +11,8 @@ Browser (React SPA)          FastAPI (API Server)           Celery Workers
 ┌──────────────────┐        ┌──────────────────────┐      ┌─────────────────┐
 │  Semi UI         │  HTTP  │  Routers / Services   │      │  Understand     │
 │  TailwindCSS     │◄──────►│  SQLAlchemy 2.0 async │      │  Script Gen     │
-│  TanStack Query  │        │  Pydantic v2          │      │  Render (M2)    │
-│  Zustand         │        └──┬───┬───┬────────────┘      │  Layout (M2)    │
+│  TanStack Query  │        │  Pydantic v2          │      │  Render         │
+│  Zustand         │        └──┬───┬───┬────────────┘      │  Layout         │
 └──────────────────┘           │   │   │                   └────────┬────────┘
                           ┌────┘   │   └────┐                       │
                      ┌────▼──┐ ┌───▼──┐ ┌───▼────┐            ┌─────▼─────┐
@@ -28,6 +28,7 @@ Browser (React SPA)          FastAPI (API Server)           Celery Workers
 | Backend | Python / FastAPI | 3.12+ / 0.115+ |
 | ORM | SQLAlchemy 2.0 + Alembic | async |
 | Structured LLM Output | instructor + OpenAI SDK | 1.0+ / 1.50+ |
+| Image Generation | OpenAI Images API / Custom HTTP | gpt-image-2 |
 | Task Queue | Celery + Redis | 5.4+ / 7.x |
 | Frontend | React + TypeScript | 19 / 5.x |
 | UI Library | Semi UI + TailwindCSS | 2.x / 4.x |
@@ -37,12 +38,14 @@ Browser (React SPA)          FastAPI (API Server)           Celery Workers
 | Vector DB | Qdrant | 1.x |
 | Object Storage | MinIO | S3-compatible |
 | Container | Docker Compose | — |
+| Package Manager | uv (Python) / npm (JS) | — |
 
 ## Quick Start
 
 ### Prerequisites
 
 - Python 3.12+
+- [uv](https://docs.astral.sh/uv/) — fast Python package manager
 - Node.js 18+
 - Docker & Docker Compose
 
@@ -53,6 +56,10 @@ git clone https://github.com/your-org/manga-forge.git
 cd manga-forge
 make install
 ```
+
+This creates a single `.venv` at the project root via `uv venv`, then installs both `apps/api` and `workers` in editable mode with dev dependencies, and runs `npm install` for the frontend.
+
+> **Why one `.venv`?** The Celery workers import from the API app (`app.models`, `app.services`, etc.) via `sys.path`. A single virtual environment avoids cross-environment import issues and simplifies dependency management.
 
 ### 2. Configure Environment
 
@@ -99,7 +106,7 @@ manga-forge/
 ├── apps/
 │   ├── api/                    # FastAPI backend
 │   │   ├── app/
-│   │   │   ├── core/           # LLM client, vector store, dependencies
+│   │   │   ├── core/           # LLM client, image backend, vector store, layout engine
 │   │   │   ├── models/         # SQLAlchemy ORM models (11 tables)
 │   │   │   ├── prompts/        # Jinja2 prompt templates
 │   │   │   ├── routers/        # API route handlers
@@ -117,7 +124,7 @@ manga-forge/
 ├── workers/                    # Celery workers
 │   ├── tasks/                  # understand, script_gen, render, layout, ocr
 │   ├── pipelines/              # import_pipeline, generate_pipeline
-│   └── celery_app.py
+│   └── pyproject.toml
 ├── docker/                     # Docker Compose configs
 │   ├── docker-compose.yml
 │   ├── docker-compose.dev.yml
@@ -127,7 +134,8 @@ manga-forge/
 │   ├── design.md
 │   └── architecture.md
 ├── .env.example
-└── Makefile
+├── Makefile
+└── .venv/                      # Single virtual environment (uv venv)
 ```
 
 ## Core Features
@@ -183,6 +191,18 @@ Generate structured JSON storyboard for new episodes:
 
 Context assembly for generation: `canon_rules + long_summary + recent_window + RAG + active_pits + assets`
 
+### Image Generation Pipeline (M2)
+
+Cloud-based image generation with pluggable backends:
+
+| Backend | Description |
+|---------|-------------|
+| **OpenAI** | GPT-Image-2 / DALL-E 3 via OpenAI Images API |
+| **Custom HTTP** | Any cloud API (nanobanana, etc.) via generic HTTP POST adapter |
+| **Mock** | Placeholder images for testing |
+
+Generated panel images → Layout engine composes pages with speech bubbles → PNG export to MinIO.
+
 ### Branch / Fork System
 
 Episodes support DAG parent pointers. Fork from any episode to create alternate storylines with independent memory snapshots.
@@ -203,7 +223,11 @@ Episodes support DAG parent pointers. Fork from any episode to create alternate 
 | GET | `/api/v1/projects/{id}/memory/context` | Generation context |
 | POST | `/api/v1/generation/understand` | Trigger episode understanding |
 | POST | `/api/v1/generation/script` | Trigger script generation |
+| POST | `/api/v1/generation/render` | Trigger panel image rendering |
+| POST | `/api/v1/generation/layout` | Trigger page layout composition |
 | GET | `/api/v1/generation/runs/{id}` | Generation run status |
+| GET | `/api/v1/generation/episodes/{id}/images` | List generated images |
+| GET | `/api/v1/generation/episodes/{id}/layout` | Get layout result |
 
 Full API docs available at `/docs` (Swagger) and `/redoc` when the API server is running.
 
@@ -213,8 +237,8 @@ Full API docs available at `/docs` (Swagger) and `/redoc` when the API server is
 |-----------|--------|-------------|
 | **M0** | ✅ Done | Project skeleton + data models + basic CRUD |
 | **M1** | ✅ Done | Memory system (RAG) + storyboard script generation |
-| **M2** | 🔲 Next | Image generation (ComfyUI) + layout + PNG export |
-| **M3** | 🔲 | Pit tracking + consistency check + auto-writeback |
+| **M2** | ✅ Done | Image generation (cloud API) + layout + PNG export |
+| **M3** | 🔲 Next | Pit tracking + consistency check + auto-writeback |
 | **M4** | 🔲 | Branch fork/diff + asset auto-discovery |
 
 ## Configuration
@@ -236,13 +260,31 @@ All configuration via environment variables (see `.env.example`):
 | `MINIO_ACCESS_KEY` | minioadmin | MinIO access key |
 | `MINIO_SECRET_KEY` | minioadmin | MinIO secret key |
 | `MINIO_BUCKET` | mangaforge | MinIO bucket |
-| `OPENAI_API_KEY` | | OpenAI API key (required for LLM) |
+| `OPENAI_API_KEY` | | OpenAI API key (required for LLM + image gen) |
 | `OPENAI_MODEL` | gpt-4o | LLM model for chat |
 | `OPENAI_EMBEDDING_MODEL` | text-embedding-3-small | Embedding model |
 | `OPENAI_BASE_URL` | | Custom OpenAI-compatible base URL |
-| `COMFYUI_URL` | http://localhost:8188 | ComfyUI endpoint (M2) |
+| `IMAGE_BACKEND` | openai | Image backend: openai / custom / mock |
+| `IMAGE_MODEL` | gpt-image-2 | Image model (gpt-image-2, dall-e-3, or custom) |
+| `IMAGE_API_KEY` | | API key for custom image backend |
+| `IMAGE_API_URL` | | URL for custom image backend |
+| `IMAGE_DEFAULT_SIZE` | 1024x1024 | Default image generation size |
 | `CELERY_BROKER_URL` | redis://localhost:6379/1 | Celery broker |
 | `CELERY_RESULT_BACKEND` | redis://localhost:6379/2 | Celery result backend |
+
+## Make Commands
+
+| Command | Description |
+|---------|-------------|
+| `make install` | Create `.venv`, install Python + JS dependencies |
+| `make infra` | Start Docker infrastructure |
+| `make down` | Stop Docker infrastructure |
+| `make migrate` | Run Alembic migrations |
+| `make api` | Start FastAPI dev server (:8000) |
+| `make web` | Start Vite dev server (:5173) |
+| `make worker` | Start Celery worker |
+| `make dev` | Start infra + api + web |
+| `make lint` | Run ruff + TypeScript checks |
 
 ## License
 
