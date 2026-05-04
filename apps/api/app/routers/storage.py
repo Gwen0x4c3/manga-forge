@@ -1,4 +1,5 @@
 from fastapi import APIRouter, File, UploadFile
+from fastapi.responses import RedirectResponse, Response
 
 from app.services import storage_service
 
@@ -7,8 +8,16 @@ router = APIRouter()
 
 @router.get("/{bucket}/{key:path}")
 async def get_file(bucket: str, key: str):
-    url = storage_service.get_presigned_url(bucket, key)
-    return {"url": url}
+    client = storage_service.get_minio_client()
+    try:
+        response = client.get_object(bucket, key)
+        data = response.read()
+        content_type = response.headers.get("Content-Type", "application/octet-stream")
+        response.close()
+        response.release_conn()
+        return Response(content=data, media_type=content_type)
+    except Exception:
+        return Response(status_code=404, content=b"Not found")
 
 
 @router.post("/upload")

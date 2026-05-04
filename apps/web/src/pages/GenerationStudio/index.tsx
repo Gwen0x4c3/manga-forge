@@ -1,12 +1,19 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Typography, Spin, Empty, Button, Select, TextArea, Steps, Toast, Tag, Collapse, Descriptions, Image } from '@douyinfe/semi-ui'
+import type { TagColor } from '@douyinfe/semi-ui/lib/es/tag'
 import { IconForward } from '@douyinfe/semi-icons'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { episodeService, generationService } from '@/services/project'
 import type { GenerationRun, GeneratedImage, ComposedPage } from '@/services/project'
 
 const { Title, Paragraph } = Typography
+
+const CATEGORY_LABELS: Record<string, { text: string; color: TagColor }> = {
+    regular: { text: '正篇', color: 'blue' },
+    special: { text: '番外', color: 'orange' },
+    extra: { text: '加笔', color: 'purple' },
+}
 
 export default function GenerationStudio() {
     const { projectId, episodeId } = useParams<{ projectId: string; episodeId: string }>()
@@ -128,7 +135,7 @@ export default function GenerationStudio() {
         <div>
             <div className="mb-6 flex items-center gap-3">
                 <Button onClick={() => navigate(-1)}>← Back</Button>
-                <Title heading={4}>Generation Studio - Episode {episode.number}</Title>
+                <Title heading={4}>Generation Studio - {episode.label}</Title>
             </div>
 
             <Steps current={activeStep} className="mb-8">

@@ -8,7 +8,7 @@ def run_generation(
     self,
     episode_id: str,
     branch_id: str,
-    base_episode_number: int,
+    base_episode_number: float,
     tone: str = "main",
     custom_instructions: str | None = None,
 ):

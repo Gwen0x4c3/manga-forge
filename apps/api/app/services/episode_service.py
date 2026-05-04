@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,7 +36,7 @@ async def get_episode(db: AsyncSession, episode_id: str) -> Episode | None:
     return result.scalar_one_or_none()
 
 
-async def find_episode(db: AsyncSession, project_id: str, branch_id: str, number: int) -> Episode | None:
+async def find_episode(db: AsyncSession, project_id: str, branch_id: str, number: Decimal) -> Episode | None:
     result = await db.execute(
         select(Episode).where(
             Episode.project_id == project_id,
@@ -45,7 +47,7 @@ async def find_episode(db: AsyncSession, project_id: str, branch_id: str, number
     return result.scalar_one_or_none()
 
 
-async def get_next_episode_number(db: AsyncSession, project_id: str, branch_id: str) -> int:
+async def get_next_episode_number(db: AsyncSession, project_id: str, branch_id: str) -> Decimal:
     result = await db.execute(
         select(func.max(Episode.number)).where(
             Episode.project_id == project_id,
@@ -53,7 +55,10 @@ async def get_next_episode_number(db: AsyncSession, project_id: str, branch_id: 
         )
     )
     max_number = result.scalar()
-    return (max_number or 0) + 1
+    if max_number is None:
+        return Decimal("1")
+    int_part = int(max_number)
+    return Decimal(int_part + 1)
 
 
 async def update_episode(db: AsyncSession, episode: Episode, data: EpisodeUpdate) -> Episode:
@@ -62,6 +67,11 @@ async def update_episode(db: AsyncSession, episode: Episode, data: EpisodeUpdate
     await db.commit()
     await db.refresh(episode)
     return episode
+
+
+async def delete_episode(db: AsyncSession, episode: Episode) -> None:
+    await db.delete(episode)
+    await db.commit()
 
 
 async def get_episode_pages(db: AsyncSession, episode_id: str) -> list[EpisodePage]:

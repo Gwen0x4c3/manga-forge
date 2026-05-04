@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,14 +35,17 @@ async def continue_from_episode(request: ContinueFromEpisodeRequest, db: AsyncSe
     base_episode = await episode_service.find_episode(db, request.project_id, request.branch_id, request.base_episode_number)
     if not base_episode:
         raise HTTPException(status_code=404, detail="Base episode not found")
-    new_number = request.base_episode_number + 1
+    new_number = Decimal(int(request.base_episode_number) + 1)
+    new_label = str(int(new_number))
     new_episode = Episode(
         project_id=request.project_id,
         branch_id=request.branch_id,
         number=new_number,
-        title=request.title or f"Episode {new_number}",
+        label=new_label,
+        title=request.title or f"Episode {new_label}",
         source="generated",
         status="draft",
+        category="regular",
         parent_episode_id=str(base_episode.id),
     )
     db.add(new_episode)
@@ -54,7 +59,7 @@ async def continue_from_episode(request: ContinueFromEpisodeRequest, db: AsyncSe
         task = run_continue.delay(
             str(new_episode.id),
             request.branch_id,
-            request.base_episode_number,
+            float(request.base_episode_number),
             request.tone,
             request.custom_instructions,
             request.image_backend,
@@ -103,7 +108,7 @@ async def trigger_script_generation(request: ScriptGenerateRequest, db: AsyncSes
         episode_id=episode.id,
         stage="script",
         backend="openai",
-        params={"tone": request.tone, "base_episode_number": request.base_episode_number},
+        params={"tone": request.tone, "base_episode_number": float(request.base_episode_number)},
     )
     try:
         from workers.tasks.script_gen import generate_script
@@ -111,7 +116,7 @@ async def trigger_script_generation(request: ScriptGenerateRequest, db: AsyncSes
             str(run.id),
             episode.id,
             request.branch_id,
-            request.base_episode_number,
+            float(request.base_episode_number),
             request.tone,
             request.custom_instructions,
         )

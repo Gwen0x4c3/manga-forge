@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 
 from jinja2 import Template
 
@@ -15,7 +16,7 @@ def generate_script(
     run_id: str,
     episode_id: str,
     branch_id: str,
-    base_episode_number: int,
+    base_episode_number: float,
     tone: str = "main",
     custom_instructions: str | None = None,
 ):
@@ -28,7 +29,7 @@ async def _generate_script(
     run_id: str,
     episode_id: str,
     branch_id: str,
-    base_episode_number: int,
+    base_episode_number: float,
     tone: str,
     custom_instructions: str | None,
 ):
@@ -56,7 +57,7 @@ async def _generate_script(
                 raise ValueError(f"Episode {episode_id} not found")
 
             context = await memory_service.build_context_for_generation(
-                db, episode.project_id, branch_id, base_episode_number
+                db, episode.project_id, branch_id, Decimal(str(base_episode_number))
             )
 
             if run:
@@ -70,7 +71,7 @@ async def _generate_script(
                 rag_memories=[],
                 active_pits=context["active_pits"],
                 assets=context["assets"],
-                episode_number=base_episode_number + 1,
+                episode_number=int(base_episode_number) + 1,
                 tone=tone,
                 custom_instructions=custom_instructions or "",
             )

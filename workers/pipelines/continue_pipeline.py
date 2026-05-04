@@ -10,7 +10,7 @@ def run_continue(
     self,
     episode_id: str,
     branch_id: str,
-    base_episode_number: int,
+    base_episode_number: float,
     tone: str = "main",
     custom_instructions: str | None = None,
     image_backend: str | None = None,

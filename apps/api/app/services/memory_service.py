@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -99,7 +100,7 @@ async def build_context_for_generation(
     db: AsyncSession,
     project_id: str,
     branch_id: str,
-    base_episode_number: int,
+    base_episode_number: Decimal,
 ) -> dict:
     canon = await get_canon_rules(db, project_id)
     long_summary = await get_long_summary(db, project_id)
