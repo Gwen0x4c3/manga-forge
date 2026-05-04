@@ -63,7 +63,7 @@ export default function EpisodeDetail() {
             Toast.success('Understanding task started')
             queryClient.invalidateQueries({ queryKey: ['episode', episodeId] })
         },
-        onError: () => Toast.error('Failed to start understanding'),
+        onError: () => {},
     })
 
     const renderMutation = useMutation({
@@ -72,7 +72,7 @@ export default function EpisodeDetail() {
             Toast.success('Render task started')
             queryClient.invalidateQueries({ queryKey: ['episode', episodeId] })
         },
-        onError: () => Toast.error('Failed to start rendering'),
+        onError: () => {},
     })
 
     const layoutMutation = useMutation({
@@ -81,7 +81,7 @@ export default function EpisodeDetail() {
             Toast.success('Layout task started')
             queryClient.invalidateQueries({ queryKey: ['episode', episodeId] })
         },
-        onError: () => Toast.error('Failed to start layout'),
+        onError: () => {},
     })
 
     const continueMutation = useMutation({
@@ -98,7 +98,7 @@ export default function EpisodeDetail() {
             Toast.success('Continue generation started')
             navigate(`/projects/${projectId}/episodes/${data.episode_id}/generate`)
         },
-        onError: () => Toast.error('Failed to start continue generation'),
+        onError: () => {},
     })
 
     if (episodeLoading) return <Spin size="large" />
