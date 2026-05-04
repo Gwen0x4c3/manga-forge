@@ -1,0 +1,24 @@
+[project]
+name = "mangaforge-workers"
+version = "0.1.0"
+description = "MangaForge Celery Workers"
+requires-python = ">=3.12"
+dependencies = [
+    "celery[redis]>=5.4.0",
+    "sqlalchemy>=2.0.36",
+    "aiomysql>=0.2.0",
+    "minio>=7.2.0",
+    "qdrant-client>=1.12.0",
+    "httpx>=0.28.0",
+    "pillow>=11.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.8.0",
+]
+
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"

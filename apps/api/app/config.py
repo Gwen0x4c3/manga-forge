@@ -1,0 +1,44 @@
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    MYSQL_HOST: str = "localhost"
+    MYSQL_PORT: int = 3306
+    MYSQL_USER: str = "mangaforge"
+    MYSQL_PASSWORD: str = "mangaforge"
+    MYSQL_DATABASE: str = "mangaforge"
+
+    REDIS_URL: str = "redis://localhost:6379/0"
+
+    QDRANT_URL: str = "http://localhost:6333"
+    QDRANT_COLLECTION: str = "mangaforge"
+
+    MINIO_ENDPOINT: str = "localhost:9000"
+    MINIO_ACCESS_KEY: str = "minioadmin"
+    MINIO_SECRET_KEY: str = "minioadmin"
+    MINIO_BUCKET: str = "mangaforge"
+    MINIO_SECURE: bool = False
+
+    LLM_BACKEND: str = "openai"
+    OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-4o"
+
+    COMFYUI_URL: str = "http://localhost:8188"
+
+    CELERY_BROKER_URL: str = "redis://localhost:6379/1"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
+
+    CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+
+    @property
+    def mysql_dsn(self) -> str:
+        return f"mysql+aiomysql://{self.MYSQL_USER}:{self.MYSQL_PASSWORD}@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DATABASE}"
+
+    @property
+    def mysql_sync_dsn(self) -> str:
+        return f"mysql+pymysql://{self.MYSQL_USER}:{self.MYSQL_PASSWORD}@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DATABASE}"
+
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
+
+
+settings = Settings()
