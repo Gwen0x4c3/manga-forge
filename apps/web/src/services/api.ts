@@ -1,5 +1,6 @@
 import axios from 'axios'
 import type { AxiosRequestConfig } from 'axios'
+import { Toast } from '@douyinfe/semi-ui'
 
 const instance = axios.create({
     baseURL: '/api/v1',
@@ -7,9 +8,24 @@ const instance = axios.create({
 })
 
 instance.interceptors.response.use(
-    (response) => response.data,
+    (response) => {
+        const body = response.data
+        if (body && typeof body === 'object' && 'code' in body && 'data' in body) {
+            return body.data
+        }
+        return body
+    },
     (error) => {
-        console.error('API Error:', error.response?.data || error.message)
+        const body = error?.response?.data
+        const status = error?.response?.status
+        const message = (body && typeof body === 'object' && 'message' in body)
+            ? String(body.message)
+            : (error?.message || 'Unknown error')
+
+        console.error(`API Error [${status}]:`, message)
+
+        Toast.error({ content: message, duration: 5 })
+
         return Promise.reject(error)
     }
 )

@@ -63,7 +63,7 @@ export default function GenerationStudio() {
             Toast.success('Script generation started')
             setActiveStep(1)
         },
-        onError: () => Toast.error('Failed to start script generation'),
+        onError: () => {},
     })
 
     const renderMutation = useMutation({
@@ -77,7 +77,7 @@ export default function GenerationStudio() {
             Toast.success('Render started')
             setRenderTriggered(true)
         },
-        onError: () => Toast.error('Failed to start render'),
+        onError: () => {},
     })
 
     const layoutMutation = useMutation({
@@ -88,7 +88,7 @@ export default function GenerationStudio() {
             Toast.success('Layout composition started')
             setLayoutTriggered(true)
         },
-        onError: () => Toast.error('Failed to start layout'),
+        onError: () => {},
     })
 
     const continueMutation = useMutation({
@@ -101,7 +101,7 @@ export default function GenerationStudio() {
             Toast.success('Continue generation started')
             navigate(`/projects/${projectId}/episodes/${data.episode_id}/generate`)
         },
-        onError: () => Toast.error('Failed to start continue generation'),
+        onError: () => {},
     })
 
     if (episodeLoading) return <Spin size="large" />

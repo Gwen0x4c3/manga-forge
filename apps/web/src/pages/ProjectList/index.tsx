@@ -26,7 +26,7 @@ export default function ProjectList() {
             setShowCreate(false)
             Toast.success('Project created')
         },
-        onError: () => Toast.error('Failed to create project'),
+        onError: () => {},
     })
 
     const deleteMutation = useMutation({
@@ -35,7 +35,7 @@ export default function ProjectList() {
             queryClient.invalidateQueries({ queryKey: ['projects'] })
             Toast.success('Project deleted')
         },
-        onError: () => Toast.error('Failed to delete project'),
+        onError: () => {},
     })
 
     return (

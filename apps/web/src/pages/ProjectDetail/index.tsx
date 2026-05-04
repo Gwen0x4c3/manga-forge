@@ -98,7 +98,7 @@ export default function ProjectDetail() {
             setUploadFiles([])
             Toast.success('Episode imported')
         },
-        onError: () => Toast.error('Failed to import episode'),
+        onError: () => {},
     })
 
     const continueMutation = useMutation({
@@ -123,7 +123,7 @@ export default function ProjectDetail() {
             Toast.success('Continue generation started')
             navigate(`/projects/${projectId}/episodes/${data.episode_id}/generate`)
         },
-        onError: () => Toast.error('Failed to start continue generation'),
+        onError: () => {},
     })
 
     const createPitMutation = useMutation({
@@ -134,7 +134,7 @@ export default function ProjectDetail() {
             setShowCreatePit(false)
             Toast.success('Pit created')
         },
-        onError: () => Toast.error('Failed to create pit'),
+        onError: () => {},
     })
 
     const resolvePitMutation = useMutation({
@@ -146,7 +146,7 @@ export default function ProjectDetail() {
             setResolvingPit(null)
             Toast.success('Pit resolved')
         },
-        onError: () => Toast.error('Failed to resolve pit'),
+        onError: () => {},
     })
 
     if (projectLoading) return <Spin size="large" />
@@ -318,7 +318,7 @@ export default function ProjectDetail() {
                                     theme="solid"
                                     disabled={!canonValid}
                                     onClick={() => {
-                                        memoryService.updateCanonRules(projectId!, canonRules).then(() => Toast.success('Canon rules updated')).catch(() => Toast.error('Failed to update'))
+                                        memoryService.updateCanonRules(projectId!, canonRules).then(() => Toast.success('Canon rules updated')).catch(() => {})
                                     }}
                                 >Save Canon Rules</Button>
                                 {!canonValid && <Tag color="red">Invalid JSON</Tag>}
@@ -338,7 +338,7 @@ export default function ProjectDetail() {
                                     style={{ flex: 1 }}
                                 />
                                 <Button theme="solid" onClick={() => {
-                                    memoryService.searchRag(projectId!, ragQuery).then((res) => setRagResults(res.results)).catch(() => Toast.error('Search failed'))
+                                    memoryService.searchRag(projectId!, ragQuery).then((res) => setRagResults(res.results)).catch(() => {})
                                 }}>Search</Button>
                             </div>
                             {ragResults.length > 0 && (
