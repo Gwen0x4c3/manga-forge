@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 from pydantic import BaseModel, Field
 
 
@@ -16,7 +18,7 @@ class UnderstandResponse(BaseModel):
 class ScriptGenerateRequest(BaseModel):
     episode_id: str
     branch_id: str
-    base_episode_number: int = Field(description="Generate the next episode after this number")
+    base_episode_number: Decimal = Field(description="Generate the next episode after this number")
     tone: str = Field(default="main", description="main|daily|climax|filler|pit_resolve")
     custom_instructions: str | None = Field(default=None, description="Additional user instructions")
 
@@ -79,7 +81,7 @@ class ComposedPageResponse(BaseModel):
 class ContinueFromEpisodeRequest(BaseModel):
     project_id: str
     branch_id: str
-    base_episode_number: int = Field(description="Continue from this episode number, new episode will be base_episode_number + 1")
+    base_episode_number: Decimal = Field(description="Continue from this episode number, new episode will be base_episode_number + 1")
     tone: str = Field(default="main", description="main|daily|climax|filler|pit_resolve")
     custom_instructions: str | None = Field(default=None, description="Additional user instructions")
     title: str | None = Field(default=None, description="Optional title for the new episode")
@@ -90,7 +92,7 @@ class ContinueFromEpisodeRequest(BaseModel):
 
 class ContinueFromEpisodeResponse(BaseModel):
     episode_id: str
-    episode_number: int
+    episode_number: Decimal
     task_id: str
     status: str = "queued"
 

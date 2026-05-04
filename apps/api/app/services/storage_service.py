@@ -1,5 +1,6 @@
 import io
 import uuid
+from datetime import timedelta
 
 from minio import Minio
 
@@ -34,4 +35,4 @@ def generate_object_key(prefix: str, filename: str) -> str:
 
 def get_presigned_url(bucket: str, object_key: str, expires: int = 3600) -> str:
     client = get_minio_client()
-    return client.presigned_get_object(bucket, object_key, expires=expires)
+    return client.presigned_get_object(bucket, object_key, expires=timedelta(seconds=expires))

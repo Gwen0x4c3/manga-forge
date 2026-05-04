@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Tabs, TabPane, Typography, Spin, Button, Table, Tag, Modal, Form, Select, Toast, Empty, Input, TextArea } from '@douyinfe/semi-ui'
 import type { TagColor } from '@douyinfe/semi-ui/lib/es/tag'
-import { IconPlus, IconForward } from '@douyinfe/semi-icons'
+import { IconPlus, IconForward, IconDelete } from '@douyinfe/semi-icons'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { projectService, branchService, episodeService, memoryService, generationService, pitService } from '@/services/project'
 import type { Episode, Pit } from '@/services/project'
@@ -25,10 +25,18 @@ const PIT_STATUS_COLORS: Record<string, TagColor> = {
     abandoned: 'grey',
 }
 
+const CATEGORY_LABELS: Record<string, { text: string; color: TagColor }> = {
+    regular: { text: '正篇', color: 'blue' },
+    special: { text: '番外', color: 'orange' },
+    extra: { text: '加笔', color: 'purple' },
+}
+
 interface ImportFormValues {
     branch_id: string
     number: number
+    label?: string
     title?: string
+    category?: string
 }
 
 export default function ProjectDetail() {
@@ -84,11 +92,13 @@ export default function ProjectDetail() {
     const mainBranch = branches?.find((b) => b.name === 'main')
 
     const importMutation = useMutation({
-        mutationFn: async (data: { branch_id: string; number: number; title?: string; files: File[] }) => {
+        mutationFn: async (data: { branch_id: string; number: number; label?: string; title?: string; category?: string; files: File[] }) => {
             const formData = new FormData()
             formData.append('branch_id', data.branch_id)
             formData.append('number', String(data.number))
+            if (data.label) formData.append('label', data.label)
             if (data.title) formData.append('title', data.title)
+            if (data.category) formData.append('category', data.category)
             data.files.forEach((f) => formData.append('files', f))
             return episodeService.importFiles(projectId!, formData)
         },
@@ -149,18 +159,37 @@ export default function ProjectDetail() {
         onError: () => {},
     })
 
+    const deleteEpisodeMutation = useMutation({
+        mutationFn: (episodeId: string) => episodeService.delete(episodeId),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['episodes', projectId] })
+            Toast.success('Episode deleted')
+        },
+        onError: () => {},
+    })
+
     if (projectLoading) return <Spin size="large" />
     if (!project) return <Empty description="Project not found" />
 
     const episodeColumns = [
-        { title: '#', dataIndex: 'number', key: 'number', width: 60 },
+        { title: '#', dataIndex: 'label', key: 'label', width: 80 },
         { title: 'Title', dataIndex: 'title', key: 'title', render: (text: string) => text || '-' },
+        {
+            title: 'Category',
+            dataIndex: 'category',
+            key: 'category',
+            width: 80,
+            render: (text: string) => {
+                const cat = CATEGORY_LABELS[text]
+                return cat ? <Tag color={cat.color}>{cat.text}</Tag> : <Tag>{text}</Tag>
+            },
+        },
         { title: 'Source', dataIndex: 'source', key: 'source', render: (text: string) => <Tag>{text}</Tag> },
         {
             title: 'Status',
             dataIndex: 'status',
             key: 'status',
-            render: (text: string) => <Tag color={STATUS_COLORS[text] || 'default'}>{text}</Tag>,
+            render: (text: string) => <Tag color={STATUS_COLORS[text] || 'default' as TagColor}>{text}</Tag>,
         },
         {
             title: 'Updated',
@@ -172,9 +201,24 @@ export default function ProjectDetail() {
             title: 'Actions',
             key: 'actions',
             render: (_: unknown, record: Episode) => (
-                <Button size="small" onClick={() => navigate(`/projects/${projectId}/episodes/${record.id}`)}>
-                    View
-                </Button>
+                <div className="flex gap-1">
+                    <Button size="small" onClick={() => navigate(`/projects/${projectId}/episodes/${record.id}`)}>
+                        View
+                    </Button>
+                    <Button
+                        size="small"
+                        type="danger"
+                        icon={<IconDelete />}
+                        loading={deleteEpisodeMutation.isPending}
+                        onClick={() => {
+                            Modal.confirm({
+                                title: 'Delete Episode',
+                                content: `Are you sure you want to delete "${record.label} - ${record.title || record.status}"? This action cannot be undone.`,
+                                onOk: () => deleteEpisodeMutation.mutate(record.id),
+                            })
+                        }}
+                    />
+                </div>
             ),
         },
     ]
@@ -187,7 +231,7 @@ export default function ProjectDetail() {
             dataIndex: 'status',
             key: 'status',
             width: 100,
-            render: (text: string) => <Tag color={PIT_STATUS_COLORS[text] || 'default'}>{text}</Tag>,
+            render: (text: string) => <Tag color={PIT_STATUS_COLORS[text] || ('default' as TagColor)}>{text}</Tag>,
         },
         {
             title: 'Introduced Episode',
@@ -379,7 +423,9 @@ export default function ProjectDetail() {
                         importMutation.mutate({
                             branch_id: formValues.branch_id || mainBranch?.id || '',
                             number: formValues.number,
+                            label: formValues.label || String(formValues.number),
                             title: formValues.title,
+                            category: formValues.category,
                             files: uploadFiles,
                         })
                     }}
@@ -390,7 +436,13 @@ export default function ProjectDetail() {
                             <Select.Option key={b.id} value={b.id}>{b.name}</Select.Option>
                         ))}
                     </Form.Select>
-                    <Form.InputNumber field="number" label="Episode Number" min={1} rules={[{ required: true }]} />
+                    <Form.InputNumber field="number" label="Sort Order" min={0.01} step={0.5} rules={[{ required: true }]} />
+                    <Form.Input field="label" label="Episode Number (e.g. 36, 36.5, 番外1)" />
+                    <Form.Select field="category" label="Category" style={{ width: '100%' }} initValue="regular">
+                        <Select.Option value="regular">正篇</Select.Option>
+                        <Select.Option value="special">番外</Select.Option>
+                        <Select.Option value="extra">加笔</Select.Option>
+                    </Form.Select>
                     <Form.Input field="title" label="Title (optional)" />
                     <div className="mb-4">
                         <label className="block text-sm font-medium mb-1">Images</label>
@@ -432,7 +484,7 @@ export default function ProjectDetail() {
                         >
                             {(episodesData?.items || []).map((e: Episode) => (
                                 <Select.Option key={e.id} value={e.id}>
-                                    Episode {e.number} - {e.title || e.status}
+                                    {e.label} - {e.title || e.status}
                                 </Select.Option>
                             ))}
                         </Select>
@@ -546,7 +598,7 @@ export default function ProjectDetail() {
                     <Form.Select field="introduced_episode_id" label="Introduced Episode" style={{ width: '100%' }} rules={[{ required: true }]}>
                         {(episodesData?.items || []).map((e: Episode) => (
                             <Select.Option key={e.id} value={e.id}>
-                                Episode {e.number} - {e.title || e.status}
+                                {e.label} - {e.title || e.status}
                             </Select.Option>
                         ))}
                     </Form.Select>
@@ -580,7 +632,7 @@ export default function ProjectDetail() {
                         <Form.Select field="resolved_episode_id" label="Resolved Episode" style={{ width: '100%' }} rules={[{ required: true }]}>
                             {(episodesData?.items || []).map((e: Episode) => (
                                 <Select.Option key={e.id} value={e.id}>
-                                    Episode {e.number} - {e.title || e.status}
+                                    {e.label} - {e.title || e.status}
                                 </Select.Option>
                             ))}
                         </Form.Select>

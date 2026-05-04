@@ -38,9 +38,11 @@ export interface Episode {
     project_id: string
     branch_id: string
     number: number
+    label: string
     title?: string
     source: string
     status: string
+    category: string
     parent_episode_id?: string
     created_at: string
     updated_at: string
@@ -59,8 +61,10 @@ export interface EpisodePage {
 export interface ImportEpisodeRequest {
     branch_id: string
     number: number
+    label?: string
     title?: string
     source?: string
+    category?: string
 }
 
 export const projectService = {
@@ -79,11 +83,12 @@ export const branchService = {
 
 export const episodeService = {
     list: (projectId: string, branchId?: string) => api.get<{ items: Episode[]; total: number }>(`/projects/${projectId}/episodes`, { params: { branch_id: branchId } }),
-    get: (episodeId: string) => api.get<Episode>(`/episodes/${episodeId}`),
+    get: (episodeId: string) => api.get<Episode>(`/projects/episodes/${episodeId}`),
     import: (projectId: string, data: ImportEpisodeRequest) => api.post<Episode>(`/projects/${projectId}/episodes/import`, data),
     importFiles: (projectId: string, formData: FormData) => api.post<Episode>(`/projects/${projectId}/episodes/import-files`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
-    getPages: (episodeId: string) => api.get<EpisodePage[]>(`/episodes/${episodeId}/pages`),
-    getMemories: (episodeId: string) => api.get<EpisodeMemory[]>(`/episodes/${episodeId}/memories`),
+    delete: (episodeId: string) => api.delete(`/projects/episodes/${episodeId}`),
+    getPages: (episodeId: string) => api.get<EpisodePage[]>(`/projects/episodes/${episodeId}/pages`),
+    getMemories: (episodeId: string) => api.get<EpisodeMemory[]>(`/projects/episodes/${episodeId}/memories`),
 }
 
 export const storageService = {

@@ -19,6 +19,12 @@ const STATUS_COLORS: Record<string, TagColor> = {
     generating: 'violet',
 }
 
+const CATEGORY_LABELS: Record<string, { text: string; color: TagColor }> = {
+    regular: { text: '正篇', color: 'blue' },
+    special: { text: '番外', color: 'orange' },
+    extra: { text: '加笔', color: 'purple' },
+}
+
 export default function EpisodeDetail() {
     const { projectId, episodeId } = useParams<{ projectId: string; episodeId: string }>()
     const navigate = useNavigate()
@@ -114,8 +120,8 @@ export default function EpisodeDetail() {
         <div>
             <div className="mb-6 flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                    <Title heading={3}>Episode {episode.number}</Title>
-                    <Tag color={STATUS_COLORS[episode.status] || 'default'}>{episode.status}</Tag>
+                    <Title heading={3}>{episode.label}</Title>
+                    <Tag color={STATUS_COLORS[episode.status] || ('default' as TagColor)}>{episode.status}</Tag>
                     {episode.title && <Paragraph>{episode.title}</Paragraph>}
                 </div>
                 <div className="flex gap-2">
@@ -197,11 +203,13 @@ export default function EpisodeDetail() {
                         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                             {pages.map((page) => (
                                 <div key={page.id} className="border rounded p-2">
-                                    <Image
-                                        src={`/api/v1/storage/mangaforge/${page.image_path}`}
-                                        alt={`Page ${page.page_index + 1}`}
-                                        className="w-full"
-                                    />
+                                    <div className="w-full h-80 overflow-hidden flex items-center justify-center bg-gray-50">
+                                        <img
+                                            src={`/api/v1/storage/mangaforge/${page.image_path}`}
+                                            alt={`Page ${page.page_index + 1}`}
+                                            className="max-w-full max-h-full object-contain"
+                                        />
+                                    </div>
                                     <div className="text-center text-sm text-gray-500 mt-1">
                                         Page {page.page_index + 1}
                                     </div>
@@ -343,13 +351,15 @@ export default function EpisodeDetail() {
                     )}
                     {!imagesLoading && generatedImages?.items && generatedImages.items.length > 0 && (
                         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                            {generatedImages.items.map((img) => (
+                            {generatedImages?.items && generatedImages.items.map((img) => (
                                 <div key={img.id} className="border rounded p-2">
-                                    <Image
-                                        src={`/api/v1/storage/mangaforge/${img.image_path}`}
-                                        alt={img.panel_id || ''}
-                                        className="w-full"
-                                    />
+                                    <div className="w-full h-80 overflow-hidden flex items-center justify-center bg-gray-50">
+                                        <img
+                                            src={`/api/v1/storage/mangaforge/${img.image_path}`}
+                                            alt={img.panel_id || ''}
+                                            className="max-w-full max-h-full object-contain"
+                                        />
+                                    </div>
                                     <div className="text-center text-sm text-gray-500 mt-1">
                                         {img.panel_id || 'Unknown'}
                                     </div>
@@ -372,11 +382,13 @@ export default function EpisodeDetail() {
                                         <span className="font-medium">Page {page.page_number}</span>
                                         <Tag>{page.layout}</Tag>
                                     </div>
-                                    <Image
-                                        src={`/api/v1/storage/mangaforge/${page.image_path}`}
-                                        alt={`Page ${page.page_number}`}
-                                        className="w-full max-w-2xl"
-                                    />
+                                    <div className="w-full max-w-2xl h-96 overflow-hidden flex items-center justify-center bg-gray-50">
+                                        <img
+                                            src={`/api/v1/storage/mangaforge/${page.image_path}`}
+                                            alt={`Page ${page.page_number}`}
+                                            className="max-w-full max-h-full object-contain"
+                                        />
+                                    </div>
                                 </div>
                             ))}
                         </div>

@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,7 +59,7 @@ async def search_rag(
 async def get_generation_context(
     project_id: str,
     branch_id: str = Query(...),
-    base_episode_number: int = Query(...),
+    base_episode_number: Decimal = Query(...),
     db: AsyncSession = Depends(get_db),
 ):
     context = await memory_service.build_context_for_generation(

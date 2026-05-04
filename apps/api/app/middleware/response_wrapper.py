@@ -49,7 +49,18 @@ class ResponseWrapperMiddleware(BaseHTTPMiddleware):
         else:
             message = ""
             if isinstance(original, dict):
-                message = original.get("detail", original.get("message", str(original)))
+                raw = original.get("detail", original.get("message", str(original)))
+                if isinstance(raw, list):
+                    parts = []
+                    for item in raw:
+                        if isinstance(item, dict):
+                            loc = ".".join(str(x) for x in item.get("loc", []))
+                            parts.append(f"{loc}: {item.get('msg', str(item))}")
+                        else:
+                            parts.append(str(item))
+                    message = "; ".join(parts)
+                else:
+                    message = str(raw)
             else:
                 message = str(original)
             wrapped = {
