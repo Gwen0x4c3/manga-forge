@@ -83,6 +83,7 @@ export const episodeService = {
     import: (projectId: string, data: ImportEpisodeRequest) => api.post<Episode>(`/projects/${projectId}/episodes/import`, data),
     importFiles: (projectId: string, formData: FormData) => api.post<Episode>(`/projects/${projectId}/episodes/import-files`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
     getPages: (episodeId: string) => api.get<EpisodePage[]>(`/episodes/${episodeId}/pages`),
+    getMemories: (episodeId: string) => api.get<EpisodeMemory[]>(`/episodes/${episodeId}/memories`),
 }
 
 export const storageService = {
@@ -94,4 +95,61 @@ export const storageService = {
         if (prefix) formData.append('prefix', prefix)
         return api.post<{ object_key: string; bucket: string }>('/storage/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } })
     },
+}
+
+export interface EpisodeMemory {
+    id: string
+    episode_id: string
+    type: string
+    content: Record<string, unknown>
+    created_at: string
+}
+
+export interface GenerationRun {
+    id: string
+    episode_id: string
+    stage: string
+    status: string
+    error?: string | null
+    created_at?: string | null
+    finished_at?: string | null
+}
+
+export interface Storyboard {
+    title: string
+    synopsis: string
+    tone: string
+    pages: StoryboardPage[]
+}
+
+export interface StoryboardPage {
+    page_number: number
+    layout: string
+    panels: StoryboardPanel[]
+}
+
+export interface StoryboardPanel {
+    panel_id: string
+    scene: string
+    characters: { name: string; outfit?: string; emotion?: string; posture?: string }[]
+    camera: string
+    mood?: string
+    dialogue: { speaker: string; text: string; type: string }[]
+    prompt: string
+    negative_prompt?: string
+}
+
+export const memoryService = {
+    getCanonRules: (projectId: string) => api.get<{ canon_rules: Record<string, unknown> | null }>(`/projects/${projectId}/memory/canon`),
+    updateCanonRules: (projectId: string, canonRules: Record<string, unknown>) => api.put<{ canon_rules: Record<string, unknown> }>(`/projects/${projectId}/memory/canon`, canonRules),
+    getLongSummary: (projectId: string) => api.get<{ long_summary: string | null }>(`/projects/${projectId}/memory/summary`),
+    getRecentWindow: (projectId: string, branchId: string, windowSize?: number) => api.get<{ episodes: Array<{ episode_id: string; number: number; title?: string; summary: Record<string, unknown> | null }> }>(`/projects/${projectId}/memory/recent`, { params: { branch_id: branchId, window_size: windowSize } }),
+    searchRag: (projectId: string, query: string, topK?: number) => api.post<{ results: Array<{ id: string; score: number; payload: Record<string, unknown> }>; query: string }>(`/projects/${projectId}/memory/search`, null, { params: { query, top_k: topK } }),
+}
+
+export const generationService = {
+    triggerUnderstand: (episodeId: string) => api.post<{ task_id: string; episode_id: string; status: string }>('/generation/understand', { episode_id: episodeId }),
+    triggerScriptGeneration: (data: { episode_id: string; branch_id: string; base_episode_number: number; tone?: string; custom_instructions?: string }) => api.post<{ task_id: string; episode_id: string; status: string }>('/generation/script', data),
+    getRun: (runId: string) => api.get<GenerationRun>(`/generation/runs/${runId}`),
+    listEpisodeRuns: (episodeId: string) => api.get<{ items: GenerationRun[] }>(`/generation/episodes/${episodeId}/runs`),
 }

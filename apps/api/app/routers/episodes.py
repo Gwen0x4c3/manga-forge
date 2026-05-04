@@ -95,5 +95,15 @@ async def trigger_understand(episode_id: str, db: AsyncSession = Depends(get_db)
     episode = await episode_service.get_episode(db, episode_id)
     if not episode:
         raise HTTPException(status_code=404, detail="Episode not found")
-    # TODO: Dispatch Celery task
-    return {"task_id": "pending", "episode_id": episode_id}
+    from app.services import generation_service
+    run = await generation_service.create_generation_run(
+        db, episode_id=episode.id, stage="understand", backend="openai"
+    )
+    task_id = None
+    try:
+        from workers.tasks.understand import summarize_episode
+        task = summarize_episode.delay(str(run.id), episode.id)
+        task_id = task.id
+    except Exception:
+        task_id = str(run.id)
+    return {"task_id": task_id, "run_id": str(run.id), "episode_id": episode_id}

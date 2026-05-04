@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Tabs, TabPane, Typography, Spin, Button, Table, Tag, Modal, Form, Select, Toast, Empty } from '@douyinfe/semi-ui'
+import { Tabs, TabPane, Typography, Spin, Button, Table, Tag, Modal, Form, Select, Toast, Empty, Input, TextArea } from '@douyinfe/semi-ui'
 import type { TagColor } from '@douyinfe/semi-ui/lib/es/tag'
 import { IconPlus } from '@douyinfe/semi-icons'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { projectService, branchService, episodeService } from '@/services/project'
+import { projectService, branchService, episodeService, memoryService } from '@/services/project'
 import type { Episode } from '@/services/project'
 
 const { Title, Paragraph } = Typography
@@ -30,6 +30,10 @@ export default function ProjectDetail() {
     const [showImport, setShowImport] = useState(false)
     const [selectedBranch, setSelectedBranch] = useState<string | undefined>()
     const [uploadFiles, setUploadFiles] = useState<File[]>([])
+    const [canonRules, setCanonRules] = useState<Record<string, unknown>>({})
+    const [canonValid, setCanonValid] = useState(true)
+    const [ragQuery, setRagQuery] = useState('')
+    const [ragResults, setRagResults] = useState<Array<{ score: number; payload: Record<string, unknown> }>>([])
 
     const { data: project, isLoading: projectLoading } = useQuery({
         queryKey: ['project', projectId],
@@ -156,7 +160,57 @@ export default function ProjectDetail() {
                 </TabPane>
 
                 <TabPane tab="Memory" itemKey="memory">
-                    <Empty description="Memory system coming in M1" />
+                    <div className="space-y-4">
+                        <div>
+                            <Title heading={5}>Canon Rules (Hard Settings)</Title>
+                            <TextArea
+                                value={JSON.stringify(canonRules, null, 2)}
+                                onChange={(val: string) => {
+                                    try { setCanonRules(JSON.parse(val)); setCanonValid(true) } catch { setCanonValid(false) }
+                                }}
+                                rows={8}
+                                placeholder="Enter canon rules as JSON..."
+                            />
+                            <div className="mt-2 flex items-center gap-2">
+                                <Button
+                                    theme="solid"
+                                    disabled={!canonValid}
+                                    onClick={() => {
+                                        memoryService.updateCanonRules(projectId!, canonRules).then(() => Toast.success('Canon rules updated')).catch(() => Toast.error('Failed to update'))
+                                    }}
+                                >Save Canon Rules</Button>
+                                {!canonValid && <Tag color="red">Invalid JSON</Tag>}
+                            </div>
+                        </div>
+                        <div>
+                            <Title heading={5}>Long Summary</Title>
+                            <Paragraph>{project?.long_summary || 'No long summary yet. Understanding episodes will build this automatically.'}</Paragraph>
+                        </div>
+                        <div>
+                            <Title heading={5}>RAG Search</Title>
+                            <div className="flex gap-2">
+                                <Input
+                                    value={ragQuery}
+                                    onChange={setRagQuery}
+                                    placeholder="Search memories..."
+                                    style={{ flex: 1 }}
+                                />
+                                <Button theme="solid" onClick={() => {
+                                    memoryService.searchRag(projectId!, ragQuery).then((res) => setRagResults(res.results)).catch(() => Toast.error('Search failed'))
+                                }}>Search</Button>
+                            </div>
+                            {ragResults.length > 0 && (
+                                <div className="mt-2 space-y-2">
+                                    {ragResults.map((r, i) => (
+                                        <div key={i} className="border rounded p-2">
+                                            <Tag size="small">Score: {r.score?.toFixed(3)}</Tag>
+                                            <span className="ml-2 text-sm">{String(r.payload?.content || '')}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    </div>
                 </TabPane>
 
                 <TabPane tab="Branches" itemKey="branches">
