@@ -1,4 +1,4 @@
-.PHONY: help dev infra up down migrate api web worker install
+.PHONY: help dev infra up down migrate api web worker install lint
 
 help:           ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -23,7 +23,11 @@ web:            ## Start React dev server
 worker:         ## Start Celery worker
 	cd workers && celery -A celery_app worker --loglevel=info
 
-install:        ## Install all dependencies
-	cd apps/api && pip install -e ".[dev]"
+install:        ## Install all dependencies (uv + npm)
+	uv venv
+	uv pip install -e "apps/api[dev]" -e "workers[dev]"
 	cd apps/web && npm install
-	cd packages/core && pip install -e .
+
+lint:           ## Run linters (ruff + tsc)
+	ruff check apps/api/app/ workers/
+	cd apps/web && npx tsc --noEmit
