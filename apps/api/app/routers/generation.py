@@ -1,12 +1,20 @@
+from __future__ import annotations
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_db
 from app.models.episode import Episode
+from app.models.episode_memory import EpisodeMemory
 from app.models.generation_run import GenerationRun
 from app.schemas.generation import (
+    GeneratedImageResponse,
     GenerationRunResponse,
+    LayoutRequest,
+    LayoutResponse,
+    RenderRequest,
+    RenderResponse,
     ScriptGenerateRequest,
     ScriptGenerateResponse,
     UnderstandRequest,
@@ -81,6 +89,8 @@ async def get_generation_run(run_id: str, db: AsyncSession = Depends(get_db)):
         episode_id=run.episode_id,
         stage=run.stage,
         status=run.status,
+        backend=run.backend,
+        model=run.model,
         error=run.error,
         created_at=run.created_at.isoformat() if run.created_at else None,
         finished_at=run.finished_at.isoformat() if run.finished_at else None,
@@ -96,7 +106,107 @@ async def list_episode_runs(episode_id: str, db: AsyncSession = Depends(get_db))
         episode_id=r.episode_id,
         stage=r.stage,
         status=r.status,
+        backend=r.backend,
+        model=r.model,
         error=r.error,
         created_at=r.created_at.isoformat() if r.created_at else None,
         finished_at=r.finished_at.isoformat() if r.finished_at else None,
     ) for r in runs]}
+
+
+@router.post("/render", response_model=RenderResponse)
+async def trigger_render(request: RenderRequest, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Episode).where(Episode.id == request.episode_id))
+    episode = result.scalar_one_or_none()
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    storyboard_memory_id = request.storyboard_memory_id
+    if storyboard_memory_id:
+        mem_result = await db.execute(
+            select(EpisodeMemory).where(EpisodeMemory.id == storyboard_memory_id)
+        )
+        memory = mem_result.scalar_one_or_none()
+        if not memory or memory.type != "storyboard_json":
+            raise HTTPException(status_code=400, detail="Invalid storyboard memory ID")
+
+    run = await generation_service.create_generation_run(
+        db,
+        episode_id=episode.id,
+        stage="render",
+        backend=request.image_backend or "openai",
+        model=request.image_model,
+        params={"image_size": request.image_size},
+    )
+
+    try:
+        from workers.tasks.render import render_episode
+        task = render_episode.delay(
+            str(run.id),
+            episode.id,
+            request.image_backend,
+            request.image_model,
+            request.image_size,
+        )
+    except Exception:
+        task = None
+
+    return RenderResponse(
+        task_id=task.id if task else str(run.id),
+        episode_id=episode.id,
+        status="queued",
+        panel_count=0,
+    )
+
+
+@router.post("/layout", response_model=LayoutResponse)
+async def trigger_layout(request: LayoutRequest, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Episode).where(Episode.id == request.episode_id))
+    episode = result.scalar_one_or_none()
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    run = await generation_service.create_generation_run(
+        db,
+        episode_id=episode.id,
+        stage="layout",
+    )
+
+    try:
+        from workers.tasks.layout import layout_episode
+        task = layout_episode.delay(
+            str(run.id),
+            episode.id,
+            request.template_override,
+        )
+    except Exception:
+        task = None
+
+    return LayoutResponse(
+        task_id=task.id if task else str(run.id),
+        episode_id=episode.id,
+        status="queued",
+        page_count=0,
+    )
+
+
+@router.get("/episodes/{episode_id}/images")
+async def list_generated_images(episode_id: str, db: AsyncSession = Depends(get_db)):
+    images = await generation_service.get_generated_images(db, episode_id)
+    return {"items": [GeneratedImageResponse(
+        id=img.id,
+        generation_run_id=img.generation_run_id,
+        episode_id=img.episode_id,
+        panel_id=img.panel_id,
+        image_path=img.image_path,
+        meta=img.meta,
+        created_at=img.created_at.isoformat() if img.created_at else None,
+    ) for img in images]}
+
+
+@router.get("/episodes/{episode_id}/layout")
+async def get_episode_layout(episode_id: str, db: AsyncSession = Depends(get_db)):
+    layout = await generation_service.get_layout_result(db, episode_id)
+    if not layout:
+        raise HTTPException(status_code=404, detail="No layout result found")
+    return {"pages": layout.content.get("pages", [])}

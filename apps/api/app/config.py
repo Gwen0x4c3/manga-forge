@@ -26,7 +26,11 @@ class Settings(BaseSettings):
     OPENAI_BASE_URL: str | None = None
     QDRANT_API_KEY: str = ""
 
-    COMFYUI_URL: str = "http://localhost:8188"
+    IMAGE_BACKEND: str = "openai"
+    IMAGE_MODEL: str = "gpt-image-2"
+    IMAGE_API_KEY: str = ""
+    IMAGE_API_URL: str = ""
+    IMAGE_DEFAULT_SIZE: str = "1024x1024"
 
     CELERY_BROKER_URL: str = "redis://localhost:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"

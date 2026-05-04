@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.episode import Episode
 from app.models.episode_memory import EpisodeMemory
+from app.models.generated_image import GeneratedImage
 from app.models.generation_run import GenerationRun
 from app.models.project import Project
 
@@ -143,3 +144,48 @@ async def update_project_long_summary(
     await db.commit()
     await db.refresh(project)
     return project.long_summary
+
+
+async def save_generated_image(
+    db: AsyncSession,
+    generation_run_id: str,
+    episode_id: str,
+    panel_id: str | None,
+    image_path: str,
+    meta: dict | None = None,
+) -> GeneratedImage:
+    image = GeneratedImage(
+        id=str(uuid.uuid4()),
+        generation_run_id=generation_run_id,
+        episode_id=episode_id,
+        panel_id=panel_id,
+        image_path=image_path,
+        meta=meta,
+    )
+    db.add(image)
+    await db.commit()
+    await db.refresh(image)
+    return image
+
+
+async def get_generated_images(
+    db: AsyncSession,
+    episode_id: str,
+) -> list[GeneratedImage]:
+    result = await db.execute(
+        select(GeneratedImage).where(GeneratedImage.episode_id == episode_id)
+    )
+    return list(result.scalars().all())
+
+
+async def get_layout_result(
+    db: AsyncSession,
+    episode_id: str,
+) -> EpisodeMemory | None:
+    result = await db.execute(
+        select(EpisodeMemory).where(
+            EpisodeMemory.episode_id == episode_id,
+            EpisodeMemory.type == "layout_result",
+        ).order_by(EpisodeMemory.created_at.desc())
+    )
+    return result.scalar_one_or_none()
