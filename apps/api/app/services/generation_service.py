@@ -42,6 +42,17 @@ async def create_generation_run(
     return run
 
 
+async def has_active_run(db: AsyncSession, episode_id: str, stage: str) -> bool:
+    result = await db.execute(
+        select(GenerationRun).where(
+            GenerationRun.episode_id == episode_id,
+            GenerationRun.stage == stage,
+            GenerationRun.status.in_(["queued", "running"]),
+        )
+    )
+    return result.scalar_one_or_none() is not None
+
+
 async def update_generation_run(
     db: AsyncSession,
     run_id: str,

@@ -5,7 +5,7 @@ import type { TagColor } from '@douyinfe/semi-ui/lib/es/tag'
 import { IconBolt, IconForward } from '@douyinfe/semi-icons'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { episodeService, generationService } from '@/services/project'
-import type { EpisodeMemory } from '@/services/project'
+import type { EpisodeMemory, GenerationRun } from '@/services/project'
 
 const { Title, Paragraph } = Typography
 
@@ -23,6 +23,36 @@ const CATEGORY_LABELS: Record<string, { text: string; color: TagColor }> = {
     regular: { text: '正篇', color: 'blue' },
     special: { text: '番外', color: 'orange' },
     extra: { text: '加笔', color: 'purple' },
+}
+
+const RUN_STAGE_LABELS: Record<string, string> = {
+    understand: '剧情理解',
+    script: '分镜生成',
+    render: '图片生成',
+    layout: '排版导出',
+    writeback: '结果回写',
+    continue: '继续生成',
+}
+
+const RUN_STATUS_LABELS: Record<string, string> = {
+    queued: '排队中',
+    running: '运行中',
+    succeeded: '成功',
+    failed: '失败',
+}
+
+function formatRunError(error?: string | null): string {
+    if (!error) return ''
+    if (error.includes('OPENAI_API_KEY') || error.includes('LLM 未配置')) {
+        return '大模型未配置。请在 `.env` 中填写有效的 `OPENAI_API_KEY`，然后重启 API 和 worker。'
+    }
+    if (error.includes('OPENAI_BASE_URL')) {
+        return '大模型网关地址配置错误。请检查 `.env` 里的 `OPENAI_BASE_URL`。'
+    }
+    if (error.includes('Connection error')) {
+        return '无法连接到大模型服务。请检查 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 和服务器出网连接。'
+    }
+    return error
 }
 
 export default function EpisodeDetail() {
@@ -54,13 +84,24 @@ export default function EpisodeDetail() {
     const { data: generatedImages, isLoading: imagesLoading } = useQuery({
         queryKey: ['generated-images', episodeId],
         queryFn: () => generationService.getGeneratedImages(episodeId!),
-        enabled: !!episodeId,
+        enabled: !!episodeId && ['scripted', 'rendered', 'published'].includes(episode?.status || ''),
     })
 
     const { data: layoutResult, isLoading: layoutLoading } = useQuery({
         queryKey: ['layout-result', episodeId],
         queryFn: () => generationService.getLayoutResult(episodeId!),
+        enabled: !!episodeId && (episode?.status === 'rendered' || episode?.status === 'published'),
+    })
+
+    const { data: runsData, isLoading: runsLoading } = useQuery({
+        queryKey: ['generation-runs', episodeId],
+        queryFn: () => generationService.listEpisodeRuns(episodeId!),
         enabled: !!episodeId,
+        refetchInterval: (query) => {
+            const items = query.state.data?.items || []
+            const hasActive = items.some((r: GenerationRun) => r.status === 'queued' || r.status === 'running')
+            return hasActive ? 3000 : false
+        },
     })
 
     const understandMutation = useMutation({
@@ -68,6 +109,7 @@ export default function EpisodeDetail() {
         onSuccess: () => {
             Toast.success('Understanding task started')
             queryClient.invalidateQueries({ queryKey: ['episode', episodeId] })
+            queryClient.invalidateQueries({ queryKey: ['generation-runs', episodeId] })
         },
         onError: () => {},
     })
@@ -77,6 +119,7 @@ export default function EpisodeDetail() {
         onSuccess: () => {
             Toast.success('Render task started')
             queryClient.invalidateQueries({ queryKey: ['episode', episodeId] })
+            queryClient.invalidateQueries({ queryKey: ['generation-runs', episodeId] })
         },
         onError: () => {},
     })
@@ -86,6 +129,7 @@ export default function EpisodeDetail() {
         onSuccess: () => {
             Toast.success('Layout task started')
             queryClient.invalidateQueries({ queryKey: ['episode', episodeId] })
+            queryClient.invalidateQueries({ queryKey: ['generation-runs', episodeId] })
         },
         onError: () => {},
     })
@@ -110,6 +154,10 @@ export default function EpisodeDetail() {
     if (episodeLoading) return <Spin size="large" />
     if (!episode) return <Empty description="Episode not found" />
 
+    const activeRuns = (runsData?.items || []).filter((r: GenerationRun) => r.status === 'queued' || r.status === 'running')
+    const activeStages = new Set(activeRuns.map((r: GenerationRun) => r.stage))
+    const latestRun = runsData?.items?.[0]
+
     const summaryMemory = memories?.find((m: EpisodeMemory) => m.type === 'summary')
     const eventsMemory = memories?.find((m: EpisodeMemory) => m.type === 'events')
     const stateMemory = memories?.find((m: EpisodeMemory) => m.type === 'state_snapshot')
@@ -129,16 +177,18 @@ export default function EpisodeDetail() {
                         <Button
                             icon={<IconBolt />}
                             theme="solid"
-                            loading={understandMutation.isPending}
+                            loading={understandMutation.isPending || activeStages.has('understand')}
+                            disabled={activeStages.has('understand')}
                             onClick={() => understandMutation.mutate()}
                         >
-                            Understand
+                            {activeStages.has('understand') ? 'Understanding...' : 'Understand'}
                         </Button>
                     )}
                     {(episode.status === 'understood' || episode.status === 'scripted') && (
                         <Button
                             icon={<IconBolt />}
                             theme="solid"
+                            disabled={activeStages.has('script')}
                             onClick={() => navigate(`/projects/${projectId}/episodes/${episodeId}/generate`)}
                         >
                             Generate Script
@@ -148,29 +198,22 @@ export default function EpisodeDetail() {
                         <Button
                             icon={<IconBolt />}
                             theme="solid"
-                            loading={renderMutation.isPending}
+                            loading={renderMutation.isPending || activeStages.has('render')}
+                            disabled={activeStages.has('render')}
                             onClick={() => renderMutation.mutate()}
                         >
-                            Render Images
+                            {activeStages.has('render') ? 'Rendering...' : 'Render Images'}
                         </Button>
                     )}
                     {episode.status === 'rendered' && (
                         <Button
                             icon={<IconBolt />}
                             theme="solid"
-                            disabled
-                        >
-                            Render Images
-                        </Button>
-                    )}
-                    {episode.status === 'rendered' && (
-                        <Button
-                            icon={<IconBolt />}
-                            theme="solid"
-                            loading={layoutMutation.isPending}
+                            loading={layoutMutation.isPending || activeStages.has('layout')}
+                            disabled={activeStages.has('layout')}
                             onClick={() => layoutMutation.mutate()}
                         >
-                            Layout & Export
+                            {activeStages.has('layout') ? 'Composing...' : 'Layout & Export'}
                         </Button>
                     )}
                     {episode.status === 'published' && (
@@ -192,6 +235,15 @@ export default function EpisodeDetail() {
                     )}
                 </div>
             </div>
+
+            {latestRun?.status === 'failed' && (
+                <div className="mb-4 rounded border border-red-200 bg-red-50 p-4">
+                    <div className="font-medium text-red-700">
+                        最近一次失败环节：{RUN_STAGE_LABELS[latestRun.stage] || latestRun.stage}
+                    </div>
+                    <div className="mt-1 text-sm text-red-600">{formatRunError(latestRun.error)}</div>
+                </div>
+            )}
 
             <Tabs>
                 <TabPane tab="Pages" itemKey="pages">
@@ -389,6 +441,50 @@ export default function EpisodeDetail() {
                                             className="max-w-full max-h-full object-contain"
                                         />
                                     </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </TabPane>
+
+                <TabPane tab="Task Logs" itemKey="runs">
+                    {runsLoading && <Spin />}
+                    {!runsLoading && (!runsData?.items || runsData.items.length === 0) && (
+                        <Empty description="No generation tasks yet" />
+                    )}
+                    {!runsLoading && runsData?.items && runsData.items.length > 0 && (
+                        <div className="space-y-3">
+                            {runsData.items.map((run: GenerationRun) => (
+                                <div key={run.id} className="border rounded p-4">
+                                    <div className="flex items-center gap-3 mb-2">
+                                        <Tag color={
+                                            run.status === 'succeeded' ? 'green' :
+                                                run.status === 'failed' ? 'red' :
+                                                    run.status === 'running' ? 'blue' :
+                                                        'orange'
+                                        }>
+                                            {RUN_STATUS_LABELS[run.status] || run.status}
+                                        </Tag>
+                                        <Tag>{RUN_STAGE_LABELS[run.stage] || run.stage}</Tag>
+                                        {run.backend && <span className="text-sm text-gray-500">{run.backend}</span>}
+                                        {run.model && <span className="text-sm text-gray-500">· {run.model}</span>}
+                                        <span className="text-xs text-gray-400 ml-auto">
+                                            {run.created_at ? new Date(run.created_at).toLocaleString() : ''}
+                                        </span>
+                                    </div>
+                                    <div className="text-sm text-gray-600">
+                                        环节：{RUN_STAGE_LABELS[run.stage] || run.stage} · 状态：{RUN_STATUS_LABELS[run.status] || run.status}
+                                    </div>
+                                    {run.error && (
+                                        <div className="bg-red-50 border border-red-200 rounded p-2 text-sm text-red-700 mt-2">
+                                            {formatRunError(run.error)}
+                                        </div>
+                                    )}
+                                    {run.finished_at && (
+                                        <div className="text-xs text-gray-400 mt-1">
+                                            Finished: {new Date(run.finished_at).toLocaleString()}
+                                        </div>
+                                    )}
                                 </div>
                             ))}
                         </div>

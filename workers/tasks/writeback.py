@@ -144,5 +144,4 @@ async def _writeback_episode(self, episode_id: str, project_id: str):
             run.status = "failed"
             run.error = str(e)
             await db.commit()
-            self.update_state(state="FAILURE", meta={"error": str(e)})
             raise

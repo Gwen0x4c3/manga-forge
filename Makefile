@@ -23,7 +23,7 @@ web:            ## Start React dev server
 	cd apps/web && npm run dev
 
 worker:         ## Start Celery worker
-	cd workers && $(VENV)celery -A celery_app worker --loglevel=info
+	$(VENV)celery -A workers.celery_app worker --loglevel=info -Q celery,understand,render,script,layout,ocr
 
 install:        ## Install all dependencies (uv + npm)
 	uv venv --python 3.12

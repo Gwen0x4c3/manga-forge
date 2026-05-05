@@ -104,5 +104,4 @@ async def _generate_script(
                 run.status = "failed"
                 run.error = str(e)
                 await db.commit()
-            self.update_state(state="FAILURE", meta={"error": str(e)})
             raise
