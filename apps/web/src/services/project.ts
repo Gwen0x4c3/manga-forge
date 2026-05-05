@@ -250,7 +250,10 @@ export interface GenerationRun {
     episode_id: string
     stage: string
     status: string
+    backend?: string | null
+    model?: string | null
     error?: string | null
+    commit_message?: string | null
     created_at?: string | null
     finished_at?: string | null
 }

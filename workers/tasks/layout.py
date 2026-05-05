@@ -158,5 +158,4 @@ async def _layout_episode(self, run_id: str, episode_id: str, template_override:
                 run.status = "failed"
                 run.error = str(e)
                 await db.commit()
-            self.update_state(state="FAILURE", meta={"error": str(e)})
             raise

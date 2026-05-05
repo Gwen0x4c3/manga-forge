@@ -25,14 +25,12 @@ celery_app.conf.update(
     task_track_started=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
-    task_routes={
-        "workers.tasks.render.*": {"queue": "render"},
-        "workers.tasks.understand.*": {"queue": "understand"},
-        "workers.tasks.script_gen.*": {"queue": "script"},
-        "workers.tasks.layout.*": {"queue": "layout"},
-        "workers.tasks.ocr.*": {"queue": "ocr"},
-        "workers.tasks.writeback.*": {"queue": "understand"},
-    },
 )
 
-celery_app.autodiscover_tasks(["workers.tasks"])
+import workers.tasks.understand  # noqa: E402, F401
+import workers.tasks.script_gen  # noqa: E402, F401
+import workers.tasks.render  # noqa: E402, F401
+import workers.tasks.layout  # noqa: E402, F401
+import workers.tasks.writeback  # noqa: E402, F401
+import workers.tasks.ocr  # noqa: E402, F401
+import workers.pipelines.continue_pipeline  # noqa: E402, F401
