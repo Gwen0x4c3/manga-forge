@@ -32,7 +32,7 @@ def _build_asset_text(asset: Asset) -> str:
 
 
 async def list_assets(
-    db: AsyncSession, project_id: str, asset_type: str | None = None, page: int = 1, page_size: int = 20
+    db: AsyncSession, project_id: str, asset_type: str | None = None, page: int = 1, page_size: int = 50
 ):
     query = select(Asset).where(Asset.project_id == project_id)
     count_query = select(func.count()).select_from(Asset).where(Asset.project_id == project_id)

@@ -12,6 +12,7 @@ from app.database import Base
 
 if TYPE_CHECKING:
     from app.models.branch import Branch
+    from app.models.episode_external_ref import EpisodeExternalRef
     from app.models.episode_memory import EpisodeMemory
     from app.models.episode_page import EpisodePage
     from app.models.generation_run import GenerationRun
@@ -43,5 +44,8 @@ class Episode(Base):
     panels: Mapped[list["Panel"]] = relationship(back_populates="episode", cascade="all, delete-orphan")
     memories: Mapped[list["EpisodeMemory"]] = relationship(back_populates="episode", cascade="all, delete-orphan")
     generation_runs: Mapped[list["GenerationRun"]] = relationship(
+        back_populates="episode", cascade="all, delete-orphan"
+    )
+    external_refs: Mapped[list["EpisodeExternalRef"]] = relationship(
         back_populates="episode", cascade="all, delete-orphan"
     )

@@ -5,7 +5,7 @@ from app.models.pit import Pit
 from app.schemas.pit import PitCreate, PitUpdate
 
 
-async def list_pits(db: AsyncSession, project_id: str, status: str | None = None, page: int = 1, page_size: int = 20):
+async def list_pits(db: AsyncSession, project_id: str, status: str | None = None, page: int = 1, page_size: int = 50):
     query = select(Pit).where(Pit.project_id == project_id)
     count_query = select(func.count()).select_from(Pit).where(Pit.project_id == project_id)
     if status:

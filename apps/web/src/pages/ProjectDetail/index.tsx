@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Tabs, TabPane, Typography, Spin, Button, Table, Tag, Modal, Form, Select, Toast, Empty, Input, TextArea, Descriptions, Checkbox, RadioGroup } from '@douyinfe/semi-ui'
 import type { TagColor } from '@douyinfe/semi-ui/lib/es/tag'
-import { IconPlus, IconForward, IconDelete, IconCopy, IconRefresh, IconSearch } from '@douyinfe/semi-icons'
+import { IconPlus, IconForward, IconDelete, IconCopy, IconRefresh, IconSearch, IconLink } from '@douyinfe/semi-icons'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { projectService, branchService, episodeService, memoryService, generationService, pitService, assetService } from '@/services/project'
 import type { Episode, Pit, Branch, DiffResponse, MergeItem, Asset, AssetClusterResponse, AssetClusterItem } from '@/services/project'
@@ -100,6 +100,13 @@ export default function ProjectDetail() {
     const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([])
     const [showAssetMerge, setShowAssetMerge] = useState(false)
 
+    const [episodePage, setEpisodePage] = useState(1)
+    const [episodePageSize, setEpisodePageSize] = useState(50)
+    const [assetPage, setAssetPage] = useState(1)
+    const [assetPageSize, setAssetPageSize] = useState(50)
+    const [pitPage, setPitPage] = useState(1)
+    const [pitPageSize, setPitPageSize] = useState(50)
+
     const { data: project, isLoading: projectLoading } = useQuery({
         queryKey: ['project', projectId],
         queryFn: () => projectService.get(projectId!),
@@ -113,20 +120,20 @@ export default function ProjectDetail() {
     })
 
     const { data: episodesData, isLoading: episodesLoading } = useQuery({
-        queryKey: ['episodes', projectId, selectedBranch],
-        queryFn: () => episodeService.list(projectId!, selectedBranch),
+        queryKey: ['episodes', projectId, selectedBranch, episodePage, episodePageSize],
+        queryFn: () => episodeService.list(projectId!, selectedBranch, { page: episodePage, page_size: episodePageSize }),
         enabled: !!projectId,
     })
 
     const { data: pitsData, isLoading: pitsLoading } = useQuery({
-        queryKey: ['pits', projectId, pitStatusFilter],
-        queryFn: () => pitService.list(projectId!, pitStatusFilter),
+        queryKey: ['pits', projectId, pitStatusFilter, pitPage, pitPageSize],
+        queryFn: () => pitService.list(projectId!, pitStatusFilter, { page: pitPage, page_size: pitPageSize }),
         enabled: !!projectId,
     })
 
     const { data: assetsData, isLoading: assetsLoading } = useQuery({
-        queryKey: ['assets', projectId, assetTypeFilter],
-        queryFn: () => assetService.list(projectId!, assetTypeFilter),
+        queryKey: ['assets', projectId, assetTypeFilter, assetPage, assetPageSize],
+        queryFn: () => assetService.list(projectId!, assetTypeFilter, { page: assetPage, page_size: assetPageSize }),
         enabled: !!projectId,
     })
 
@@ -628,7 +635,7 @@ export default function ProjectDetail() {
                             { title: 'Target Title', dataIndex: 'title_target', key: 'title_target', render: (t: string | null) => t || '-' },
                         ]}
                         dataSource={diff.episodes}
-                        rowKey={(r: { number: number }) => String(r.number)}
+                        rowKey={(r?: { number: number }) => String(r?.number ?? '')}
                         pagination={false}
                         size="small"
                     />
@@ -665,7 +672,7 @@ export default function ProjectDetail() {
                             { title: 'Target Desc', dataIndex: 'description_target', key: 'description_target', render: (t: string | null) => t || '-' },
                         ]}
                         dataSource={diff.assets}
-                        rowKey={(r: { name: string; asset_type: string }) => `${r.name}-${r.asset_type}`}
+                        rowKey={(r?: { name: string; asset_type: string }) => `${r?.name ?? ''}-${r?.asset_type ?? ''}`}
                         pagination={false}
                         size="small"
                     />
@@ -693,7 +700,7 @@ export default function ProjectDetail() {
                             },
                         ]}
                         dataSource={diff.pits}
-                        rowKey={(r: { title: string }) => r.title}
+                        rowKey={(r?: { title: string }) => r?.title ?? ''}
                         pagination={false}
                         size="small"
                     />
@@ -734,7 +741,7 @@ export default function ProjectDetail() {
                             <select
                                 className="border rounded px-2 py-1 text-sm"
                                 value={selectedBranch || ''}
-                                onChange={(e) => setSelectedBranch(e.target.value || undefined)}
+                                onChange={(e) => { setSelectedBranch(e.target.value || undefined); setEpisodePage(1) }}
                             >
                                 <option value="">All</option>
                                 {branches?.map((b) => (
@@ -743,6 +750,9 @@ export default function ProjectDetail() {
                             </select>
                         </div>
                         <div className="flex gap-2">
+                            <Button icon={<IconLink />} onClick={() => navigate(`/projects/${projectId}/imports/mangadex`)}>
+                                MangaDex 导入
+                            </Button>
                             <Button icon={<IconForward />} onClick={() => setShowContinue(true)}>
                                 Continue from Episode
                             </Button>
@@ -757,7 +767,16 @@ export default function ProjectDetail() {
                         dataSource={episodesData?.items || []}
                         loading={episodesLoading}
                         rowKey="id"
-                        pagination={{ pageSize: 20 }}
+                        pagination={{
+                            currentPage: episodePage,
+                            pageSize: episodePageSize,
+                            total: episodesData?.total || 0,
+                            showTotal: true,
+                            onChange: (currentPage: number, pageSize: number) => {
+                                setEpisodePage(currentPage)
+                                setEpisodePageSize(pageSize)
+                            },
+                        }}
                     />
                 </TabPane>
 
@@ -767,7 +786,7 @@ export default function ProjectDetail() {
                             <span>Type:</span>
                             <Select
                                 value={assetTypeFilter}
-                                onChange={(v: string | string[] | undefined) => setAssetTypeFilter(v ? String(v) : undefined)}
+                                onChange={(v: string | string[] | undefined) => { setAssetTypeFilter(v ? String(v) : undefined); setAssetPage(1) }}
                                 style={{ width: 140 }}
                                 placeholder="All Types"
                             >
@@ -800,8 +819,8 @@ export default function ProjectDetail() {
                                 render: (_: unknown, record: Asset) => (
                                     <Checkbox
                                         checked={selectedAssetIds.includes(record.id)}
-                                        onChange={(e: { target: { checked: boolean } }) => {
-                                            if (e.target.checked) {
+                                        onChange={(e) => {
+                                            if (Boolean(e.target.checked)) {
                                                 setSelectedAssetIds([...selectedAssetIds, record.id])
                                             } else {
                                                 setSelectedAssetIds(selectedAssetIds.filter((id) => id !== record.id))
@@ -815,7 +834,16 @@ export default function ProjectDetail() {
                         dataSource={assetsData?.items || []}
                         loading={assetsLoading}
                         rowKey="id"
-                        pagination={{ pageSize: 20 }}
+                        pagination={{
+                            currentPage: assetPage,
+                            pageSize: assetPageSize,
+                            total: assetsData?.total || 0,
+                            showTotal: true,
+                            onChange: (currentPage: number, pageSize: number) => {
+                                setAssetPage(currentPage)
+                                setAssetPageSize(pageSize)
+                            },
+                        }}
                     />
                 </TabPane>
 
@@ -825,7 +853,7 @@ export default function ProjectDetail() {
                             <span>Status:</span>
                             <Select
                                 value={pitStatusFilter}
-                                onChange={(v: string | string[] | undefined) => setPitStatusFilter(v ? String(v) : undefined)}
+                                onChange={(v: string | string[] | undefined) => { setPitStatusFilter(v ? String(v) : undefined); setPitPage(1) }}
                                 style={{ width: 120 }}
                             >
                                 <Select.Option value="">All</Select.Option>
@@ -843,7 +871,16 @@ export default function ProjectDetail() {
                         dataSource={pitsData?.items || []}
                         loading={pitsLoading}
                         rowKey="id"
-                        pagination={{ pageSize: 20 }}
+                        pagination={{
+                            currentPage: pitPage,
+                            pageSize: pitPageSize,
+                            total: pitsData?.total || 0,
+                            showTotal: true,
+                            onChange: (currentPage: number, pageSize: number) => {
+                                setPitPage(currentPage)
+                                setPitPageSize(pageSize)
+                            },
+                        }}
                     />
                 </TabPane>
 
@@ -920,7 +957,7 @@ export default function ProjectDetail() {
                         columns={branchColumns}
                         dataSource={branches || []}
                         rowKey="id"
-                        pagination={{ pageSize: 20 }}
+                        pagination={{ pageSize: 50, showTotal: true }}
                     />
                 </TabPane>
             </Tabs>
@@ -1305,24 +1342,25 @@ export default function ProjectDetail() {
                                             dataIndex: 'action',
                                             key: 'action',
                                             width: 160,
-                                            render: (action: string, record: MergeItem, index: number) => (
+                                            render: (action: string, _record: MergeItem, index: number) => (
                                                 <RadioGroup
                                                     value={action}
-                                                    onChange={(e: { target: { value: string } }) => {
+                                                    options={[
+                                                        { label: 'Adopt', value: 'adopt' },
+                                                        { label: 'Skip', value: 'skip' },
+                                                    ]}
+                                                    onChange={(e) => {
                                                         const newItems = [...mergeItems]
-                                                        newItems[index] = { ...newItems[index], action: e.target.value as 'adopt' | 'skip' }
+                                                        newItems[index] = { ...newItems[index], action: String(e.target.value) as 'adopt' | 'skip' }
                                                         setMergeItems(newItems)
                                                     }}
                                                     type="button"
-                                                >
-                                                    <RadioGroup.Option value="adopt">Adopt</RadioGroup.Option>
-                                                    <RadioGroup.Option value="skip">Skip</RadioGroup.Option>
-                                                </RadioGroup>
+                                                />
                                             ),
                                         },
                                     ]}
                                     dataSource={mergeItems}
-                                    rowKey={(r: MergeItem, i: number) => `${r.item_type}-${r.source_id}-${i}`}
+                                    rowKey={(r?: MergeItem) => `${r?.item_type ?? ''}-${r?.source_id ?? ''}`}
                                     pagination={false}
                                     size="small"
                                 />

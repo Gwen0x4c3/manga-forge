@@ -19,7 +19,7 @@ async def list_assets(
     project_id: str,
     type: str | None = None,
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page_size: int = Query(50, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ):
     items, total = await asset_service.list_assets(db, project_id, asset_type=type, page=page, page_size=page_size)

@@ -33,4 +33,5 @@ import workers.tasks.render  # noqa: E402, F401
 import workers.tasks.layout  # noqa: E402, F401
 import workers.tasks.writeback  # noqa: E402, F401
 import workers.tasks.ocr  # noqa: E402, F401
+import workers.tasks.mangadex  # noqa: E402, F401
 import workers.pipelines.continue_pipeline  # noqa: E402, F401

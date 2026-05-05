@@ -5,7 +5,7 @@ from app.models.project import Project
 from app.schemas.project import ProjectCreate, ProjectUpdate
 
 
-async def list_projects(db: AsyncSession, keyword: str | None = None, page: int = 1, page_size: int = 20):
+async def list_projects(db: AsyncSession, keyword: str | None = None, page: int = 1, page_size: int = 50):
     query = select(Project)
     count_query = select(func.count()).select_from(Project)
     if keyword:
