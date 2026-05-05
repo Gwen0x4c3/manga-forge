@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Button, Card, Empty, Typography, Spin, Modal, Form, Input, Select, Toast, Popconfirm } from '@douyinfe/semi-ui'
+import { Button, Card, Empty, Typography, Spin, Modal, Form, Input, Select, Toast, Popconfirm, Pagination } from '@douyinfe/semi-ui'
 import { IconPlus, IconDelete } from '@douyinfe/semi-icons'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { projectService } from '@/services/project'
@@ -13,10 +13,12 @@ export default function ProjectList() {
     const queryClient = useQueryClient()
     const [showCreate, setShowCreate] = useState(false)
     const [keyword, setKeyword] = useState('')
+    const [page, setPage] = useState(1)
+    const [pageSize, setPageSize] = useState(20)
 
     const { data, isLoading } = useQuery({
-        queryKey: ['projects', keyword],
-        queryFn: () => projectService.list(keyword || undefined),
+        queryKey: ['projects', keyword, page, pageSize],
+        queryFn: () => projectService.list(keyword || undefined, { page, page_size: pageSize }),
     })
 
     const createMutation = useMutation({
@@ -46,7 +48,7 @@ export default function ProjectList() {
                     <Input
                         placeholder="Search projects..."
                         value={keyword}
-                        onChange={setKeyword}
+                        onChange={(v: string) => { setKeyword(v); setPage(1) }}
                         style={{ width: 240 }}
                     />
                     <Button icon={<IconPlus />} theme="solid" onClick={() => setShowCreate(true)}>
@@ -62,44 +64,60 @@ export default function ProjectList() {
             )}
 
             {!isLoading && data?.items && data.items.length > 0 && (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {data.items.map((project) => (
-                        <div
-                            key={project.id}
-                            className="relative group cursor-pointer"
-                            onClick={() => navigate(`/projects/${project.id}`)}
-                        >
-                            <Card className="hover:shadow-lg transition-shadow">
-                                <Title heading={5}>{project.title}</Title>
-                                <Paragraph ellipsis={{ rows: 2 }}>{project.description || 'No description'}</Paragraph>
-                                <div className="flex justify-between items-center mt-2">
-                                    <span className="text-xs text-gray-500">
-                                        {project.language.toUpperCase()}
-                                    </span>
-                                    <span className="text-xs text-gray-500">
-                                        {new Date(project.updated_at).toLocaleDateString()}
-                                    </span>
+                <>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {data.items.map((project) => (
+                            <div
+                                key={project.id}
+                                className="relative group cursor-pointer"
+                                onClick={() => navigate(`/projects/${project.id}`)}
+                            >
+                                <Card className="hover:shadow-lg transition-shadow">
+                                    <Title heading={5}>{project.title}</Title>
+                                    <Paragraph ellipsis={{ rows: 2 }}>{project.description || 'No description'}</Paragraph>
+                                    <div className="flex justify-between items-center mt-2">
+                                        <span className="text-xs text-gray-500">
+                                            {project.language.toUpperCase()}
+                                        </span>
+                                        <span className="text-xs text-gray-500">
+                                            {new Date(project.updated_at).toLocaleDateString()}
+                                        </span>
+                                    </div>
+                                </Card>
+                                <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <Popconfirm
+                                        title="Delete this project?"
+                                        onConfirm={(e) => {
+                                            e?.stopPropagation()
+                                            deleteMutation.mutate(project.id)
+                                        }}
+                                    >
+                                        <Button
+                                            icon={<IconDelete />}
+                                            type="danger"
+                                            size="small"
+                                            onClick={(e) => e.stopPropagation()}
+                                        />
+                                    </Popconfirm>
                                 </div>
-                            </Card>
-                            <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <Popconfirm
-                                    title="Delete this project?"
-                                    onConfirm={(e) => {
-                                        e?.stopPropagation()
-                                        deleteMutation.mutate(project.id)
-                                    }}
-                                >
-                                    <Button
-                                        icon={<IconDelete />}
-                                        type="danger"
-                                        size="small"
-                                        onClick={(e) => e.stopPropagation()}
-                                    />
-                                </Popconfirm>
                             </div>
+                        ))}
+                    </div>
+                    {(data.total || 0) > pageSize && (
+                        <div className="flex justify-center mt-6">
+                            <Pagination
+                                currentPage={page}
+                                pageSize={pageSize}
+                                total={data.total || 0}
+                                showTotal
+                                onChange={(currentPage: number, pageSize: number) => {
+                                    setPage(currentPage)
+                                    setPageSize(pageSize)
+                                }}
+                            />
                         </div>
-                    ))}
-                </div>
+                    )}
+                </>
             )}
 
             <Modal

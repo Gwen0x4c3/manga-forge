@@ -13,7 +13,9 @@ if TYPE_CHECKING:
     from app.models.asset import Asset
     from app.models.branch import Branch
     from app.models.episode import Episode
+    from app.models.import_job import ImportJob
     from app.models.pit import Pit
+    from app.models.source_binding import SourceBinding
 
 
 class Project(Base):
@@ -34,3 +36,7 @@ class Project(Base):
     episodes: Mapped[list["Episode"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     assets: Mapped[list["Asset"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     pits: Mapped[list["Pit"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    source_bindings: Mapped[list["SourceBinding"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    import_jobs: Mapped[list["ImportJob"]] = relationship(back_populates="project", cascade="all, delete-orphan")

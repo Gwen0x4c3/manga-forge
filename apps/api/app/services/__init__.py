@@ -3,6 +3,7 @@ from app.services import (
     branch_service,
     episode_service,
     generation_service,
+    import_service,
     memory_service,
     pit_service,
     project_service,
@@ -18,4 +19,5 @@ __all__ = [
     "storage_service",
     "memory_service",
     "generation_service",
+    "import_service",
 ]

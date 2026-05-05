@@ -6,6 +6,7 @@ import ProjectList from '@/pages/ProjectList'
 import ProjectDetail from '@/pages/ProjectDetail'
 import EpisodeDetail from '@/pages/EpisodeDetail'
 import GenerationStudio from '@/pages/GenerationStudio'
+import MangaDexImportPage from '@/pages/MangaDexImport'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -25,6 +26,7 @@ export default function App() {
             <Route path="/" element={<HomePage />} />
             <Route path="/projects" element={<ProjectList />} />
             <Route path="/projects/:id" element={<ProjectDetail />} />
+            <Route path="/projects/:projectId/imports/mangadex" element={<MangaDexImportPage />} />
             <Route path="/projects/:projectId/episodes/:episodeId" element={<EpisodeDetail />} />
             <Route path="/projects/:projectId/episodes/:episodeId/generate" element={<GenerationStudio />} />
           </Route>

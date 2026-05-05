@@ -10,7 +10,7 @@ from app.schemas.episode import EpisodeImport, EpisodeUpdate
 
 
 async def list_episodes(
-    db: AsyncSession, project_id: str, branch_id: str | None = None, page: int = 1, page_size: int = 20
+    db: AsyncSession, project_id: str, branch_id: str | None = None, page: int = 1, page_size: int = 50
 ):
     query = select(Episode).where(Episode.project_id == project_id)
     count_query = select(func.count()).select_from(Episode).where(Episode.project_id == project_id)

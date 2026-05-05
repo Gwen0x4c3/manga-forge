@@ -1,5 +1,10 @@
 import api from './api'
 
+export interface PaginatedParams {
+    page?: number
+    page_size?: number
+}
+
 export interface Project {
     id: string
     title: string
@@ -153,6 +158,73 @@ export interface Episode {
     updated_at: string
 }
 
+export interface ImportJob {
+    id: string
+    project_id: string
+    branch_id: string
+    binding_id?: string | null
+    provider: string
+    job_type: string
+    status: string
+    source_url?: string | null
+    external_series_id?: string | null
+    config?: Record<string, unknown> | null
+    metadata_json?: Record<string, unknown> | null
+    progress?: Record<string, unknown> | null
+    error?: string | null
+    started_at?: string | null
+    finished_at?: string | null
+    created_at: string
+    updated_at: string
+}
+
+export interface ImportJobItem {
+    id: string
+    external_chapter_id: string
+    chapter_number: string
+    sort_number: number
+    volume?: string | null
+    title?: string | null
+    translated_language: string
+    group_ids?: string[] | null
+    group_names?: string[] | null
+    page_count?: number | null
+    selection_status: string
+    import_status: string
+    episode_id?: string | null
+    external_url?: string | null
+    progress?: Record<string, unknown> | null
+    metadata_json?: Record<string, unknown> | null
+    error?: string | null
+    created_at: string
+    updated_at: string
+}
+
+export interface MangaDexDiscoverPayload {
+    source_url: string
+    branch_id: string
+    request_curl?: string
+    languages?: string[]
+    group_ids?: string[]
+    fill_project_metadata?: boolean
+    overwrite_project_metadata?: boolean
+}
+
+export interface MangaDexCreateProjectPayload {
+    source_url: string
+    request_curl?: string
+    languages?: string[]
+    group_ids?: string[]
+    fill_project_metadata?: boolean
+    overwrite_project_metadata?: boolean
+}
+
+export interface MangaDexDiscoverResult {
+    project: Project
+    job: ImportJob
+    items: ImportJobItem[]
+}
+
 export interface EpisodePage {
     id: string
     episode_id: string
@@ -173,11 +245,36 @@ export interface ImportEpisodeRequest {
 }
 
 export const projectService = {
-    list: (keyword?: string) => api.get<{ items: Project[]; total: number }>('/projects', { params: { keyword } }),
+    list: (keyword?: string, pagination?: PaginatedParams) => api.get<{ items: Project[]; total: number }>('/projects', { params: { keyword, ...pagination } }),
     get: (id: string) => api.get<Project>(`/projects/${id}`),
     create: (data: CreateProjectRequest) => api.post<Project>('/projects', data),
     update: (id: string, data: UpdateProjectRequest) => api.put<Project>(`/projects/${id}`, data),
     delete: (id: string) => api.delete(`/projects/${id}`),
+}
+
+export const importService = {
+    createProjectFromMangaDex: (data: MangaDexCreateProjectPayload) =>
+        api.post<MangaDexDiscoverResult>('/imports/mangadex/projects/discover', data, { timeout: 180000 }),
+    discoverForProject: (projectId: string, data: MangaDexDiscoverPayload) =>
+        api.post<MangaDexDiscoverResult>(`/imports/projects/${projectId}/mangadex/discover`, data, { timeout: 180000 }),
+    listJobs: (projectId: string) =>
+        api.get<{ items: ImportJob[]; total: number }>(`/imports/projects/${projectId}/jobs`),
+    getJob: (projectId: string, jobId: string) =>
+        api.get<ImportJob>(`/imports/projects/${projectId}/jobs/${jobId}`),
+    listItems: (projectId: string, jobId: string) =>
+        api.get<ImportJobItem[]>(`/imports/projects/${projectId}/jobs/${jobId}/items`),
+    updateSelection: (projectId: string, jobId: string, data: { item_ids: string[]; action: 'select' | 'unselect' }) =>
+        api.patch<MangaDexDiscoverResult>(`/imports/projects/${projectId}/jobs/${jobId}/selection`, data),
+    startJob: (
+        projectId: string,
+        jobId: string,
+        data: { auto_understand?: boolean; only_missing?: boolean; use_data_saver?: boolean; request_curl?: string },
+    ) =>
+        api.post<{ job: ImportJob; task_id: string }>(`/imports/projects/${projectId}/jobs/${jobId}/start`, data),
+    resumeJob: (projectId: string, jobId: string, data?: { request_curl?: string }) =>
+        api.post<{ job: ImportJob; task_id: string }>(`/imports/projects/${projectId}/jobs/${jobId}/resume`, data),
+    pauseJob: (projectId: string, jobId: string) =>
+        api.post<ImportJob>(`/imports/projects/${projectId}/jobs/${jobId}/pause`),
 }
 
 export const branchService = {
@@ -191,7 +288,7 @@ export const branchService = {
 }
 
 export const episodeService = {
-    list: (projectId: string, branchId?: string) => api.get<{ items: Episode[]; total: number }>(`/projects/${projectId}/episodes`, { params: { branch_id: branchId } }),
+    list: (projectId: string, branchId?: string, pagination?: PaginatedParams) => api.get<{ items: Episode[]; total: number }>(`/projects/${projectId}/episodes`, { params: { branch_id: branchId, ...pagination } }),
     get: (episodeId: string) => api.get<Episode>(`/projects/episodes/${episodeId}`),
     import: (projectId: string, data: ImportEpisodeRequest) => api.post<Episode>(`/projects/${projectId}/episodes/import`, data),
     importFiles: (projectId: string, formData: FormData) => api.post<Episode>(`/projects/${projectId}/episodes/import-files`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
@@ -212,7 +309,7 @@ export const storageService = {
 }
 
 export const assetService = {
-    list: (projectId: string, type?: string) => api.get<{ items: Asset[]; total: number }>(`/projects/${projectId}/assets`, { params: { type } }),
+    list: (projectId: string, type?: string, pagination?: PaginatedParams) => api.get<{ items: Asset[]; total: number }>(`/projects/${projectId}/assets`, { params: { type, ...pagination } }),
     get: (assetId: string) => api.get<Asset>(`/projects/assets/${assetId}`),
     create: (projectId: string, data: AssetCreateRequest) => api.post<Asset>(`/projects/${projectId}/assets`, data),
     update: (assetId: string, data: AssetUpdateRequest) => api.put<Asset>(`/projects/assets/${assetId}`, data),
@@ -329,7 +426,7 @@ export const generationService = {
 }
 
 export const pitService = {
-    list: (projectId: string, status?: string) => api.get<{ items: Pit[]; total: number }>(`/projects/${projectId}/pits`, { params: { status } }),
+    list: (projectId: string, status?: string, pagination?: PaginatedParams) => api.get<{ items: Pit[]; total: number }>(`/projects/${projectId}/pits`, { params: { status, ...pagination } }),
     create: (projectId: string, data: { title: string; description?: string; priority?: number; introduced_episode_id: string; trigger_hint?: string }) => api.post<Pit>(`/projects/${projectId}/pits`, data),
     update: (pitId: string, data: { title?: string; description?: string; priority?: number; status?: string; trigger_hint?: string }) => api.put<Pit>(`/pits/${pitId}`, data),
     resolve: (pitId: string, resolvedEpisodeId: string) => api.post<Pit>(`/pits/${pitId}/resolve`, null, { params: { resolved_episode_id: resolvedEpisodeId } }),

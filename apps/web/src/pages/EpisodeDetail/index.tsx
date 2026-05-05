@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Typography, Spin, Empty, Tag, Image, Tabs, TabPane, Button, Descriptions, Collapse, Toast, Modal, Select, TextArea } from '@douyinfe/semi-ui'
+import { Typography, Spin, Empty, Tag, Tabs, TabPane, Button, Descriptions, Collapse, Toast, Modal, Select, TextArea } from '@douyinfe/semi-ui'
 import type { TagColor } from '@douyinfe/semi-ui/lib/es/tag'
 import { IconBolt, IconForward } from '@douyinfe/semi-icons'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -17,12 +17,6 @@ const STATUS_COLORS: Record<string, TagColor> = {
     published: 'purple',
     draft: 'grey',
     generating: 'violet',
-}
-
-const CATEGORY_LABELS: Record<string, { text: string; color: TagColor }> = {
-    regular: { text: '正篇', color: 'blue' },
-    special: { text: '番外', color: 'orange' },
-    extra: { text: '加笔', color: 'purple' },
 }
 
 const RUN_STAGE_LABELS: Record<string, string> = {
@@ -381,7 +375,7 @@ export default function EpisodeDetail() {
                     )}
                     {!memoriesLoading && writebackMemories.length > 0 && (
                         <div className="max-w-4xl space-y-4">
-                            {writebackMemories.map((wb, i) => (
+                            {writebackMemories.map((wb) => (
                                 <div key={wb.id} className="border rounded p-4">
                                     <div className="flex items-center gap-2 mb-2">
                                         <Tag color="violet">Writeback</Tag>
