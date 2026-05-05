@@ -22,7 +22,7 @@ async def create_project(db: AsyncSession, data: ProjectCreate) -> Project:
     db.add(project)
     await db.flush()
     from app.models.branch import Branch
-    branch = Branch(project_id=project.id, name="main")
+    branch = Branch(project_id=project.id, name="main", is_default=True)
     db.add(branch)
     await db.commit()
     await db.refresh(project)

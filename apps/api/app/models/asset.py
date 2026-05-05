@@ -29,6 +29,10 @@ class Asset(Base):
     parent_asset_id: Mapped[str | None] = mapped_column(
         CHAR(36), nullable=True, comment="Outfit belongs to character"
     )
+    embedding: Mapped[list | None] = mapped_column(JSON, nullable=True, comment="Embedding vector for clustering")
+    episode_ids: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True, comment="Episode IDs where this asset appears, for cross-episode tracking"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(6), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(6), nullable=False, server_default=func.now(), onupdate=func.now()

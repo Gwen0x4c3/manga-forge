@@ -47,6 +47,7 @@ async def update_generation_run(
     run_id: str,
     status: str,
     error: str | None = None,
+    commit_message: str | None = None,
 ) -> GenerationRun | None:
     result = await db.execute(select(GenerationRun).where(GenerationRun.id == run_id))
     run = result.scalar_one_or_none()
@@ -54,6 +55,8 @@ async def update_generation_run(
         return None
     run.status = status
     run.error = error
+    if commit_message is not None:
+        run.commit_message = commit_message
     if status in ("succeeded", "failed"):
         run.finished_at = datetime.now()
     await db.commit()
@@ -199,20 +202,73 @@ async def auto_discover_assets(
     episode_id: str,
     new_assets: list[dict],
 ) -> list[Asset]:
+    from app.core.llm import get_embeddings
+
     assets = []
+    existing_result = await db.execute(
+        select(Asset).where(Asset.project_id == project_id, Asset.embedding.isnot(None))
+    )
+    existing_assets = list(existing_result.scalars().all())
+
     for asset_data in new_assets:
+        asset_name = asset_data.get("name", "")
+        asset_description = asset_data.get("description", "")
+        asset_type = asset_data.get("asset_type", "character")
+        visual_tags = asset_data.get("visual_tags", [])
+
+        text_parts = [asset_name]
+        if asset_description:
+            text_parts.append(asset_description)
+        if visual_tags:
+            text_parts.append(" ".join(str(t) for t in visual_tags))
+        new_text = " ".join(text_parts)
+
+        new_embedding = None
+        matched_asset = None
+        if new_text.strip():
+            embeddings = await get_embeddings([new_text])
+            new_embedding = embeddings[0]
+            best_sim = 0.0
+            for existing in existing_assets:
+                if existing.embedding:
+                    sim = _cosine_similarity(new_embedding, existing.embedding)
+                    if sim > best_sim:
+                        best_sim = sim
+                        matched_asset = existing
+
+            if best_sim >= 0.9 and matched_asset:
+                if matched_asset.episode_ids is None:
+                    matched_asset.episode_ids = {}
+                matched_asset.episode_ids[episode_id] = True
+                assets.append(matched_asset)
+                continue
+
         asset = Asset(
             id=str(uuid.uuid4()),
             project_id=project_id,
-            type=asset_data.get("asset_type", "character"),
-            name=asset_data.get("name", ""),
-            description=asset_data.get("description", ""),
-            tags={"visual_tags": asset_data.get("visual_tags", [])},
+            type=asset_type,
+            name=asset_name,
+            description=asset_description,
+            tags={"visual_tags": visual_tags},
+            embedding=new_embedding,
+            episode_ids={episode_id: True},
         )
         db.add(asset)
         assets.append(asset)
+        if new_embedding:
+            existing_assets.append(asset)
+
     await db.commit()
     return assets
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
 
 
 async def auto_discover_pits(

@@ -31,6 +31,7 @@ class GenerationRun(Base):
         String(50), nullable=False, default="queued", comment="queued|running|succeeded|failed"
     )
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    commit_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(6), nullable=False, server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(6), nullable=True)
 

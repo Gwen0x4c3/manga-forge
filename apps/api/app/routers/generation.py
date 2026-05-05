@@ -143,6 +143,7 @@ async def get_generation_run(run_id: str, db: AsyncSession = Depends(get_db)):
         backend=run.backend,
         model=run.model,
         error=run.error,
+        commit_message=run.commit_message,
         created_at=run.created_at.isoformat() if run.created_at else None,
         finished_at=run.finished_at.isoformat() if run.finished_at else None,
     )
@@ -160,6 +161,7 @@ async def list_episode_runs(episode_id: str, db: AsyncSession = Depends(get_db))
         backend=r.backend,
         model=r.model,
         error=r.error,
+        commit_message=r.commit_message,
         created_at=r.created_at.isoformat() if r.created_at else None,
         finished_at=r.finished_at.isoformat() if r.finished_at else None,
     ) for r in runs]}

@@ -105,6 +105,7 @@ class GenerationRunResponse(BaseModel):
     backend: str | None = None
     model: str | None = None
     error: str | None = None
+    commit_message: str | None = None
     created_at: str | None = None
     finished_at: str | None = None
 
