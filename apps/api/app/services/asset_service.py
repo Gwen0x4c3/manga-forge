@@ -76,6 +76,8 @@ async def vectorize_asset(db: AsyncSession, asset: Asset) -> None:
     if not text.strip():
         return
     embeddings = await get_embeddings([text])
+    if not embeddings:  # embedding model not configured
+        return
     asset.embedding = embeddings[0]
     await db.commit()
 

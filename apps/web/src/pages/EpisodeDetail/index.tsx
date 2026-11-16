@@ -152,11 +152,15 @@ export default function EpisodeDetail() {
     const activeStages = new Set(activeRuns.map((r: GenerationRun) => r.stage))
     const latestRun = runsData?.items?.[0]
 
-    const summaryMemory = memories?.find((m: EpisodeMemory) => m.type === 'summary')
-    const eventsMemory = memories?.find((m: EpisodeMemory) => m.type === 'events')
-    const stateMemory = memories?.find((m: EpisodeMemory) => m.type === 'state_snapshot')
+    const summaryMemories = (memories?.filter((m: EpisodeMemory) => m.type === 'summary' && (m.content as Record<string, unknown>)?.summary) || [])
+    const summaryMemory = summaryMemories[summaryMemories.length - 1]
+    const understanding = (summaryMemory?.content || {}) as Record<string, unknown>
+    const understandingEvents = (understanding.events || []) as Array<Record<string, unknown>>
+    const understandingChanges = (understanding.state_changes || []) as Array<Record<string, unknown>>
+    const understandingCharacters = (understanding.characters || []) as Array<Record<string, unknown>>
+    const ocrMemory = (memories?.filter((m: EpisodeMemory) => m.type === 'ocr_dump') || []).pop()
+    const consistencyMemory = (memories?.filter((m: EpisodeMemory) => m.type === 'consistency_report') || []).pop()
     const storyboardMemory = memories?.find((m: EpisodeMemory) => m.type === 'storyboard_json')
-    const writebackMemories = memories?.filter((m: EpisodeMemory) => m.type === 'writeback') || []
 
     return (
         <div>
@@ -281,52 +285,105 @@ export default function EpisodeDetail() {
 
                 <TabPane tab="Events" itemKey="events">
                     {memoriesLoading && <Spin />}
-                    {!memoriesLoading && !eventsMemory && (
+                    {!memoriesLoading && understandingEvents.length === 0 && (
                         <Empty description="No events extracted yet" />
                     )}
-                    {!memoriesLoading && eventsMemory && (
+                    {!memoriesLoading && understandingEvents.length > 0 && (
                         <div className="max-w-3xl space-y-2">
-                            {Array.isArray((eventsMemory.content as Record<string, unknown>)?.data)
-                                ? ((eventsMemory.content as Record<string, unknown>).data as Array<Record<string, unknown>>).map((event, i) => (
-                                    <div key={i} className="border rounded p-3">
-                                        <div className="font-medium">{String(event.description || JSON.stringify(event))}</div>
-                                        {event.characters_involved && Array.isArray(event.characters_involved) ? (
-                                            <div className="mt-1 flex gap-1">
-                                                {(event.characters_involved as string[]).map((c: string, j: number) => (
-                                                    <Tag key={j} size="small">{c}</Tag>
-                                                ))}
-                                            </div>
+                            {understandingEvents.map((event, i) => (
+                                <div key={i} className="border rounded p-3">
+                                    <div className="font-medium">{String(event.description || JSON.stringify(event))}</div>
+                                    <div className="mt-1 flex gap-1 items-center flex-wrap">
+                                        {event.significance && event.significance !== 'normal' ? (
+                                            <Tag size="small" color={event.significance === 'cliffhanger' ? 'red' : 'orange'}>
+                                                {String(event.significance)}
+                                            </Tag>
+                                        ) : null}
+                                        {Array.isArray(event.characters_involved) ? (
+                                            (event.characters_involved as string[]).map((c: string, j: number) => (
+                                                <Tag key={j} size="small">{c}</Tag>
+                                            ))
                                         ) : null}
                                     </div>
-                                ))
-                                : <pre className="text-sm bg-gray-50 p-3 rounded">{JSON.stringify(eventsMemory.content, null, 2)}</pre>
-                            }
+                                </div>
+                            ))}
                         </div>
                     )}
                 </TabPane>
 
                 <TabPane tab="State Changes" itemKey="state">
                     {memoriesLoading && <Spin />}
-                    {!memoriesLoading && !stateMemory && (
+                    {!memoriesLoading && understandingChanges.length === 0 && (
                         <Empty description="No state changes recorded yet" />
                     )}
-                    {!memoriesLoading && stateMemory && (
+                    {!memoriesLoading && understandingChanges.length > 0 && (
                         <div className="max-w-3xl space-y-2">
-                            {Array.isArray((stateMemory.content as Record<string, unknown>)?.data)
-                                ? ((stateMemory.content as Record<string, unknown>).data as Array<Record<string, unknown>>).map((change, i) => (
-                                    <div key={i} className="border rounded p-3 flex items-center gap-3">
-                                        <Tag color="blue">{String(change.character || '')}</Tag>
-                                        <span className="text-gray-500">{String(change.attribute || '')}</span>
-                                        <span>{String(change.before || '?')}</span>
-                                        <span className="text-gray-400">→</span>
-                                        <span className="font-medium">{String(change.after || '')}</span>
+                            {understandingChanges.map((change, i) => (
+                                <div key={i} className="border rounded p-3 flex items-center gap-3 flex-wrap">
+                                    <Tag color="blue">{String(change.character || '')}</Tag>
+                                    <span className="text-gray-500">{String(change.attribute || '')}</span>
+                                    <span>{String(change.before || '?')}</span>
+                                    <span className="text-gray-400">→</span>
+                                    <span className="font-medium">{String(change.after || '')}</span>
+                                    {change.reason ? <span className="text-xs text-gray-400">({String(change.reason)})</span> : null}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </TabPane>
+
+                <TabPane tab="Characters" itemKey="characters">
+                    {memoriesLoading && <Spin />}
+                    {!memoriesLoading && understandingCharacters.length === 0 && (
+                        <Empty description="No characters recognized yet. Click 'Understand' to run character recognition." />
+                    )}
+                    {!memoriesLoading && understandingCharacters.length > 0 && (
+                        <div className="max-w-3xl space-y-2">
+                            {understandingCharacters.map((c, i) => (
+                                <div key={i} className="border rounded p-3">
+                                    <div className="flex items-center gap-2">
+                                        <span className="font-medium">{String(c.name || '')}</span>
+                                        {c.role ? <Tag size="small" color="cyan">{String(c.role)}</Tag> : null}
+                                        {c.asset_id ? (
+                                            <Tag size="small" color="green">已识别 · 匹配资产</Tag>
+                                        ) : (
+                                            <Tag size="small" color="grey">新面孔</Tag>
+                                        )}
+                                    </div>
+                                    {c.appearance ? <div className="text-sm text-gray-600 mt-1">{String(c.appearance)}</div> : null}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </TabPane>
+
+                <TabPane tab="Dialogue" itemKey="dialogue">
+                    {memoriesLoading && <Spin />}
+                    {!memoriesLoading && !ocrMemory && (
+                        <Empty description="No dialogue transcribed yet" />
+                    )}
+                    {!memoriesLoading && ocrMemory && (
+                        <div className="max-w-3xl space-y-3">
+                            {Array.isArray((ocrMemory.content as Record<string, unknown>)?.pages)
+                                ? ((ocrMemory.content as Record<string, unknown>).pages as Array<Record<string, unknown>>).map((page, i) => (
+                                    <div key={i} className="border rounded p-3">
+                                        <div className="font-medium text-sm text-gray-500 mb-1">Page {String(page.page_number || i + 1)}</div>
+                                        {Array.isArray(page.lines) ? (page.lines as Array<Record<string, unknown>>).map((line, j) => (
+                                            <div key={j} className="text-sm ml-2">
+                                                <Tag size="small" color={line.line_type === 'narration' ? 'grey' : 'blue'}>
+                                                    {String(line.speaker || line.line_type || '')}
+                                                </Tag>{' '}
+                                                {String(line.text || '')}
+                                            </div>
+                                        )) : null}
                                     </div>
                                 ))
-                                : <pre className="text-sm bg-gray-50 p-3 rounded">{JSON.stringify(stateMemory.content, null, 2)}</pre>
+                                : <pre className="text-sm bg-gray-50 p-3 rounded">{String((ocrMemory.content as Record<string, unknown>)?.text || '')}</pre>
                             }
                         </div>
                     )}
                 </TabPane>
+
 
                 <TabPane tab="Storyboard" itemKey="storyboard">
                     {memoriesLoading && <Spin />}
@@ -368,26 +425,42 @@ export default function EpisodeDetail() {
                     )}
                 </TabPane>
 
-                <TabPane tab="Writeback" itemKey="writeback">
+                <TabPane tab="Consistency" itemKey="consistency">
                     {memoriesLoading && <Spin />}
-                    {!memoriesLoading && writebackMemories.length === 0 && (
-                        <Empty description="No writeback data yet. Writeback runs automatically after layout." />
+                    {!memoriesLoading && !consistencyMemory && (
+                        <Empty description="No consistency report yet. It is generated together with the script." />
                     )}
-                    {!memoriesLoading && writebackMemories.length > 0 && (
-                        <div className="max-w-4xl space-y-4">
-                            {writebackMemories.map((wb) => (
-                                <div key={wb.id} className="border rounded p-4">
-                                    <div className="flex items-center gap-2 mb-2">
-                                        <Tag color="violet">Writeback</Tag>
-                                        <span className="text-sm text-gray-500">{new Date(wb.created_at).toLocaleString()}</span>
-                                    </div>
-                                    <pre className="text-sm bg-gray-50 p-3 rounded overflow-auto max-h-96">
-                                        {JSON.stringify(wb.content, null, 2)}
-                                    </pre>
+                    {!memoriesLoading && consistencyMemory && (() => {
+                        const report = consistencyMemory.content as Record<string, unknown>
+                        const issues = (report.issues || []) as Array<Record<string, unknown>>
+                        const overall = String(report.overall || 'pass')
+                        return (
+                            <div className="max-w-4xl space-y-3">
+                                <div className="flex items-center gap-2">
+                                    <Tag color={overall === 'pass' ? 'green' : overall === 'warning' ? 'orange' : 'red'}>
+                                        {overall}
+                                    </Tag>
+                                    <span className="text-sm text-gray-500">{issues.length} issue(s) · {new Date(consistencyMemory.created_at).toLocaleString()}</span>
                                 </div>
-                            ))}
-                        </div>
-                    )}
+                                {issues.map((issue, i) => (
+                                    <div key={i} className="border rounded p-3">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                            <Tag size="small" color={
+                                                issue.severity === 'critical' ? 'red' :
+                                                    issue.severity === 'warning' ? 'orange' : 'grey'
+                                            }>
+                                                {String(issue.severity || '')}
+                                            </Tag>
+                                            <Tag size="small">{String(issue.category || '')}</Tag>
+                                            {issue.location ? <span className="text-xs text-gray-400">{String(issue.location)}</span> : null}
+                                        </div>
+                                        <div className="text-sm mt-1">{String(issue.description || '')}</div>
+                                        {issue.suggestion ? <div className="text-xs text-gray-500 mt-1">→ {String(issue.suggestion)}</div> : null}
+                                    </div>
+                                ))}
+                            </div>
+                        )
+                    })()}
                 </TabPane>
 
                 <TabPane tab="Generated Images" itemKey="generated">

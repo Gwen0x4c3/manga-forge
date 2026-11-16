@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 import uuid
 from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.llm import get_embeddings
+from app.core.llm import embeddings_configured, get_embeddings
 from app.core.vector_store import vector_store
 from app.models.asset import Asset
 from app.models.episode import Episode
@@ -15,6 +17,7 @@ from app.models.episode_memory import EpisodeMemory
 from app.models.pit import Pit
 from app.models.project import Project
 
+logger = logging.getLogger(__name__)
 
 async def get_canon_rules(db: AsyncSession, project_id: str) -> dict | None:
     result = await db.execute(select(Project).where(Project.id == project_id))
@@ -85,15 +88,69 @@ async def get_recent_window(
 
 
 async def search_rag(db: AsyncSession, project_id: str, query: str, top_k: int = 5) -> list[dict]:
-    query_vectors = await get_embeddings([query])
-    if not query_vectors:
+    """Semantic search over episode memories.
+
+    Vector search when an embedding model is configured; otherwise (or on
+    vector-store failure) falls back to keyword search over recent memories.
+    """
+    if embeddings_configured():
+        try:
+            query_vectors = await get_embeddings([query])
+            if query_vectors:
+                results = await vector_store.search(
+                    query_vector=query_vectors[0],
+                    limit=top_k,
+                    project_id=project_id,
+                )
+                if results:
+                    return results
+        except Exception:
+            logger.warning("Vector RAG search failed, falling back to keyword search", exc_info=True)
+    return await _keyword_search(db, project_id, query, top_k)
+
+
+async def _keyword_search(db: AsyncSession, project_id: str, query: str, top_k: int) -> list[dict]:
+    terms = [t for t in re.split(r"[\s,，。、；;:：!？?（）()\[\]\"']+", query) if len(t) >= 2][:20]
+    if not terms:
         return []
-    results = await vector_store.search(
-        query_vector=query_vectors[0],
-        limit=top_k,
-        project_id=project_id,
+    stmt = (
+        select(EpisodeMemory, Episode.number)
+        .join(Episode, EpisodeMemory.episode_id == Episode.id)
+        .where(Episode.project_id == project_id, EpisodeMemory.type.in_(("summary", "events")))
+        .order_by(Episode.number.desc())
+        .limit(200)
     )
-    return results
+    rows = (await db.execute(stmt)).all()
+
+    scored: list[tuple[float, Decimal, EpisodeMemory, str]] = []
+    for memory, number in rows:
+        if memory.type == "summary" and isinstance(memory.content, dict):
+            text = memory.content.get("summary", "")
+        elif memory.type == "events" and isinstance(memory.content, dict):
+            events = memory.content.get("data", [])
+            text = " ".join(
+                e.get("description", "") if isinstance(e, dict) else str(e) for e in events
+            )
+        else:
+            text = json.dumps(memory.content, ensure_ascii=False)
+        hits = sum(1 for t in terms if t.lower() in text.lower())
+        if hits:
+            scored.append((hits / len(terms), number, memory, text))
+    scored.sort(key=lambda x: (-x[0], -x[1]))
+
+    return [
+        {
+            "id": memory.id,
+            "score": score,
+            "payload": {
+                "content": text,
+                "episode_id": memory.episode_id,
+                "episode_number": number,
+                "type": memory.type,
+            },
+        }
+        for score, number, memory, text in scored[:top_k]
+    ]
 
 
 async def build_context_for_generation(
@@ -116,6 +173,14 @@ async def build_context_for_generation(
     )
     assets = asset_result.scalars().all()
 
+    # RAG: retrieve relevant older memories. The query combines the latest
+    # episode summary with open pit descriptions so both continuity threads
+    # and foreshadowing pull in distant-context fragments.
+    rag_query_parts = [ep["summary"].get("summary", "") for ep in recent_window if ep["summary"]]
+    rag_query_parts.extend(pit.description or "" for pit in active_pits)
+    rag_query = " ".join(p for p in rag_query_parts if p)
+    rag_memories = await search_rag(db, project_id, rag_query, top_k=5) if rag_query else []
+
     return {
         "canon_rules": json.dumps(canon, ensure_ascii=False) if canon else "",
         "long_summary": long_summary or "",
@@ -127,6 +192,14 @@ async def build_context_for_generation(
                 "state_changes": ep["summary"].get("state_changes", []) if ep["summary"] else [],
             }
             for ep in recent_window
+        ],
+        "rag_memories": [
+            {
+                "content": m["payload"].get("content", ""),
+                "episode_number": m["payload"].get("episode_number"),
+                "type": m["payload"].get("type", ""),
+            }
+            for m in rag_memories
         ],
         "active_pits": [
             {
@@ -192,10 +265,15 @@ async def vectorize_and_store_episode_memory(
                 "content": change_text,
             })
 
-    if not texts:
+    if not texts or not embeddings_configured():
+        if not embeddings_configured():
+            logger.info("Embedding model not configured — skipping vectorization of episode %s", episode_id)
         return
 
     vectors = await get_embeddings(texts)
+    if not vectors:
+        return
+
     points = []
     for i, (vector, payload) in enumerate(zip(vectors, payloads)):
         points.append({

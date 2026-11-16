@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime
 
@@ -14,6 +15,7 @@ from app.models.generation_run import GenerationRun
 from app.models.pit import Pit
 from app.models.project import Project
 
+logger = logging.getLogger(__name__)
 
 async def create_generation_run(
     db: AsyncSession,
@@ -79,36 +81,15 @@ async def save_episode_understanding(
     db: AsyncSession,
     episode_id: str,
     understanding: dict,
-) -> list[EpisodeMemory]:
-    memories = []
-    type_mapping = {
-        "summary": "summary",
-        "events": "events",
-        "state_changes": "state_snapshot",
-    }
-    for key, memory_type in type_mapping.items():
-        if key in understanding and understanding[key]:
-            memory = EpisodeMemory(
-                id=str(uuid.uuid4()),
-                episode_id=episode_id,
-                type=memory_type,
-                content=understanding[key] if isinstance(understanding[key], dict) else {"data": understanding[key]},
-            )
-            db.add(memory)
-            memories.append(memory)
+) -> EpisodeMemory:
+    """Store the full understanding dict as the episode's summary memory.
 
-    if understanding.get("new_assets"):
-        memory = EpisodeMemory(
-            id=str(uuid.uuid4()),
-            episode_id=episode_id,
-            type="summary",
-            content={"new_assets": understanding["new_assets"]},
-        )
-        db.add(memory)
-        memories.append(memory)
-
+    The recent-window reader expects content.summary / content.state_changes.
+    """
+    memory = EpisodeMemory(episode_id=episode_id, type="summary", content=understanding)
+    db.add(memory)
     await db.commit()
-    return memories
+    return memory
 
 
 async def save_storyboard(
@@ -207,52 +188,104 @@ async def get_layout_result(
     return result.scalar_one_or_none()
 
 
+def _normalize_name(name: str) -> str:
+    return "".join(ch.lower() for ch in name if ch.isalnum())
+
+
+def _names_match(a: str, b: str) -> bool:
+    """Same-name heuristic: exact, containment, or high string similarity.
+    Catches alias cases like "Alice" vs "Alice Margatroid" without embeddings."""
+    na, nb = _normalize_name(a), _normalize_name(b)
+    if not na or not nb:
+        return False
+    if na == nb or na in nb or nb in na:
+        return True
+    from difflib import SequenceMatcher
+
+    return SequenceMatcher(None, na, nb).ratio() >= 0.88
+
+
+async def record_character_sightings(
+    db: AsyncSession,
+    project_id: str,
+    episode_id: str,
+    sightings: list[dict],
+) -> None:
+    """Cross-episode character tracking: mark linked assets as appearing in this episode."""
+    if not sightings:
+        return
+    asset_ids = {s.get("asset_id") for s in sightings if s.get("asset_id")}
+    if not asset_ids:
+        return
+    result = await db.execute(select(Asset).where(Asset.project_id == project_id, Asset.id.in_(asset_ids)))
+    for asset in result.scalars().all():
+        # reassign a new dict: in-place mutation of JSON columns is not change-tracked
+        asset.episode_ids = {**(asset.episode_ids or {}), episode_id: True}
+    await db.commit()
+
+
 async def auto_discover_assets(
     db: AsyncSession,
     project_id: str,
     episode_id: str,
     new_assets: list[dict],
 ) -> list[Asset]:
-    from app.core.llm import get_embeddings
+    """Register newly discovered assets, merging into existing ones by name.
 
-    assets = []
-    existing_result = await db.execute(
-        select(Asset).where(Asset.project_id == project_id, Asset.embedding.isnot(None))
-    )
+    Embeddings are only used for near-duplicate detection when an embedding
+    model is configured; name matching works standalone.
+    """
+    from app.core.llm import embeddings_configured, get_embeddings
+
+    use_embeddings = embeddings_configured()
+    existing_result = await db.execute(select(Asset).where(Asset.project_id == project_id))
     existing_assets = list(existing_result.scalars().all())
 
+    assets = []
     for asset_data in new_assets:
         asset_name = asset_data.get("name", "")
         asset_description = asset_data.get("description", "")
         asset_type = asset_data.get("asset_type", "character")
         visual_tags = asset_data.get("visual_tags", [])
 
-        text_parts = [asset_name]
-        if asset_description:
-            text_parts.append(asset_description)
-        if visual_tags:
-            text_parts.append(" ".join(str(t) for t in visual_tags))
-        new_text = " ".join(text_parts)
-
-        new_embedding = None
         matched_asset = None
-        if new_text.strip():
-            embeddings = await get_embeddings([new_text])
-            new_embedding = embeddings[0]
-            best_sim = 0.0
-            for existing in existing_assets:
-                if existing.embedding:
-                    sim = _cosine_similarity(new_embedding, existing.embedding)
-                    if sim > best_sim:
-                        best_sim = sim
-                        matched_asset = existing
+        # 1. same-type name match (embedding-free)
+        for existing in existing_assets:
+            if existing.type == asset_type and _names_match(existing.name, asset_name):
+                matched_asset = existing
+                break
+        # 2. embedding similarity for cross-language name variants
+        new_embedding = None
+        text_parts = [asset_name, asset_description, " ".join(str(t) for t in visual_tags)]
+        new_text = " ".join(p for p in text_parts if p)
+        if matched_asset is None and use_embeddings and new_text.strip():
+            try:
+                embeddings = await get_embeddings([new_text])
+                if embeddings:
+                    new_embedding = embeddings[0]
+                    best_sim, best_asset = 0.0, None
+                    for existing in existing_assets:
+                        if existing.type == asset_type and existing.embedding:
+                            sim = _cosine_similarity(new_embedding, existing.embedding)
+                            if sim > best_sim:
+                                best_sim, best_asset = sim, existing
+                    if best_sim >= 0.9 and best_asset:
+                        matched_asset = best_asset
+            except Exception:
+                logger.warning("Embedding-based asset matching failed, using name matching only", exc_info=True)
 
-            if best_sim >= 0.9 and matched_asset:
-                if matched_asset.episode_ids is None:
-                    matched_asset.episode_ids = {}
-                matched_asset.episode_ids[episode_id] = True
-                assets.append(matched_asset)
-                continue
+        if matched_asset is not None:
+            # merge: record appearance, keep the richer description, union visual tags
+            # reassign a new dict: in-place mutation of JSON columns is not change-tracked
+            matched_asset.episode_ids = {**(matched_asset.episode_ids or {}), episode_id: True}
+            if asset_description and len(asset_description) > len(matched_asset.description or ""):
+                matched_asset.description = asset_description
+            if visual_tags:
+                tags = dict(matched_asset.tags or {})
+                tags["visual_tags"] = list(dict.fromkeys([*tags.get("visual_tags", []), *visual_tags]))
+                matched_asset.tags = tags
+            assets.append(matched_asset)
+            continue
 
         asset = Asset(
             id=str(uuid.uuid4()),
@@ -265,9 +298,8 @@ async def auto_discover_assets(
             episode_ids={episode_id: True},
         )
         db.add(asset)
+        existing_assets.append(asset)
         assets.append(asset)
-        if new_embedding:
-            existing_assets.append(asset)
 
     await db.commit()
     return assets
@@ -288,13 +320,33 @@ async def auto_discover_pits(
     episode_id: str,
     pit_discoveries: list[dict],
 ) -> list[Pit]:
-    pits = []
+    """Register newly discovered foreshadowing/pits, skipping near-duplicates of open pits."""
+    from difflib import SequenceMatcher
+
+    open_result = await db.execute(select(Pit).where(Pit.project_id == project_id, Pit.status == "open"))
+    open_pits = list(open_result.scalars().all())
+
+    pits: list[Pit] = []
     for pit_data in pit_discoveries:
+        description = pit_data.get("description", "")
+        if not description.strip():
+            continue
+        duplicate = next(
+            (
+                p
+                for p in open_pits + pits
+                if SequenceMatcher(None, _normalize_name(p.description or ""), _normalize_name(description)).ratio()
+                >= 0.85
+            ),
+            None,
+        )
+        if duplicate is not None:
+            continue
         pit = Pit(
             id=str(uuid.uuid4()),
             project_id=project_id,
-            title=pit_data.get("description", "")[:255],
-            description=pit_data.get("description", ""),
+            title=description[:255],
+            description=description,
             priority={"low": 0, "medium": 5, "high": 10}.get(pit_data.get("priority", "medium"), 5),
             introduced_episode_id=episode_id,
             trigger_hint=pit_data.get("trigger_hint"),
@@ -304,3 +356,24 @@ async def auto_discover_pits(
         pits.append(pit)
     await db.commit()
     return pits
+
+
+async def resolve_pits(
+    db: AsyncSession,
+    project_id: str,
+    episode_id: str,
+    pit_ids: list[str],
+) -> list[Pit]:
+    """Mark pits as resolved by this episode."""
+    if not pit_ids:
+        return []
+    result = await db.execute(
+        select(Pit).where(Pit.project_id == project_id, Pit.id.in_(pit_ids), Pit.status == "open")
+    )
+    resolved = []
+    for pit in result.scalars().all():
+        pit.status = "resolved"
+        pit.resolved_episode_id = episode_id
+        resolved.append(pit)
+    await db.commit()
+    return resolved

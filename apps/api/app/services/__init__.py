@@ -8,6 +8,7 @@ from app.services import (
     pit_service,
     project_service,
     storage_service,
+    understanding_service,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "memory_service",
     "generation_service",
     "import_service",
+    "understanding_service",
 ]

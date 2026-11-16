@@ -15,6 +15,18 @@ def get_minio_client() -> Minio:
         secure=settings.MINIO_SECURE,
     )
 
+def get_object_bytes(bucket: str, object_key: str) -> bytes | None:
+    client = get_minio_client()
+    try:
+        response = client.get_object(bucket, object_key)
+        try:
+            return response.read()
+        finally:
+            response.close()
+            response.release_conn()
+    except Exception:
+        return None
+
 
 def ensure_bucket(client: Minio, bucket: str) -> None:
     if not client.bucket_exists(bucket):

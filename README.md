@@ -126,8 +126,8 @@ manga-forge/
 │       │   └── layouts/        # Layout components
 │       └── package.json
 ├── workers/                    # Celery workers
-│   ├── tasks/                  # understand, script_gen, render, layout, ocr
-│   ├── pipelines/              # import_pipeline, generate_pipeline
+│   ├── tasks/                  # understand, script_gen, render, layout, writeback
+│   ├── pipelines/              # continue_pipeline, generate_pipeline
 │   └── pyproject.toml
 ├── docker/                     # Docker Compose configs
 │   ├── docker-compose.yml
@@ -151,19 +151,25 @@ manga-forge/
 | **Canon Rules** | MySQL `projects.canon_rules` | Hard settings, manually edited |
 | **Long Summary** | MySQL `projects.long_summary` | Compressed historical summary, auto-maintained |
 | **Recent Window** | MySQL `episode_memories` | Detailed summaries of recent N episodes |
-| **RAG** | Qdrant vector DB | Semantic search across all episode memories |
+| **RAG** | Qdrant vector DB (optional) | Semantic search across all episode memories |
 
-### Episode Understanding Pipeline
+> **No embedding model?** Leave `OPENAI_EMBEDDING_MODEL` empty — vectorization is
+> skipped and RAG retrieval automatically falls back to keyword search over episode
+> memories. Everything else (understanding, generation, pits) works without embeddings.
 
-Import manga pages → Celery task triggers LLM → extracts structured understanding:
+### Episode Understanding Pipeline (multimodal)
+
+Import manga pages → Celery task sends **the actual page images** to the multimodal LLM (text + vision, e.g. `glm-5.3-flash` via the OpenAI-compatible chat completions protocol) → extracts structured understanding:
 
 - **Summary** — episode synopsis
 - **Events** — key events in chronological order
 - **State Changes** — character attribute changes (injury, relationship, possession, etc.)
-- **New Assets** — discovered characters, outfits, locations, items
-- **Pit Discoveries** — foreshadowing and unresolved plot threads
+- **Characters (人物识别)** — every character sighted, linked to known assets by ID; new faces are registered as assets with visual tags, and cross-episode appearance tracking (`assets.episode_ids`) is updated automatically
+- **Dialogue transcription (OCR)** — all dialogue/narration/SFX transcribed page by page in the original language (no separate OCR stage needed — the vision model reads it directly)
+- **Pit Discoveries (伏笔)** — new foreshadowing and unresolved plot threads, deduplicated against existing open pits
+- **Pit Resolutions** — open pits clearly resolved by the episode are auto-closed with `resolved_episode_id`
 
-Results are vectorized and stored in Qdrant for RAG retrieval.
+Results feed the three-layer memory: long summary is extended, per-episode memories are stored, and (when an embedding model is configured) vectorized into Qdrant.
 
 ### Storyboard Script Generation
 
@@ -194,6 +200,16 @@ Generate structured JSON storyboard for new episodes:
 ```
 
 Context assembly for generation: `canon_rules + long_summary + recent_window + RAG + active_pits + assets`
+
+After generation, a **consistency check** pass reviews the storyboard against canon rules,
+character states, and open pits; on critical issues the storyboard is regenerated once with
+the issues as feedback. The final report is stored per episode (`consistency_report` memory,
+visible in the web UI).
+
+The continue pipeline closes the loop: `script → consistency check → render → layout → writeback`.
+Writeback re-runs multimodal understanding on the **rendered pages** of the generated episode,
+so new characters, foreshadowing, and pit resolutions from generated content feed the memory
+system for the next round of generation.
 
 ### Image Generation Pipeline (M2)
 
@@ -242,8 +258,8 @@ Full API docs available at `/docs` (Swagger) and `/redoc` when the API server is
 | **M0** | ✅ Done | Project skeleton + data models + basic CRUD |
 | **M1** | ✅ Done | Memory system (RAG) + storyboard script generation |
 | **M2** | ✅ Done | Image generation (cloud API) + layout + PNG export |
-| **M3** | 🔲 Next | Pit tracking + consistency check + auto-writeback |
-| **M4** | 🔲 | Branch fork/diff + asset auto-discovery |
+| **M3** | ✅ Done | Multimodal understanding + pit lifecycle (discover/resolve) + consistency check + auto-writeback |
+| **M4** | ✅ Done | Branch fork/diff + asset auto-discovery (embedding-free) |
 
 ## Configuration
 
@@ -265,8 +281,8 @@ All configuration via environment variables (see `.env.example`):
 | `MINIO_SECRET_KEY` | minioadmin | MinIO secret key |
 | `MINIO_BUCKET` | mangaforge | MinIO bucket |
 | `OPENAI_API_KEY` | | OpenAI API key (required for LLM + image gen) |
-| `OPENAI_MODEL` | gpt-4o | LLM model for chat |
-| `OPENAI_EMBEDDING_MODEL` | text-embedding-3-small | Embedding model |
+| `OPENAI_MODEL` | gpt-4o | Chat model — must support multimodal input (text+images) for understanding, e.g. glm-5.3-flash |
+| `OPENAI_EMBEDDING_MODEL` | | Embedding model — **optional**; empty disables vectorization and RAG falls back to keyword search |
 | `OPENAI_BASE_URL` | | Custom OpenAI-compatible base URL |
 | `IMAGE_BACKEND` | openai | Image backend: openai / custom / mock |
 | `IMAGE_MODEL` | gpt-image-2 | Image model (gpt-image-2, dall-e-3, or custom) |

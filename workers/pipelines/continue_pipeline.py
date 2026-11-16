@@ -23,18 +23,23 @@ def run_continue(
     from app.services import generation_service
 
     async def _create_runs():
+        from sqlalchemy import select
+        from app.models.episode import Episode
+
         async with async_session() as db:
             continue_run = await db.get(GenerationRun, run_id)
             if continue_run:
                 continue_run.status = "running"
                 await db.commit()
+            episode = (await db.execute(select(Episode).where(Episode.id == episode_id))).scalar_one()
             script_run = await generation_service.create_generation_run(db, episode_id=episode_id, stage="script", backend="openai")
             render_run = await generation_service.create_generation_run(db, episode_id=episode_id, stage="render", backend=image_backend or "openai")
             layout_run = await generation_service.create_generation_run(db, episode_id=episode_id, stage="layout")
-            return str(script_run.id), str(render_run.id), str(layout_run.id)
+            return str(script_run.id), str(render_run.id), str(layout_run.id), str(episode.project_id)
 
     try:
-        script_run_id, render_run_id, layout_run_id = asyncio.run(_create_runs())
+        script_run_id, render_run_id, layout_run_id, project_id = asyncio.run(_create_runs())
+
 
         from workers.tasks.script_gen import _generate_script
         asyncio.run(_generate_script(
@@ -50,6 +55,11 @@ def run_continue(
         asyncio.run(_layout_episode(
             self, layout_run_id, episode_id, None,
         ))
+
+        # Close the loop: understand the generated episode and feed memories,
+        # assets, and pit lifecycle back for the next generation round.
+        from workers.tasks.writeback import _writeback_episode
+        asyncio.run(_writeback_episode(self, episode_id, project_id))
 
         async def _mark_succeeded():
             async with async_session() as db:

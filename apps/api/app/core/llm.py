@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
+import httpx
 import instructor
 from fastapi import HTTPException
 from openai import AsyncOpenAI
@@ -13,29 +15,45 @@ from app.config import settings
 if TYPE_CHECKING:
     pass
 
+logger = logging.getLogger(__name__)
+
+
+def _build_openai_client() -> AsyncOpenAI:
+    # httpx's default trust_env=True crashes when no_proxy contains bare IPv6
+    # literals (e.g. "::1"); build the transport explicitly instead.
+    base_url = _normalize_openai_base_url(settings.OPENAI_BASE_URL)
+    return AsyncOpenAI(
+        api_key=settings.OPENAI_API_KEY,
+        base_url=base_url,
+        http_client=httpx.AsyncClient(trust_env=False, timeout=600.0),
+    )
+
 
 @lru_cache
 def get_llm_client() -> instructor.Instructor:
     config_error = get_llm_config_error()
     if config_error:
         raise RuntimeError(config_error)
-    base_url = _normalize_openai_base_url(settings.OPENAI_BASE_URL)
-    openai_client = AsyncOpenAI(
-        api_key=settings.OPENAI_API_KEY,
-        base_url=base_url,
-    )
-    return instructor.from_openai(openai_client)
+    return instructor.from_openai(_build_openai_client())
+
+
+def embeddings_configured() -> bool:
+    return bool((settings.OPENAI_EMBEDDING_MODEL or "").strip())
 
 
 async def get_embeddings(texts: list[str]) -> list[list[float]]:
+    """Return embedding vectors, or an empty list when no model is configured.
+
+    Callers treat [] as "embeddings unavailable" and degrade gracefully
+    (skip vectorization, fall back to keyword retrieval).
+    """
+    if not embeddings_configured():
+        logger.warning("OPENAI_EMBEDDING_MODEL is not set — embeddings disabled, RAG falls back to keyword search")
+        return []
     config_error = get_llm_config_error()
     if config_error:
         raise RuntimeError(config_error)
-    base_url = _normalize_openai_base_url(settings.OPENAI_BASE_URL)
-    client = AsyncOpenAI(
-        api_key=settings.OPENAI_API_KEY,
-        base_url=base_url,
-    )
+    client = _build_openai_client()
     try:
         response = await client.embeddings.create(
             model=settings.OPENAI_EMBEDDING_MODEL,
