@@ -154,28 +154,41 @@ async def _render_episode(
                 raise ValueError(f"No storyboard found for episode {episode_id}")
 
             storyboard = storyboard_memory.content
-            pages = storyboard.get("pages", [])
 
-            all_panels = []
-            for page in pages:
-                for panel in page.get("panels", []):
-                    all_panels.append(panel)
+            from app.models.episode import Episode
 
-            total = len(all_panels)
-            completed = 0
+            episode = await db.get(Episode, episode_id)
+            if not episode:
+                raise ValueError(f"Episode {episode_id} not found")
 
-            for panel in all_panels:
-                try:
-                    await _render_panel(self, run_id, episode_id, panel, image_backend_name, image_model, image_size)
-                    completed += 1
-                    progress = int(completed / total * 100) if total > 0 else 100
-                    self.update_state(
-                        state="RUNNING",
-                        meta={"episode_id": episode_id, "progress": progress, "completed": completed, "total": total},
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to render panel {panel.get('panel_id')}: {e}")
-                    completed += 1
+            from app.services import render_agent
+
+            agent_result = await render_agent.run_render_agent(
+                db,
+                episode,
+                storyboard,
+                run_id,
+                image_backend_name,
+                image_model,
+                image_size,
+            )
+
+            total = agent_result["total"]
+            completed = len(agent_result["rendered"])
+            self.update_state(
+                state="RUNNING",
+                meta={"episode_id": episode_id, "progress": 100, "completed": completed, "total": total},
+            )
+
+            if run:
+                run.params = {
+                    **(run.params or {}),
+                    "render_agent": {
+                        "agent_rendered": len(agent_result["agent_rendered"]),
+                        "fallback_rendered": len(agent_result["fallback_rendered"]),
+                        "tools_used": len(agent_result["trace"]),
+                    },
+                }
 
             from app.services import generation_service
 
@@ -187,7 +200,14 @@ async def _render_episode(
 
             self.update_state(
                 state="SUCCESS",
-                meta={"episode_id": episode_id, "run_id": run_id, "completed": completed, "total": total},
+                meta={
+                    "episode_id": episode_id,
+                    "run_id": run_id,
+                    "completed": completed,
+                    "total": total,
+                    "agent_rendered": len(agent_result["agent_rendered"]),
+                    "fallback_rendered": len(agent_result["fallback_rendered"]),
+                },
             )
 
         except Exception as e:

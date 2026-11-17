@@ -211,17 +211,28 @@ Writeback re-runs multimodal understanding on the **rendered pages** of the gene
 so new characters, foreshadowing, and pit resolutions from generated content feed the memory
 system for the next round of generation.
 
-### Image Generation Pipeline (M2)
+### Image Generation Pipeline + Render Agent
 
-Cloud-based image generation with pluggable backends:
+Panel rendering is driven by a **tool-calling agent** (native function calling on the
+chat model, no framework): before generating anything it researches the story state —
+`search_story_memories` (past events), `list_open_pits` (foreshadowing to keep
+consistent), `search_assets` + `get_asset_references` (character sheets, turnarounds,
+style refs) — then calls `generate_panel` for every panel, attaching the right
+reference images and enriched prompts per panel. If the agent loop fails or misses
+panels, a mechanical fallback (name-matched references) renders the rest — a render
+run never dies because of the agent.
 
-| Backend | Description |
-|---------|-------------|
-| **OpenAI** | GPT-Image-2 / DALL-E 3 via OpenAI Images API |
-| **Custom HTTP** | Any cloud API (nanobanana, etc.) via generic HTTP POST adapter |
-| **Mock** | Placeholder images for testing |
+Image backends are pluggable and all accept **reference images + character/style
+context** for cross-panel consistency:
 
-Generated panel images → Layout engine composes pages with speech bubbles → PNG export to MinIO.
+| `IMAGE_BACKEND` | Protocol | Notes |
+|-----------------|----------|-------|
+| `openai` | Images API `/images/generations` + `/images/edits` (gpt-image-2 / gpt-image-2.5-sunburst / -flare) | references sent via the edits endpoint |
+| `gemini` (alias `nano-banana`) | Google **Interactions API** `POST /v1beta/interactions` (`x-goog-api-key`) | `gemini-3-pro-image` (Nano Banana Pro) / `gemini-3.1-flash-image` (NB2, best multi-reference consistency), up to 14 reference images |
+| `custom` | Generic OpenAI-images-compatible JSON POST to `IMAGE_API_URL` | aggregators (new-api / one-api / OpenRouter relays) |
+| `mock` | local placeholder generator | testing, records attached references in image meta |
+
+Generated panel images → Layout engine composes pages with speech bubbles → PNG/PDF export.
 
 ### Branch / Fork System
 
@@ -287,10 +298,11 @@ All configuration via environment variables (see `.env.example`):
 | `OPENAI_MODEL` | gpt-4o | Chat model — must support multimodal input (text+images) for understanding, e.g. glm-5.3-flash |
 | `OPENAI_EMBEDDING_MODEL` | | Embedding model — **optional**; empty disables vectorization and RAG falls back to keyword search |
 | `OPENAI_BASE_URL` | | Custom OpenAI-compatible base URL |
-| `IMAGE_BACKEND` | openai | Image backend: openai / custom / mock |
-| `IMAGE_MODEL` | gpt-image-2 | Image model (gpt-image-2, dall-e-3, or custom) |
-| `IMAGE_API_KEY` | | API key for custom image backend |
-| `IMAGE_API_URL` | | URL for custom image backend |
+| `IMAGE_BACKEND` | openai | Image backend: openai / gemini (nano-banana) / custom / mock |
+| `IMAGE_MODEL` | gpt-image-2 | gpt-image-2.5-sunburst/-flare; gemini backend: gemini-3-pro-image / gemini-3.1-flash-image |
+| `IMAGE_API_KEY` | | Image API key (gemini backend falls back to `GEMINI_API_KEY`) |
+| `GEMINI_API_KEY` | | Google API key for the nano-banana backend when IMAGE_API_KEY is unset |
+| `IMAGE_API_URL` | | Endpoint override: full Interactions URL for gemini, full images URL for openai/custom |
 | `IMAGE_DEFAULT_SIZE` | 1024x1024 | Default image generation size |
 | `CELERY_BROKER_URL` | redis://localhost:6379/1 | Celery broker |
 | `CELERY_RESULT_BACKEND` | redis://localhost:6379/2 | Celery result backend |

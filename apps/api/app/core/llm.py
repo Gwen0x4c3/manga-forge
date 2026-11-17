@@ -36,6 +36,13 @@ def get_llm_client() -> instructor.Instructor:
         raise RuntimeError(config_error)
     return instructor.from_openai(_build_openai_client())
 
+def get_raw_openai_client() -> AsyncOpenAI:
+    """Raw chat-completions client (no instructor) for multi-turn tool-calling loops."""
+    config_error = get_llm_config_error()
+    if config_error:
+        raise RuntimeError(config_error)
+    return _build_openai_client()
+
 
 def embeddings_configured() -> bool:
     return bool((settings.OPENAI_EMBEDDING_MODEL or "").strip())
