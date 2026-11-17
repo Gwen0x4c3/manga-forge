@@ -264,3 +264,57 @@ async def merge_assets(
     await db.commit()
     await db.refresh(merged_asset)
     return merged_asset
+
+
+ASSET_IMAGE_KINDS = ("reference", "thumbnail", "turnaround", "lora_dataset")
+
+
+async def list_asset_images(db: AsyncSession, asset_id: str) -> list[AssetImage]:
+    result = await db.execute(
+        select(AssetImage).where(AssetImage.asset_id == asset_id).order_by(AssetImage.created_at.asc())
+    )
+    return list(result.scalars().all())
+
+
+async def upload_asset_image(
+    db: AsyncSession,
+    asset: Asset,
+    data: bytes,
+    filename: str,
+    kind: str = "reference",
+    content_type: str = "image/png",
+) -> AssetImage:
+    from app.config import settings
+    from app.services import storage_service
+
+    if kind not in ASSET_IMAGE_KINDS:
+        raise ValueError(f"kind must be one of {ASSET_IMAGE_KINDS}")
+    object_key = storage_service.generate_object_key(f"assets/{asset.id}", filename)
+    storage_service.upload_file(settings.MINIO_BUCKET, object_key, data, content_type=content_type)
+    image = AssetImage(
+        id=str(uuid.uuid4()),
+        asset_id=asset.id,
+        kind=kind,
+        image_path=object_key,
+    )
+    db.add(image)
+    await db.commit()
+    await db.refresh(image)
+    return image
+
+
+async def get_asset_image(db: AsyncSession, image_id: str) -> AssetImage | None:
+    return await db.get(AssetImage, image_id)
+
+
+async def delete_asset_image(db: AsyncSession, image: AssetImage) -> None:
+    from app.services import storage_service
+
+    await db.delete(image)
+    await db.commit()
+    try:
+        from app.config import settings
+
+        storage_service.get_minio_client().remove_object(settings.MINIO_BUCKET, image.image_path)
+    except Exception:
+        pass  # object already gone — row deletion is what matters

@@ -59,3 +59,14 @@ class AssetMergeRequest(BaseModel):
     source_asset_ids: list[str] = Field(..., min_length=2)
     target_name: str
     target_description: str | None = None
+
+
+class AssetImageResponse(BaseModel):
+    id: str
+    asset_id: str
+    kind: str
+    image_path: str
+    meta: dict | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}

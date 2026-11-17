@@ -295,3 +295,46 @@ async def get_episode_layout(episode_id: str, db: AsyncSession = Depends(get_db)
     if not layout:
         return {"pages": []}
     return {"pages": layout.content.get("pages", [])}
+
+
+@router.get("/episodes/{episode_id}/export")
+async def export_episode(episode_id: str, format: str = "pdf", db: AsyncSession = Depends(get_db)):
+    """Export an episode's composed final pages as a single document (PDF)."""
+    import io
+
+    from fastapi.responses import Response
+
+    if format != "pdf":
+        raise HTTPException(status_code=400, detail="Only format=pdf is supported")
+
+    episode = await episode_service.get_episode(db, episode_id)
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    layout = await generation_service.get_layout_result(db, episode_id)
+    if not layout or not layout.content.get("pages"):
+        raise HTTPException(status_code=404, detail="No composed pages yet — run layout first")
+
+    from PIL import Image
+
+    from app.config import settings as app_settings
+    from app.services import storage_service
+
+    pages = sorted(layout.content.get("pages", []), key=lambda p: p.get("page_number", 0))
+    images: list[Image.Image] = []
+    for page in pages:
+        data = storage_service.get_object_bytes(app_settings.MINIO_BUCKET, page.get("image_path", ""))
+        if data is None:
+            continue
+        images.append(Image.open(io.BytesIO(data)).convert("RGB"))
+    if not images:
+        raise HTTPException(status_code=404, detail="Composed page images missing from object storage")
+
+    buf = io.BytesIO()
+    images[0].save(buf, format="PDF", save_all=True, append_images=images[1:])
+    label = episode.label or str(episode.number)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="episode_{label}.pdf"'},
+    )

@@ -85,6 +85,7 @@ async def import_episode_files(
     label: str = Form(""),
     title: str | None = Form(None),
     category: str = Form("regular"),
+    auto_understand: bool = Form(False),
     files: list[UploadFile] = File(default=[]),
     db: AsyncSession = Depends(get_db),
 ):
@@ -119,6 +120,25 @@ async def import_episode_files(
 
     await db.commit()
     await db.refresh(episode)
+
+    if auto_understand and page_index > 0:
+        from celery import Celery
+
+        from app.config import settings
+        from app.services import generation_service
+
+        run = await generation_service.create_generation_run(
+            db, episode_id=str(episode.id), stage="understand", backend="openai"
+        )
+        celery_client = Celery("mangaforge-api", broker=settings.CELERY_BROKER_URL)
+        try:
+            celery_client.send_task(
+                "workers.tasks.understand.summarize_episode", args=[str(run.id), str(episode.id)]
+            )
+        except Exception as exc:
+            await generation_service.update_generation_run(db, str(run.id), "failed", error=str(exc))
+            raise HTTPException(status_code=500, detail=f"提交理解任务失败: {exc}") from exc
+
     return EpisodeResponse.model_validate(episode)
 
 

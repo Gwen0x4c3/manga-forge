@@ -495,6 +495,14 @@ export default function EpisodeDetail() {
                     )}
                     {!layoutLoading && layoutResult?.pages && layoutResult.pages.length > 0 && (
                         <div className="space-y-4">
+                            <div className="flex justify-end">
+                                <Button
+                                    theme="solid"
+                                    onClick={() => window.open(`/api/v1/generation/episodes/${episodeId}/export?format=pdf`, '_blank')}
+                                >
+                                    导出 PDF
+                                </Button>
+                            </div>
                             {layoutResult.pages.map((page) => (
                                 <div key={page.page_number} className="border rounded p-4">
                                     <div className="flex items-center gap-3 mb-2">

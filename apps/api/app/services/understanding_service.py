@@ -169,10 +169,10 @@ async def run_multimodal_understanding(
         db, episode.project_id, episode.id, episode.number, understanding_dict
     )
 
-    # 6. Rolling long summary
+    # 6. Rolling long summary (append + LLM compression when it outgrows budget)
     summary_text = understanding_dict.get("summary", "")
     if summary_text and project:
-        await memory_service.update_long_summary(db, project.id, summary_text)
+        await memory_service.append_episode_summary(db, project.id, episode.number, summary_text)
 
     if target_status:
         await generation_service.update_episode_status(db, episode.id, target_status)

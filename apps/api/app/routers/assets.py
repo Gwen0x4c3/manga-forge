@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_db
 from app.schemas.asset import (
     AssetClusterResponse,
     AssetCreate,
+    AssetImageResponse,
     AssetMergeRequest,
     AssetResponse,
     AssetUpdate,
@@ -93,3 +94,47 @@ async def vectorize_asset(asset_id: str, db: AsyncSession = Depends(get_db)):
     await asset_service.vectorize_asset(db, asset)
     await db.refresh(asset)
     return AssetResponse.model_validate(asset)
+
+
+@router.get("/assets/{asset_id}/images", response_model=dict)
+async def list_asset_images(asset_id: str, db: AsyncSession = Depends(get_db)):
+    asset = await asset_service.get_asset(db, asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    images = await asset_service.list_asset_images(db, asset_id)
+    return {"items": [AssetImageResponse.model_validate(img) for img in images]}
+
+
+@router.post("/assets/{asset_id}/images", response_model=AssetImageResponse, status_code=201)
+async def upload_asset_image(
+    asset_id: str,
+    kind: str = Form("reference"),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    asset = await asset_service.get_asset(db, asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file")
+    try:
+        image = await asset_service.upload_asset_image(
+            db,
+            asset,
+            content,
+            file.filename or "reference.png",
+            kind=kind,
+            content_type=file.content_type or "image/png",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return AssetImageResponse.model_validate(image)
+
+
+@router.delete("/asset-images/{image_id}", status_code=204)
+async def delete_asset_image(image_id: str, db: AsyncSession = Depends(get_db)):
+    image = await asset_service.get_asset_image(db, image_id)
+    if not image:
+        raise HTTPException(status_code=404, detail="Asset image not found")
+    await asset_service.delete_asset_image(db, image)

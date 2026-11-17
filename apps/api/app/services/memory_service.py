@@ -53,6 +53,75 @@ async def update_long_summary(db: AsyncSession, project_id: str, summary: str) -
     return project.long_summary
 
 
+# Append the next episode, then LLM-compress once the rolling summary outgrows
+# the budget. Without this the field either grows unbounded or (worse) loses
+# all history older than the latest episode.
+_SUMMARY_COMPRESS_THRESHOLD = 6000
+_SUMMARY_COMPRESS_TARGET = 3000
+_SUMMARY_TRUNCATE_KEEP = 4000
+
+
+async def append_episode_summary(
+    db: AsyncSession,
+    project_id: str,
+    episode_number,
+    summary: str,
+) -> str | None:
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if not project or not summary.strip():
+        return project.long_summary if project else None
+
+    entry = summary.strip()
+    text = project.long_summary or ""
+    text = f"{text}\n第{episode_number}话：{entry}" if text else f"第{episode_number}话：{entry}"
+
+    if len(text) > _SUMMARY_COMPRESS_THRESHOLD:
+        text = await _compress_long_summary(text) or text[-_SUMMARY_TRUNCATE_KEEP:]
+
+    project.long_summary = text
+    await db.commit()
+    await db.refresh(project)
+    return project.long_summary
+
+
+async def _compress_long_summary(text: str) -> str | None:
+    """LLM-compress the rolling summary; None means the caller should truncate instead."""
+    from app.config import settings
+    from app.core.llm import get_llm_client
+
+    system = (
+        "You are a manga story archivist. Compress the episode-by-episode story "
+        "history into a compact rolling summary.\n"
+        "Preserve, in order of importance: the main plotline and its current state, "
+        "character relationships and persistent state changes (injuries, possessions, "
+        "knowledge), key items/locations, and ALL unresolved foreshadowing.\n"
+        "Drop scene-level detail and dialogue. Write in the same language as the input. "
+        f"Keep it under {_SUMMARY_COMPRESS_TARGET} characters. Output the summary only."
+    )
+    try:
+        client = get_llm_client()
+        from pydantic import BaseModel
+
+        class Compressed(BaseModel):
+            summary: str
+
+        result = await client.chat.completions.create(
+            model=settings.OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": text},
+            ],
+            response_model=Compressed,
+            max_retries=1,
+        )
+        compressed = result.summary.strip()
+        return compressed if len(compressed) >= 50 else None
+    except Exception:
+        logger.warning("Long summary compression failed, truncating instead", exc_info=True)
+        return None
+
+
 async def get_recent_window(
     db: AsyncSession,
     project_id: str,

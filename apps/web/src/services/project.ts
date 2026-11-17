@@ -431,3 +431,23 @@ export const pitService = {
     update: (pitId: string, data: { title?: string; description?: string; priority?: number; status?: string; trigger_hint?: string }) => api.put<Pit>(`/pits/${pitId}`, data),
     resolve: (pitId: string, resolvedEpisodeId: string) => api.post<Pit>(`/pits/${pitId}/resolve`, null, { params: { resolved_episode_id: resolvedEpisodeId } }),
 }
+
+export interface AssetImage {
+    id: string
+    asset_id: string
+    kind: string
+    image_path: string
+    meta: Record<string, unknown> | null
+    created_at: string
+}
+
+export const assetImageService = {
+    list: (assetId: string) => api.get<{ items: AssetImage[] }>(`/projects/assets/${assetId}/images`),
+    upload: (assetId: string, file: File, kind: string = 'reference') => {
+        const formData = new FormData()
+        formData.append('file', file)
+        formData.append('kind', kind)
+        return api.post<AssetImage>(`/projects/assets/${assetId}/images`, formData, { headers: { 'Content-Type': 'multipart/form-data' } })
+    },
+    remove: (imageId: string) => api.delete(`/projects/asset-images/${imageId}`),
+}

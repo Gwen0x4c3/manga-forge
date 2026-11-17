@@ -1,10 +1,10 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Tabs, TabPane, Typography, Spin, Button, Table, Tag, Modal, Form, Select, Toast, Empty, Input, TextArea, Descriptions, Checkbox, RadioGroup } from '@douyinfe/semi-ui'
 import type { TagColor } from '@douyinfe/semi-ui/lib/es/tag'
 import { IconPlus, IconForward, IconDelete, IconCopy, IconRefresh, IconSearch, IconLink } from '@douyinfe/semi-icons'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { projectService, branchService, episodeService, memoryService, generationService, pitService, assetService } from '@/services/project'
+import { projectService, branchService, episodeService, memoryService, generationService, pitService, assetService, assetImageService } from '@/services/project'
 import type { Episode, Pit, Branch, DiffResponse, MergeItem, Asset, AssetClusterResponse, AssetClusterItem } from '@/services/project'
 
 const { Title, Paragraph } = Typography
@@ -52,7 +52,7 @@ interface ImportFormValues {
     number: number
     label?: string
     title?: string
-    category?: string
+    auto_understand?: boolean
 }
 
 export default function ProjectDetail() {
@@ -97,6 +97,26 @@ export default function ProjectDetail() {
     const [clusterData, setClusterData] = useState<AssetClusterResponse | null>(null)
     const [showSimilar, setShowSimilar] = useState(false)
     const [similarAssets, setSimilarAssets] = useState<AssetClusterItem[]>([])
+    const [imageAsset, setImageAsset] = useState<Asset | null>(null)
+    const fileInputRef = useRef<HTMLInputElement>(null)
+    const { data: assetImagesData, isLoading: assetImagesLoading } = useQuery({
+        queryKey: ['asset-images', imageAsset?.id],
+        queryFn: () => assetImageService.list(imageAsset!.id),
+        enabled: !!imageAsset,
+    })
+    const uploadImageMutation = useMutation({
+        mutationFn: (file: File) => assetImageService.upload(imageAsset!.id, file),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['asset-images', imageAsset?.id] })
+            Toast.success('参考图已上传')
+        },
+        onError: () => {},
+    })
+    const deleteImageMutation = useMutation({
+        mutationFn: (imageId: string) => assetImageService.remove(imageId),
+        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['asset-images', imageAsset?.id] }),
+        onError: () => {},
+    })
     const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([])
     const [showAssetMerge, setShowAssetMerge] = useState(false)
 
@@ -140,13 +160,14 @@ export default function ProjectDetail() {
     const mainBranch = branches?.find((b) => b.name === 'main')
 
     const importMutation = useMutation({
-        mutationFn: async (data: { branch_id: string; number: number; label?: string; title?: string; category?: string; files: File[] }) => {
+        mutationFn: async (data: { branch_id: string; number: number; label?: string; title?: string; category?: string; auto_understand?: boolean; files: File[] }) => {
             const formData = new FormData()
             formData.append('branch_id', data.branch_id)
             formData.append('number', String(data.number))
             if (data.label) formData.append('label', data.label)
             if (data.title) formData.append('title', data.title)
             if (data.category) formData.append('category', data.category)
+            if (data.auto_understand) formData.append('auto_understand', 'true')
             data.files.forEach((f) => formData.append('files', f))
             return episodeService.importFiles(projectId!, formData)
         },
@@ -544,10 +565,11 @@ export default function ProjectDetail() {
         {
             title: 'Actions',
             key: 'actions',
-            width: 220,
+            width: 280,
             render: (_: unknown, record: Asset) => (
                 <div className="flex gap-1">
                     <Button size="small" onClick={() => setEditingAsset(record)}>Edit</Button>
+                    <Button size="small" onClick={() => setImageAsset(record)}>Images</Button>
                     <Button size="small" icon={<IconSearch />} onClick={() => {
                         assetService.findSimilar(record.id).then((data) => {
                             setSimilarAssets(data)
@@ -977,6 +999,7 @@ export default function ProjectDetail() {
                             label: formValues.label || String(formValues.number),
                             title: formValues.title,
                             category: formValues.category,
+                            auto_understand: formValues.auto_understand,
                             files: uploadFiles,
                         })
                     }}
@@ -995,6 +1018,7 @@ export default function ProjectDetail() {
                         <Select.Option value="extra">加笔</Select.Option>
                     </Form.Select>
                     <Form.Input field="title" label="Title (optional)" />
+                    <Form.Checkbox field="auto_understand" label="导入后自动执行剧情理解（多模态 LLM 分析页面）" />
                     <div className="mb-4">
                         <label className="block text-sm font-medium mb-1">Images</label>
                         <input
@@ -1492,6 +1516,61 @@ export default function ProjectDetail() {
                                 </div>
                             ))
                         )}
+                    </div>
+                )}
+            </Modal>
+
+            <Modal
+                title={`参考图 · ${imageAsset?.name || ''}`}
+                visible={!!imageAsset}
+                onCancel={() => setImageAsset(null)}
+                footer={null}
+                width={680}
+            >
+                <div className="mb-3">
+                    <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/*"
+                        hidden
+                        onChange={(e) => {
+                            const f = e.target.files?.[0]
+                            if (f) uploadImageMutation.mutate(f)
+                            e.target.value = ''
+                        }}
+                    />
+                    <Button icon={<IconPlus />} theme="solid" loading={uploadImageMutation.isPending} onClick={() => fileInputRef.current?.click()}>
+                        上传参考图
+                    </Button>
+                    <span className="text-xs text-gray-400 ml-2">角色设定图 / 三视图 / LoRA 数据集，用于生成时的形象参考</span>
+                </div>
+                {assetImagesLoading ? (
+                    <Spin />
+                ) : (assetImagesData?.items || []).length === 0 ? (
+                    <Empty description="暂无参考图" />
+                ) : (
+                    <div className="grid grid-cols-3 gap-3">
+                        {(assetImagesData?.items || []).map((img) => (
+                            <div key={img.id} className="border rounded p-2">
+                                <div className="w-full h-32 overflow-hidden flex items-center justify-center bg-gray-50">
+                                    <img
+                                        src={`/api/v1/storage/mangaforge/${img.image_path}`}
+                                        alt={img.kind}
+                                        className="max-w-full max-h-full object-contain"
+                                    />
+                                </div>
+                                <div className="flex items-center justify-between mt-1">
+                                    <Tag size="small">{img.kind}</Tag>
+                                    <Button
+                                        size="small"
+                                        type="danger"
+                                        icon={<IconDelete />}
+                                        loading={deleteImageMutation.isPending}
+                                        onClick={() => deleteImageMutation.mutate(img.id)}
+                                    />
+                                </div>
+                            </div>
+                        ))}
                     </div>
                 )}
             </Modal>

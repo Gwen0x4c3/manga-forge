@@ -126,8 +126,8 @@ manga-forge/
 │       │   └── layouts/        # Layout components
 │       └── package.json
 ├── workers/                    # Celery workers
-│   ├── tasks/                  # understand, script_gen, render, layout, writeback
-│   ├── pipelines/              # continue_pipeline, generate_pipeline
+│   ├── tasks/                  # understand, script_gen, render, layout, writeback, mangadex
+│   ├── pipelines/              # continue_pipeline, writeback_pipeline
 │   └── pyproject.toml
 ├── docker/                     # Docker Compose configs
 │   ├── docker-compose.yml
@@ -149,7 +149,7 @@ manga-forge/
 | Layer | Storage | Description |
 |-------|---------|-------------|
 | **Canon Rules** | MySQL `projects.canon_rules` | Hard settings, manually edited |
-| **Long Summary** | MySQL `projects.long_summary` | Compressed historical summary, auto-maintained |
+| **Long Summary** | MySQL `projects.long_summary` | Rolling historical summary — new episodes are appended, and the LLM re-compresses it once it exceeds the budget (preserving plotline, character states, and unresolved foreshadowing) |
 | **Recent Window** | MySQL `episode_memories` | Detailed summaries of recent N episodes |
 | **RAG** | Qdrant vector DB (optional) | Semantic search across all episode memories |
 
@@ -234,7 +234,10 @@ Episodes support DAG parent pointers. Fork from any episode to create alternate 
 | GET/POST | `/api/v1/projects` | List / Create projects |
 | GET/PUT/DELETE | `/api/v1/projects/{id}` | Project CRUD |
 | GET/POST | `/api/v1/projects/{id}/episodes` | List / Import episodes |
-| POST | `/api/v1/projects/{id}/episodes/import-files` | Upload manga pages |
+| POST | `/api/v1/projects/{id}/episodes/import-files` | Upload manga pages (`auto_understand=true` triggers understanding automatically) |
+| GET | `/api/v1/generation/episodes/{id}/export?format=pdf` | Export composed final pages as a single PDF |
+| GET/POST | `/api/v1/projects/assets/{id}/images` | List / upload asset reference images (reference / turnaround / lora_dataset) |
+| DELETE | `/api/v1/projects/asset-images/{id}` | Delete an asset reference image |
 | GET | `/api/v1/projects/{id}/memory/canon` | Get canon rules |
 | PUT | `/api/v1/projects/{id}/memory/canon` | Update canon rules |
 | GET | `/api/v1/projects/{id}/memory/summary` | Get long summary |
