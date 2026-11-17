@@ -11,6 +11,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.core.llm import get_llm_client
 from app.models.asset import Asset
+from app.models.asset_image import AssetImage
 from app.models.episode_memory import EpisodeMemory
 from app.models.pit import Pit
 from app.models.project import Project
@@ -37,6 +38,38 @@ _MIME_BY_EXT = {
     "gif": "image/gif",
     "bmp": "image/bmp",
 }
+
+# One reference sheet per known character, capped to keep vision-token cost sane.
+_MAX_CHARACTER_REFS = 12
+_REF_KIND_PRIORITY = ("reference", "turnaround", "thumbnail", "lora_dataset")
+
+
+async def _character_reference_blocks(db, known_assets: list[Asset]) -> list[tuple[str, str]]:
+    """(label, data_url) pairs for the best reference sheet of each character
+    that has one, most frequently seen characters first."""
+    candidates: list[tuple[Asset, AssetImage]] = []
+    for asset in known_assets:
+        if asset.type != "character":
+            continue
+        images = (
+            await db.execute(select(AssetImage).where(AssetImage.asset_id == asset.id))
+        ).scalars().all()
+        if not images:
+            continue
+        best = min(
+            images,
+            key=lambda i: _REF_KIND_PRIORITY.index(i.kind) if i.kind in _REF_KIND_PRIORITY else 99,
+        )
+        candidates.append((asset, best))
+
+    candidates.sort(key=lambda pair: -len(pair[0].episode_ids or {}))
+    blocks: list[tuple[str, str]] = []
+    for asset, image in candidates[:_MAX_CHARACTER_REFS]:
+        data = storage_service.get_object_bytes(settings.MINIO_BUCKET, image.image_path)
+        if data is None:
+            continue
+        blocks.append((f"参考图 [{asset.id}] {asset.name}", image_to_data_url(data, image.image_path)))
+    return blocks
 
 
 def image_to_data_url(data: bytes, object_key: str) -> str:
@@ -103,30 +136,44 @@ async def run_multimodal_understanding(
     if project and project.long_summary:
         previous_summary = project.long_summary[-2000:]
 
-    image_urls: list[str] = []
+    # Visual identity anchors: one reference sheet per known character (cap),
+    # most frequently seen characters first — so recognition works by FACE,
+    # not by name guessing (prevents mistaking a passer-by for the protagonist).
+    reference_blocks = await _character_reference_blocks(db, known_assets)
+
+    page_blocks: list[tuple[str, str]] = []
     for page_number, object_key in page_refs:
         data = storage_service.get_object_bytes(settings.MINIO_BUCKET, object_key)
         if data is None:
             logger.warning("Page image missing in object storage: %s (page %s)", object_key, page_number)
             continue
-        image_urls.append(image_to_data_url(data, object_key))
+        page_blocks.append((f"第 {page_number} 页", image_to_data_url(data, object_key)))
 
     user_prompt = Template(SUMMARIZE_USER_PROMPT).render(
         episode_number=episode.number,
         episode_title=episode.title or "",
         previous_summary=previous_summary,
         known_characters=known_characters,
+        has_reference_sheets=bool(reference_blocks),
         open_pits=open_pit_refs,
-        pages=image_urls,
+        pages=page_blocks,
         ocr_text="",
-        raw_text=fallback_text if not image_urls else "",
+        raw_text=fallback_text if not page_blocks else "",
     )
 
     content: list[dict] = [{"type": "text", "text": user_prompt}]
-    for url in image_urls:
+    for label, url in reference_blocks:
+        content.append({"type": "text", "text": label})
         content.append({"type": "image_url", "image_url": {"url": url}})
-    if not image_urls and not fallback_text:
+    for label, url in page_blocks:
+        content.append({"type": "text", "text": label})
+        content.append({"type": "image_url", "image_url": {"url": url}})
+    if not page_blocks and not fallback_text:
         raise ValueError("Episode has no page images and no text content to understand")
+    logger.info(
+        "Understanding episode %s with %d page images and %d character reference sheets",
+        episode.id, len(page_blocks), len(reference_blocks),
+    )
 
     client = get_llm_client()
     understanding = await client.chat.completions.create(

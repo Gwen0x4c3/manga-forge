@@ -171,6 +171,13 @@ Import manga pages → Celery task sends **the actual page images** to the multi
 
 Results feed the three-layer memory: long summary is extended, per-episode memories are stored, and (when an embedding model is configured) vectorized into Qdrant.
 
+**Recognition is visual, not name-based**: when known characters have reference
+sheets in the asset library, understanding attaches them as labelled images
+(参考图 `[asset_id] name`, most-frequent characters first, capped at 12) *before*
+the episode pages, and the model matches characters by face/hair/outfit against
+them — a same-uniform passer-by who looks different is registered as a new
+character instead of being mistaken for the protagonist.
+
 ### Storyboard Script Generation
 
 Generate structured JSON storyboard for new episodes:
