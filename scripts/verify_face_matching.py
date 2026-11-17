@@ -84,7 +84,8 @@ def draw_page() -> bytes:
         for ch in text:
             cur += ch
             if d.textlength(cur, font=FONT) > (x1 - x0) * 0.8:
-                lines.append(cur[:-1]); cur = ch
+                lines.append(cur[:-1])
+                cur = ch
         lines.append(cur)
         ty = (y0 + y1) / 2 - 14 * len(lines)
         for ln in lines:
@@ -114,7 +115,6 @@ async def main():
     from app.services import (
         asset_service,
         episode_service,
-        generation_service,
         storage_service,
         understanding_service,
     )
