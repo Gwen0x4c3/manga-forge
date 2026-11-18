@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -171,6 +172,8 @@ class RenderAgent:
         self.trace: list[dict] = []
         self.art_style: str = ""
         self.style_asset_id: str | None = None
+        self._db_lock = asyncio.Lock()
+        self._render_sem = asyncio.Semaphore(4)
         self.backend = get_image_backend(backend_name=image_backend_name, model=image_model)
 
     async def _load_style_context(self) -> None:
@@ -226,6 +229,7 @@ class RenderAgent:
         ]
 
         fallback: list[str] = []
+        nudged_missing = False
         try:
             for step in range(MAX_AGENT_STEPS):
                 response = await client.chat.completions.create(
@@ -237,6 +241,20 @@ class RenderAgent:
                 tool_calls = getattr(message, "tool_calls", None) or []
 
                 if not tool_calls:
+                    remaining_ids = [p.get("panel_id") for p in panels if p.get("panel_id") not in self.rendered]
+                    if remaining_ids and not nudged_missing:
+                        nudged_missing = True
+                        messages.append({"role": "assistant", "content": message.content or ""})
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"Incomplete: {len(remaining_ids)} panel(s) still unrendered: {remaining_ids}. "
+                                    "Call generate_panel for each remaining panel_id now."
+                                ),
+                            }
+                        )
+                        continue
                     break
 
                 messages.append(
@@ -256,8 +274,11 @@ class RenderAgent:
                         ],
                     }
                 )
-                for tc in tool_calls:
-                    result = await self._execute(tc.function.name, tc.function.arguments)
+                # Execute batched tool calls concurrently (DB access serialized via self._db_lock)
+                results = await asyncio.gather(
+                    *(self._execute(tc.function.name, tc.function.arguments) for tc in tool_calls)
+                )
+                for tc, result in zip(tool_calls, results):
                     self.trace.append({"tool": tc.function.name, "args": tc.function.arguments[:200]})
                     messages.append(
                         {
@@ -344,12 +365,31 @@ class RenderAgent:
 
     async def _tool_search_assets(self, query: str, asset_type: str | None) -> list[dict]:
         stmt = select(Asset).where(Asset.project_id == self.episode.project_id)
-        if query.strip():
-            q = f"%{query.strip()}%"
-            stmt = stmt.where(Asset.name.like(q) | Asset.description.like(q))
         if asset_type:
             stmt = stmt.where(Asset.type == asset_type)
-        rows = (await self.db.execute(stmt.limit(25))).scalars().all()
+        async with self._db_lock:
+            all_rows = list((await self.db.execute(stmt)).scalars().all())
+
+        q = query.strip().lower()
+        if q:
+            matched: list[Asset] = []
+            for a in all_rows:
+                tags = a.tags or {}
+                hay = " ".join(
+                    [
+                        a.name or "",
+                        a.description or "",
+                        *(str(x) for x in (tags.get("aliases") or [])),
+                        *(str(x) for x in (tags.get("visual_tags") or [])),
+                    ]
+                ).lower()
+                if q in hay:
+                    matched.append(a)
+            rows = matched[:25]
+        else:
+            all_rows.sort(key=lambda a: -len(a.episode_ids or {}))
+            rows = all_rows[:25]
+
         return [
             {
                 "asset_id": a.id,
@@ -363,22 +403,26 @@ class RenderAgent:
         ]
 
     async def _tool_asset_references(self, asset_id: str) -> dict:
-        rows = (
-            (await self.db.execute(select(AssetImage).where(AssetImage.asset_id == asset_id).limit(20))).scalars().all()
-        )
+        async with self._db_lock:
+            rows = (
+                (await self.db.execute(select(AssetImage).where(AssetImage.asset_id == asset_id).limit(20)))
+                .scalars()
+                .all()
+            )
         return {
             "asset_id": asset_id,
             "references": [{"image_id": r.id, "kind": r.kind, "object_key": r.image_path} for r in rows],
         }
 
     async def _tool_search_memories(self, query: str) -> list[dict]:
-        results = await memory_service.search_rag(
-            self.db,
-            self.episode.project_id,
-            query,
-            top_k=5,
-            max_episode_number=self.episode.number,
-        )
+        async with self._db_lock:
+            results = await memory_service.search_rag(
+                self.db,
+                self.episode.project_id,
+                query,
+                top_k=5,
+                max_episode_number=self.episode.number,
+            )
         return [
             {
                 "episode_number": r["payload"].get("episode_number"),
@@ -389,15 +433,16 @@ class RenderAgent:
         ]
 
     async def _tool_open_pits(self) -> list[dict]:
-        rows = (
-            (
-                await self.db.execute(
-                    select(Pit).where(Pit.project_id == self.episode.project_id, Pit.status == "open").limit(30)
+        async with self._db_lock:
+            rows = (
+                (
+                    await self.db.execute(
+                        select(Pit).where(Pit.project_id == self.episode.project_id, Pit.status == "open").limit(30)
+                    )
                 )
+                .scalars()
+                .all()
             )
-            .scalars()
-            .all()
-        )
         return [{"description": p.description or p.title, "trigger_hint": p.trigger_hint} for p in rows]
 
     async def _tool_generate_panel(self, args: dict) -> dict:
@@ -439,23 +484,37 @@ class RenderAgent:
         }
         ref_names: list[str] = []
 
-        if effective_ids:
-            assets_rows = (
-                (
-                    await self.db.execute(
-                        select(Asset).where(
-                            Asset.project_id == self.episode.project_id,
-                            Asset.id.in_(effective_ids),
+        asset_images_map: dict[str, list[AssetImage]] = {}
+        async with self._db_lock:
+            if effective_ids:
+                assets_rows = (
+                    (
+                        await self.db.execute(
+                            select(Asset).where(
+                                Asset.project_id == self.episode.project_id,
+                                Asset.id.in_(effective_ids),
+                            )
                         )
                     )
+                    .scalars()
+                    .all()
                 )
-                .scalars()
-                .all()
-            )
-            by_id = {a.id: a for a in assets_rows}
-            assets = [by_id[aid] for aid in effective_ids if aid in by_id]
-        else:
-            assets = []
+                by_id = {a.id: a for a in assets_rows}
+                assets = [by_id[aid] for aid in effective_ids if aid in by_id]
+                if assets:
+                    all_imgs = (
+                        (
+                            await self.db.execute(
+                                select(AssetImage).where(AssetImage.asset_id.in_([a.id for a in assets]))
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                    for im in all_imgs:
+                        asset_images_map.setdefault(im.asset_id, []).append(im)
+            else:
+                assets = []
 
         for asset in assets:
             if asset.type != "style":
@@ -469,11 +528,7 @@ class RenderAgent:
             elif asset.type == "style":
                 context["style_tags"].extend((asset.tags or {}).get("visual_tags", []))
 
-            images = list(
-                (await self.db.execute(select(AssetImage).where(AssetImage.asset_id == asset.id).limit(6)))
-                .scalars()
-                .all()
-            )
+            images = list(asset_images_map.get(asset.id, []))
             images.sort(key=lambda img: _REF_KIND_PRIORITY.index(img.kind) if img.kind in _REF_KIND_PRIORITY else 99)
             max_per_asset = 1 if asset.type == "style" else 2
             for img in images[:max_per_asset]:
@@ -492,41 +547,42 @@ class RenderAgent:
         neg = negative_prompt or "speech bubble, text, dialogue balloon, watermark, signature, blurry"
         target_size = self.panel_sizes.get(panel_id, self.size)
 
-        result = await self.backend.generate(
-            prompt=prompt,
-            negative_prompt=neg,
-            size=target_size,
-            reference_images=reference_images or None,
-            context=context,
-            model=self.image_model or None,
-        )
-
-        object_key = storage_service.generate_object_key(f"generated/{self.episode.id}", f"{panel_id}.png")
-        storage_service.upload_file(settings.MINIO_BUCKET, object_key, result.image_data, content_type="image/png")
-
-        await self.db.execute(
-            delete(GeneratedImage).where(
-                GeneratedImage.episode_id == self.episode.id,
-                GeneratedImage.panel_id == panel_id,
+        async with self._render_sem:
+            result = await self.backend.generate(
+                prompt=prompt,
+                negative_prompt=neg,
+                size=target_size,
+                reference_images=reference_images or None,
+                context=context,
+                model=self.image_model or None,
             )
-        )
-        gen_image = GeneratedImage(
-            id=str(uuid.uuid4()),
-            generation_run_id=self.run_id,
-            episode_id=self.episode.id,
-            panel_id=panel_id,
-            image_path=object_key,
-            meta={
-                **result.meta,
-                "prompt": prompt,
-                "seed": result.seed,
-                "reference_assets": ref_names,
-                "rendered_by": "fallback" if mechanical else "agent",
-            },
-        )
-        self.db.add(gen_image)
-        await self.db.commit()
-        self.rendered[panel_id] = object_key
+            object_key = storage_service.generate_object_key(f"generated/{self.episode.id}", f"{panel_id}.png")
+            storage_service.upload_file(settings.MINIO_BUCKET, object_key, result.image_data, content_type="image/png")
+
+        async with self._db_lock:
+            await self.db.execute(
+                delete(GeneratedImage).where(
+                    GeneratedImage.episode_id == self.episode.id,
+                    GeneratedImage.panel_id == panel_id,
+                )
+            )
+            gen_image = GeneratedImage(
+                id=str(uuid.uuid4()),
+                generation_run_id=self.run_id,
+                episode_id=self.episode.id,
+                panel_id=panel_id,
+                image_path=object_key,
+                meta={
+                    **result.meta,
+                    "prompt": prompt,
+                    "seed": result.seed,
+                    "reference_assets": ref_names,
+                    "rendered_by": "fallback" if mechanical else "agent",
+                },
+            )
+            self.db.add(gen_image)
+            await self.db.commit()
+            self.rendered[panel_id] = object_key
         return True
 
     def _mechanical_prompt(self, panel: dict) -> str:

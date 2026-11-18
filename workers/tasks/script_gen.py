@@ -121,7 +121,13 @@ async def _generate_script_with_db(
         if episode.number and cutoff >= episode.number and episode.source == "generated":
             cutoff = episode.number - Decimal("0.01")
 
-        context = await memory_service.build_context_for_generation(db, episode.project_id, branch_id, cutoff)
+        context = await memory_service.build_context_for_generation(
+            db,
+            episode.project_id,
+            branch_id,
+            cutoff,
+            custom_instructions=custom_instructions,
+        )
 
         target_ep_label = episode.label or str(
             int(episode.number) if episode.number == int(episode.number) else episode.number

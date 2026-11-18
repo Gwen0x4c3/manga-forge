@@ -4,7 +4,16 @@ import logging
 from typing import Any
 
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, PointStruct, VectorParams
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchAny,
+    MatchValue,
+    PointStruct,
+    Range,
+    VectorParams,
+)
 
 from app.config import settings
 
@@ -82,14 +91,23 @@ class QdrantVectorStore:
         limit: int = 5,
         project_id: str | None = None,
         collection_name: str | None = None,
+        episode_ids: list[str] | None = None,
+        max_episode_number: float | None = None,
     ) -> list[dict[str, Any]]:
         name = collection_name or settings.QDRANT_COLLECTION
         collections = await self.client.get_collections()
         if name not in [c.name for c in collections.collections]:
             return []
-        query_filter = None
+        must_conditions = []
         if project_id:
-            query_filter = Filter(must=[FieldCondition(key="project_id", match=MatchValue(value=project_id))])
+            must_conditions.append(FieldCondition(key="project_id", match=MatchValue(value=project_id)))
+        if episode_ids is not None:
+            if not episode_ids:
+                return []
+            must_conditions.append(FieldCondition(key="episode_id", match=MatchAny(any=list(episode_ids))))
+        if max_episode_number is not None:
+            must_conditions.append(FieldCondition(key="episode_number", range=Range(lte=float(max_episode_number))))
+        query_filter = Filter(must=must_conditions) if must_conditions else None
         results = await self.client.query_points(
             collection_name=name,
             query=query_vector,
@@ -97,6 +115,19 @@ class QdrantVectorStore:
             query_filter=query_filter,
         )
         return [{"id": str(p.id), "score": p.score, "payload": p.payload} for p in results.points]
+
+    async def delete_by_episode(self, episode_id: str, collection_name: str | None = None) -> None:
+        name = collection_name or settings.QDRANT_COLLECTION
+        try:
+            collections = await self.client.get_collections()
+            if name not in [c.name for c in collections.collections]:
+                return
+            await self.client.delete(
+                collection_name=name,
+                points_selector=Filter(must=[FieldCondition(key="episode_id", match=MatchValue(value=episode_id))]),
+            )
+        except Exception:
+            logger.debug("Skipping Qdrant delete_by_episode (store unavailable)", exc_info=True)
 
     async def delete_by_project(self, project_id: str, collection_name: str | None = None) -> None:
         name = collection_name or settings.QDRANT_COLLECTION

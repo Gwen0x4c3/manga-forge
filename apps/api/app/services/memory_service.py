@@ -25,6 +25,10 @@ _LANGUAGE_LABELS = {
     "en": "English",
 }
 
+ARC_BLOCK_SIZE = 10
+_SUMMARY_COMPRESS_THRESHOLD = 6500
+_SUMMARY_COMPRESS_TARGET = 3600
+
 
 async def get_canon_rules(db: AsyncSession, project_id: str) -> dict | None:
     result = await db.execute(select(Project).where(Project.id == project_id).limit(1))
@@ -69,9 +73,131 @@ async def update_long_summary(db: AsyncSession, project_id: str, summary: str) -
     return project.long_summary
 
 
-_SUMMARY_COMPRESS_THRESHOLD = 6000
-_SUMMARY_COMPRESS_TARGET = 3200
-_SUMMARY_TRUNCATE_KEEP = 4200
+def _condense_sentence(text: str, max_len: int = 130) -> str:
+    cleaned = " ".join((text or "").strip().splitlines())
+    if len(cleaned) <= max_len:
+        return cleaned
+    # Cut cleanly at sentence boundary if possible
+    for sep in ("。", "！", "？", "；", ". ", "! ", "? "):
+        idx = cleaned.rfind(sep, 0, max_len)
+        if idx >= max_len // 2:
+            return cleaned[: idx + len(sep)].strip()
+    return cleaned[: max_len - 1].rstrip() + "…"
+
+
+def _synthesize_arc_summary(
+    arc_items: list[tuple[str, dict]],
+    max_chars: int = 520,
+) -> str:
+    """Deterministically synthesize a 10-episode arc digest without repeated LLM re-compression loss."""
+    if not arc_items:
+        return ""
+
+    highlights: list[str] = []
+    # 1. Major turning points / cliffhangers across the arc
+    for ep_label, content in arc_items:
+        events = content.get("events") or []
+        major = [
+            ev.get("description", "").strip()
+            for ev in events
+            if isinstance(ev, dict)
+            and ev.get("significance") in ("turning_point", "major", "cliffhanger")
+            and ev.get("description")
+        ]
+        if major:
+            highlights.append(f"[第{ep_label}话] " + _condense_sentence(major[0], 95))
+        elif content.get("summary"):
+            highlights.append(f"[第{ep_label}话] " + _condense_sentence(str(content["summary"]), 85))
+
+    # 2. Persistent state transitions across the arc
+    arc_states: dict[str, str] = {}
+    for _ep_label, content in arc_items:
+        for sc in content.get("state_changes") or []:
+            if isinstance(sc, dict) and sc.get("character") and sc.get("after"):
+                key = f"{sc['character']}.{sc.get('attribute') or '状态'}"
+                arc_states[key] = _condense_sentence(str(sc["after"]), 45)
+
+    body = "；".join(highlights)
+    if arc_states:
+        state_tail = "｜状态演进：" + "，".join(f"{k}→{v}" for k, v in list(arc_states.items())[-5:])
+    else:
+        state_tail = ""
+
+    if len(body) + len(state_tail) <= max_chars:
+        return body + state_tail
+
+    budget = max(160, max_chars - len(state_tail))
+    # Evenly sample across the 10-episode block so beginning, middle, and end of the arc all survive
+    if len(highlights) > 4:
+        step = max(1, len(highlights) // 5)
+        sampled = [highlights[0]]
+        for idx in range(step, len(highlights) - 1, step):
+            if highlights[idx] not in sampled:
+                sampled.append(highlights[idx])
+        if highlights[-1] not in sampled:
+            sampled.append(highlights[-1])
+        body = "；".join(sampled)
+    return _condense_sentence(body, budget) + state_tail
+
+
+def build_hierarchical_history(
+    ep_summaries: list[tuple[Episode, dict]],
+    cached_arcs: list[dict] | None = None,
+    include_recent_tail: int = 0,
+) -> tuple[str, list[dict]]:
+    """Build multi-scale story history (immutable 10-episode Arc Summaries + recent tail)
+    so 60~150+ episode series keep Chapter 1~10 intact without repeated compression decay."""
+    if not ep_summaries:
+        return "", list(cached_arcs or [])
+
+    cache_by_key = {
+        str(a.get("key")): a
+        for a in (cached_arcs or [])
+        if isinstance(a, dict) and a.get("key") and a.get("summary")
+    }
+
+    older_pairs = ep_summaries[:-include_recent_tail] if include_recent_tail > 0 else ep_summaries
+    tail_pairs = ep_summaries[-include_recent_tail:] if include_recent_tail > 0 else []
+
+    arc_records: list[dict] = []
+    rendered_sections: list[str] = []
+
+    for i in range(0, len(older_pairs), ARC_BLOCK_SIZE):
+        chunk = older_pairs[i : i + ARC_BLOCK_SIZE]
+        start_lbl = str(chunk[0][0].label or chunk[0][0].number)
+        end_lbl = str(chunk[-1][0].label or chunk[-1][0].number)
+        is_sealed = len(chunk) == ARC_BLOCK_SIZE
+        ep_sig = ",".join(ep.id for ep, _ in chunk)
+        arc_key = f"{start_lbl}-{end_lbl}:{len(chunk)}"
+
+        if is_sealed and arc_key in cache_by_key and cache_by_key[arc_key].get("ep_sig") == ep_sig:
+            record = cache_by_key[arc_key]
+        else:
+            arc_items = [(str(ep.label or ep.number), c) for ep, c in chunk]
+            per_arc_budget = 520 if len(older_pairs) <= 80 else 360
+            digest = _synthesize_arc_summary(arc_items, max_chars=per_arc_budget)
+            record = {
+                "key": arc_key,
+                "start_episode": start_lbl,
+                "end_episode": end_lbl,
+                "count": len(chunk),
+                "sealed": is_sealed,
+                "ep_sig": ep_sig,
+                "summary": digest,
+            }
+        if is_sealed:
+            arc_records.append(record)
+        header = f"【第{start_lbl}~{end_lbl}话篇章纪要】" if len(chunk) > 1 else f"【第{start_lbl}话纪要】"
+        rendered_sections.append(f"{header}{record['summary']}")
+
+    if tail_pairs:
+        for ep, content in tail_pairs:
+            lbl = ep.label or str(ep.number)
+            summ = (content.get("summary") or "").strip()
+            if summ:
+                rendered_sections.append(f"第{lbl}话：{_condense_sentence(summ, 360)}")
+
+    return "\n".join(rendered_sections), arc_records
 
 
 async def append_episode_summary(
@@ -80,11 +206,47 @@ async def append_episode_summary(
     episode_number,
     summary: str,
 ) -> str | None:
-    """Idempotently append or update an episode's line in long_summary, compressing when over budget."""
+    """Update rolling project summary using hierarchical arc blocks when chapter count grows large."""
     result = await db.execute(select(Project).where(Project.id == project_id).limit(1))
     project = result.scalar_one_or_none()
     if not project or not summary.strip():
         return project.long_summary if project else None
+
+    # Check if we have structured episode summaries on the default/head branch to build clean arc blocks
+    eps = list(
+        (
+            await db.execute(
+                select(Episode).where(Episode.project_id == project_id).order_by(Episode.number.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    # Deduplicate by episode number preferring latest updated on default progression
+    by_num: dict[Decimal, Episode] = {}
+    for ep in eps:
+        by_num[ep.number] = ep
+    ordered_eps = [by_num[k] for k in sorted(by_num.keys())]
+    mem_map = await _load_latest_memories_map(db, [ep.id for ep in ordered_eps], "summary")
+    ep_summaries = [(ep, mem_map[ep.id]) for ep in ordered_eps if ep.id in mem_map]
+
+    canon = dict(project.canon_rules or {})
+    bible = dict(canon.get("story_bible") or {})
+    cached_arcs = bible.get("arc_summaries") or []
+
+    if len(ep_summaries) > ARC_BLOCK_SIZE + 2:
+        hierarchical_text, updated_arcs = build_hierarchical_history(
+            ep_summaries,
+            cached_arcs=cached_arcs,
+            include_recent_tail=5,
+        )
+        bible["arc_summaries"] = updated_arcs
+        canon["story_bible"] = bible
+        project.canon_rules = canon
+        project.long_summary = hierarchical_text
+        await db.commit()
+        await db.refresh(project)
+        return project.long_summary
 
     entry = " ".join(summary.strip().splitlines())
     prefix = f"第{episode_number}话："
@@ -106,7 +268,9 @@ async def append_episode_summary(
         text = "\n".join(lines)
 
     if len(text) > _SUMMARY_COMPRESS_THRESHOLD:
-        text = await _compress_long_summary(text) or text[-_SUMMARY_TRUNCATE_KEEP:]
+        compressed = await _compress_long_summary(text)
+        if compressed:
+            text = compressed
 
     project.long_summary = text
     await db.commit()
@@ -149,7 +313,7 @@ async def _compress_long_summary(text: str) -> str | None:
         compressed = result.summary.strip()
         return compressed if len(compressed) >= 50 else None
     except Exception:
-        logger.warning("Long summary compression failed, truncating instead", exc_info=True)
+        logger.warning("Long summary compression failed, keeping hierarchical summary", exc_info=True)
         return None
 
 
@@ -167,6 +331,61 @@ async def _latest_episode_memory(
     return result.scalar_one_or_none()
 
 
+async def _load_latest_memories_map(
+    db: AsyncSession,
+    episode_ids: list[str],
+    mem_type: str = "summary",
+) -> dict[str, dict]:
+    """Batch-load the newest memory content per episode in a single SQL query (no N+1 at 60+ chapters)."""
+    if not episode_ids:
+        return {}
+    rows = (
+        (
+            await db.execute(
+                select(EpisodeMemory)
+                .where(EpisodeMemory.episode_id.in_(episode_ids), EpisodeMemory.type == mem_type)
+                .order_by(EpisodeMemory.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    out: dict[str, dict] = {}
+    for row in rows:
+        if row.episode_id not in out and isinstance(row.content, dict):
+            out[row.episode_id] = row.content
+    return out
+
+
+async def _collect_lineage_episode_ids(
+    db: AsyncSession,
+    project_id: str,
+    branch_eps: list[Episode],
+) -> set[str]:
+    """Collect episode IDs on `branch_eps` PLUS any pre-fork ancestor `parent_episode_id`s
+    so forked branches seamlessly inherit pre-fork asset sightings, pit origins, and RAG vectors."""
+    lineage_ids = {ep.id for ep in branch_eps}
+    pending_parents = {ep.parent_episode_id for ep in branch_eps if ep.parent_episode_id} - lineage_ids
+    if not pending_parents:
+        return lineage_ids
+
+    all_ep_parents = {
+        row[0]: row[1]
+        for row in (
+            await db.execute(select(Episode.id, Episode.parent_episode_id).where(Episode.project_id == project_id))
+        ).all()
+    }
+    while pending_parents:
+        pid = pending_parents.pop()
+        if not pid or pid in lineage_ids:
+            continue
+        lineage_ids.add(pid)
+        anc = all_ep_parents.get(pid)
+        if anc and anc not in lineage_ids:
+            pending_parents.add(anc)
+    return lineage_ids
+
+
 async def get_branch_history_before(
     db: AsyncSession,
     project_id: str,
@@ -174,8 +393,9 @@ async def get_branch_history_before(
     before_number: Decimal,
     fallback_long_summary: str = "",
 ) -> str:
-    """Build compact story history strictly before `before_number` on `branch_id`."""
-    eps = (
+    """Build multi-scale story history strictly before `before_number` on `branch_id`
+    (sealed 10-episode Arc Summaries from Ep 1 onward + detailed recent 5 chapters)."""
+    eps = list(
         (
             await db.execute(
                 select(Episode)
@@ -193,16 +413,22 @@ async def get_branch_history_before(
     if not eps:
         return ""
 
-    lines: list[str] = []
-    for ep in eps:
-        mem = await _latest_episode_memory(db, ep.id, "summary")
-        if mem and isinstance(mem.content, dict) and mem.content.get("summary"):
-            lbl = ep.label or str(ep.number)
-            lines.append(f"第{lbl}话：{mem.content['summary']}")
-    if lines:
-        joined = "\n".join(lines)
-        return joined[-2800:]
-    return (fallback_long_summary or "")[-2000:]
+    mem_map = await _load_latest_memories_map(db, [ep.id for ep in eps], "summary")
+    ep_summaries = [
+        (ep, mem_map[ep.id])
+        for ep in eps
+        if ep.id in mem_map and mem_map[ep.id].get("summary")
+    ]
+    if ep_summaries:
+        project = (await db.execute(select(Project).where(Project.id == project_id).limit(1))).scalar_one_or_none()
+        cached_arcs = (((project.canon_rules or {}).get("story_bible") or {}).get("arc_summaries")) if project else None
+        history_text, _ = build_hierarchical_history(
+            ep_summaries,
+            cached_arcs=cached_arcs,
+            include_recent_tail=5,
+        )
+        return history_text
+    return fallback_long_summary or ""
 
 
 async def get_recent_window(
@@ -215,22 +441,22 @@ async def get_recent_window(
     query = select(Episode).where(Episode.project_id == project_id, Episode.branch_id == branch_id)
     if max_episode_number is not None:
         query = query.where(Episode.number <= max_episode_number)
-    # Fetch slightly more candidates in case draft episodes without summary exist
     result = await db.execute(query.order_by(Episode.number.desc()).limit(window_size + 5))
     candidates = list(result.scalars().all())
+    mem_map = await _load_latest_memories_map(db, [ep.id for ep in candidates], "summary")
 
     understood_items: list[dict] = []
     fallback_items: list[dict] = []
     for ep in candidates:
-        memory = await _latest_episode_memory(db, ep.id, "summary")
+        content = mem_map.get(ep.id)
         entry = {
             "episode_id": ep.id,
             "number": ep.number,
             "label": ep.label,
             "title": ep.title,
-            "summary": memory.content if memory else None,
+            "summary": content,
         }
-        if memory and isinstance(memory.content, dict) and memory.content.get("summary"):
+        if content and content.get("summary"):
             understood_items.append(entry)
         else:
             fallback_items.append(entry)
@@ -242,16 +468,13 @@ async def get_recent_window(
     return chosen
 
 
-def _extract_search_tokens(query: str) -> list[str]:
-    """Tokenize mixed CJK + Latin queries into meaningful words and CJK bigrams."""
+def _extract_search_tokens(query: str, max_tokens: int = 64) -> list[str]:
+    """Tokenize mixed CJK + Latin queries, sampling evenly across clauses when long."""
     tokens: list[str] = []
-    # 1. Alphanumeric words & CJK chunks split by punctuation/spaces
     chunks = [t for t in re.split(r"[\s,，。、；;:：!！?？（）()\[\]【】\"'“”‘’—…·]+", query) if t]
     for chunk in chunks:
-        # Extract ASCII words
-        for word in re.findall(r"[a-zA-Z0-9_]{2,}", chunk):
+        for word in re.findall(r"[a-zA-Z0-9_-]{2,}", chunk):
             tokens.append(word.lower())
-        # Extract CJK runs: add short runs directly + overlapping 2-grams for longer clauses
         for cjk in re.findall(r"[\u4e00-\u9fff\u3040-\u30ff]{2,}", chunk):
             if len(cjk) <= 4:
                 tokens.append(cjk)
@@ -260,8 +483,12 @@ def _extract_search_tokens(query: str) -> list[str]:
                     tokens.append(cjk[i : i + 2])
                 if len(cjk) >= 3:
                     tokens.append(cjk[-2:])
-    # Deduplicate preserving order
-    return list(dict.fromkeys(tokens))[:40]
+    unique = list(dict.fromkeys(tokens))
+    if len(unique) <= max_tokens:
+        return unique
+    # Evenly sample across the entire query instead of cutting off after the first sentence
+    step = len(unique) / max_tokens
+    return [unique[int(i * step)] for i in range(max_tokens)]
 
 
 async def search_rag(
@@ -271,20 +498,28 @@ async def search_rag(
     top_k: int = 5,
     max_episode_number: Decimal | None = None,
     prefer_before_number: Decimal | None = None,
+    episode_ids: set[str] | list[str] | None = None,
 ) -> list[dict]:
-    """Semantic search over episode memories, falling back to CJK-aware keyword search."""
+    """Branch-aware semantic search over episode memories, falling back to CJK-aware keyword search."""
+    ep_id_list = list(episode_ids) if episode_ids is not None else None
     if embeddings_configured() and query.strip():
         try:
             query_vectors = await get_embeddings([query[:4000]])
             if query_vectors:
                 raw_results = await vector_store.search(
                     query_vector=query_vectors[0],
-                    limit=max(top_k * 3, 15),
+                    limit=max(top_k * 3, 18),
                     project_id=project_id,
+                    episode_ids=ep_id_list,
+                    max_episode_number=float(max_episode_number) if max_episode_number is not None else None,
                 )
                 filtered = []
+                allowed_set = set(ep_id_list) if ep_id_list is not None else None
                 for r in raw_results:
-                    ep_num = r.get("payload", {}).get("episode_number")
+                    payload = r.get("payload", {})
+                    if allowed_set is not None and payload.get("episode_id") not in allowed_set:
+                        continue
+                    ep_num = payload.get("episode_number")
                     if max_episode_number is not None and ep_num is not None:
                         try:
                             if Decimal(str(ep_num)) > max_episode_number:
@@ -311,6 +546,7 @@ async def search_rag(
         top_k,
         max_episode_number=max_episode_number,
         prefer_before_number=prefer_before_number,
+        episode_ids=ep_id_list,
     )
 
 
@@ -321,18 +557,27 @@ async def _keyword_search(
     top_k: int,
     max_episode_number: Decimal | None = None,
     prefer_before_number: Decimal | None = None,
+    episode_ids: list[str] | None = None,
 ) -> list[dict]:
     terms = _extract_search_tokens(query)
     if not terms:
         return []
+    if episode_ids is not None and not episode_ids:
+        return []
+
     stmt = (
         select(EpisodeMemory, Episode.number)
         .join(Episode, EpisodeMemory.episode_id == Episode.id)
         .where(Episode.project_id == project_id, EpisodeMemory.type.in_(("summary", "events")))
     )
+    if episode_ids is not None:
+        stmt = stmt.where(Episode.id.in_(episode_ids))
     if max_episode_number is not None:
         stmt = stmt.where(Episode.number <= max_episode_number)
-    stmt = stmt.order_by(Episode.number.desc()).limit(250)
+    stmt = stmt.order_by(Episode.number.desc(), EpisodeMemory.created_at.desc())
+    # Only apply row cap when branch episode_ids are unspecified
+    if episode_ids is None:
+        stmt = stmt.limit(800)
     rows = (await db.execute(stmt)).all()
 
     scored: list[tuple[int, float, Decimal, EpisodeMemory, str]] = []
@@ -371,16 +616,22 @@ async def _keyword_search(
         is_older_bonus = 1 if (prefer_before_number is not None and number < prefer_before_number) else 0
         for frag_type, text in fragments:
             lower_text = text.lower()
-            hits = sum(1 for t in terms if t in lower_text)
-            if hits:
-                score = round(hits / len(terms), 4)
+            # Weight multi-char matches higher than common 2-char bigrams
+            weighted_hits = sum(2.0 if len(t) >= 3 else 1.0 for t in terms if t in lower_text)
+            if weighted_hits > 0:
+                score = round(weighted_hits / max(len(terms), 1), 4)
                 scored.append((is_older_bonus, score, number, memory, f"{frag_type}||{text}"))
 
     scored.sort(key=lambda x: (-x[0], -x[1], -x[2]))
 
     results = []
-    for _, score, number, memory, packed in scored[:top_k]:
+    seen_contents: set[str] = set()
+    for _, score, number, memory, packed in scored:
         frag_type, _, text = packed.partition("||")
+        sig = f"{number}:{text[:80]}"
+        if sig in seen_contents:
+            continue
+        seen_contents.add(sig)
         results.append(
             {
                 "id": memory.id,
@@ -393,7 +644,61 @@ async def _keyword_search(
                 },
             }
         )
+        if len(results) >= top_k:
+            break
     return results
+
+
+async def _multi_query_rag(
+    db: AsyncSession,
+    project_id: str,
+    weighted_queries: list[tuple[float, str]],
+    top_k: int,
+    max_episode_number: Decimal,
+    prefer_before_number: Decimal,
+    episode_ids: set[str],
+) -> list[dict]:
+    """Run focused sub-queries (author instructions, cliffhanger, active pits, cast) and fuse via RRF
+    so specific long-range callbacks from 40~100 chapters ago aren't drowned out by recent summaries."""
+    valid_queries = [(w, q.strip()) for w, q in weighted_queries if q and q.strip()]
+    if not valid_queries or not episode_ids:
+        return []
+
+    fused_scores: dict[str, float] = {}
+    items_by_sig: dict[str, dict] = {}
+
+    for weight, sub_q in valid_queries:
+        hits = await search_rag(
+            db,
+            project_id,
+            sub_q,
+            top_k=max(top_k, 6),
+            max_episode_number=max_episode_number,
+            prefer_before_number=prefer_before_number,
+            episode_ids=episode_ids,
+        )
+        for rank, item in enumerate(hits):
+            payload = item.get("payload") or {}
+            ep_no = payload.get("episode_number")
+            content = str(payload.get("content") or "")
+            sig = f"{ep_no}:{content[:90]}"
+            is_long_range = (
+                ep_no is not None and Decimal(str(ep_no)) < prefer_before_number
+            )
+            range_mult = 1.35 if is_long_range else 0.55
+            rrf = weight * range_mult * (1.0 / (rank + 8.0))
+            fused_scores[sig] = fused_scores.get(sig, 0.0) + rrf
+            if sig not in items_by_sig:
+                items_by_sig[sig] = item
+
+    ranked_sigs = sorted(
+        fused_scores.keys(),
+        key=lambda s: (
+            -fused_scores[s],
+            Decimal(str((items_by_sig[s].get("payload") or {}).get("episode_number") or 0)),
+        ),
+    )
+    return [items_by_sig[s] for s in ranked_sigs[:top_k]]
 
 
 def _split_pit_clues(description: str | None) -> tuple[str, list[str]]:
@@ -410,13 +715,24 @@ def _split_pit_clues(description: str | None) -> tuple[str, list[str]]:
     return " ".join(base_lines), clues
 
 
+def _text_mentions_any(haystack_lower: str, names: list[str]) -> bool:
+    if not haystack_lower:
+        return False
+    for n in names:
+        clean = (n or "").strip().lower()
+        if len(clean) >= 2 and clean in haystack_lower:
+            return True
+    return False
+
+
 async def build_context_for_generation(
     db: AsyncSession,
     project_id: str,
     branch_id: str,
     base_episode_number: Decimal,
+    custom_instructions: str | None = None,
 ) -> dict:
-    """Assemble branch-isolated, temporally-bounded, high-density continuity context for LLM script generation."""
+    """Assemble branch-isolated, multi-scale continuity context capable of 60~150+ episodes."""
     project = (await db.execute(select(Project).where(Project.id == project_id).limit(1))).scalar_one_or_none()
 
     raw_canon = dict((project.canon_rules or {}) if project else {})
@@ -438,27 +754,20 @@ async def build_context_for_generation(
         .scalars()
         .all()
     )
-    branch_ep_ids = {ep.id for ep in branch_eps}
-    max_branch_ep = (
-        await db.execute(
-            select(Episode.number)
-            .where(Episode.project_id == project_id, Episode.branch_id == branch_id)
-            .order_by(Episode.number.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    lineage_ep_ids = await _collect_lineage_episode_ids(db, project_id, branch_eps)
 
-    # Load summary & ocr memories for branch episodes <= base_episode_number
+    # Batch-load all summary memories on this branch in ONE query
+    mem_map = await _load_latest_memories_map(db, [ep.id for ep in branch_eps], "summary")
+
     ep_summaries: list[tuple[Episode, dict]] = []
     speech_samples_by_speaker: dict[str, list[str]] = {}
     cumulative_states: dict[str, dict[str, str]] = {}
     latest_main_plot: dict = {}
 
     for ep in branch_eps:
-        mem = await _latest_episode_memory(db, ep.id, "summary")
-        if not mem or not isinstance(mem.content, dict):
+        content = mem_map.get(ep.id)
+        if not content:
             continue
-        content = mem.content
         ep_summaries.append((ep, content))
 
         mp = content.get("main_plot") or {}
@@ -487,7 +796,27 @@ async def build_context_for_generation(
     recent_pairs = ep_summaries[-5:]
     recent_min_number = recent_pairs[0][0].number if recent_pairs else base_episode_number
 
-    # Immediate bridge from the base episode (latest understood episode <= base_episode_number)
+    # Collect IDs (including pre-fork parent_episode_id) for recency scoring
+    latest_ep_ids: set[str] = set()
+    if ep_summaries:
+        last_e = ep_summaries[-1][0]
+        latest_ep_ids.add(last_e.id)
+        if last_e.parent_episode_id:
+            latest_ep_ids.add(last_e.parent_episode_id)
+
+    recent_window_ep_ids: set[str] = set()
+    for ep, _ in recent_pairs:
+        recent_window_ep_ids.add(ep.id)
+        if ep.parent_episode_id:
+            recent_window_ep_ids.add(ep.parent_episode_id)
+
+    recent_arc_ep_ids: set[str] = set()
+    for ep, _ in ep_summaries[-10:]:
+        recent_arc_ep_ids.add(ep.id)
+        if ep.parent_episode_id:
+            recent_arc_ep_ids.add(ep.parent_episode_id)
+
+    # Immediate bridge from the base episode
     previous_bridge = None
     if ep_summaries:
         last_ep, last_content = ep_summaries[-1]
@@ -499,7 +828,9 @@ async def build_context_for_generation(
                 if txt:
                     closing_lines.append(f"{spk}: {txt}" if spk else f"[旁白] {txt}")
         all_events = last_content.get("events") or []
-        important_events = [e for e in all_events if e.get("significance") in ("major", "turning_point", "cliffhanger")]
+        important_events = [
+            e for e in all_events if e.get("significance") in ("major", "turning_point", "cliffhanger")
+        ]
         key_events = important_events or all_events[-3:]
         previous_bridge = {
             "episode_number": str(last_ep.label or last_ep.number),
@@ -510,19 +841,28 @@ async def build_context_for_generation(
             "closing_dialogue": closing_lines[-10:],
         }
 
-    # Branch-accurate long_summary & story_bible
-    is_at_project_head = max_branch_ep is None or base_episode_number >= max_branch_ep
-    if is_at_project_head and project and project.long_summary:
-        effective_long_summary = project.long_summary
-    else:
+    # Build multi-scale long_summary (immutable 10-episode Arc Summaries + pre-window episodes)
+    # No more [-4000:] front-truncation or 10x repeated lossy compression!
+    cached_arcs = story_bible.get("arc_summaries") or []
+    if len(ep_summaries) > 5:
+        older_history, arc_records = build_hierarchical_history(
+            ep_summaries[:-5],
+            cached_arcs=cached_arcs,
+            include_recent_tail=0,
+        )
+        effective_long_summary = older_history
+        story_bible["arc_summaries"] = arc_records
+    elif ep_summaries:
         effective_long_summary = "\n".join(
             f"第{ep.label or ep.number}话：{c.get('summary', '')}" for ep, c in ep_summaries if c.get("summary")
-        )[-4000:]
+        )
+    else:
+        effective_long_summary = (project.long_summary if project else "") or ""
 
     if latest_main_plot:
         story_bible["main_plot"] = {**(story_bible.get("main_plot") or {}), **latest_main_plot}
 
-    # Filter pits temporally: introduced <= base_episode_number, and NOT resolved <= base_episode_number
+    # Filter pits temporally & by branch lineage
     all_pits = list(
         (await db.execute(select(Pit).where(Pit.project_id == project_id).order_by(Pit.priority.desc())))
         .scalars()
@@ -532,28 +872,68 @@ async def build_context_for_generation(
         row[0]: row[1]
         for row in (await db.execute(select(Episode.id, Episode.number).where(Episode.project_id == project_id))).all()
     }
-    active_pits_filtered: list[Pit] = []
+    active_pits_candidates: list[Pit] = []
     for pit in all_pits:
         if pit.status == "abandoned":
+            continue
+        if pit.introduced_episode_id and pit.introduced_episode_id not in lineage_ep_ids:
             continue
         intro_num = ep_num_lookup.get(pit.introduced_episode_id)
         if intro_num is not None and intro_num > base_episode_number:
             continue
         if pit.status == "resolved":
+            res_in_lineage = pit.resolved_episode_id in lineage_ep_ids if pit.resolved_episode_id else True
             res_num = ep_num_lookup.get(pit.resolved_episode_id) if pit.resolved_episode_id else None
-            # If resolved in a LATER episode (> base_episode_number), it was still OPEN at base_episode_number!
-            if res_num is None or res_num <= base_episode_number:
+            if res_in_lineage and (res_num is None or res_num <= base_episode_number):
                 continue
-        active_pits_filtered.append(pit)
+        active_pits_candidates.append(pit)
 
-    # Load and rank assets by branch relevance
+    # Focus text for relevance boosting (custom instructions + immediate cliffhanger + main hook)
+    bridge_text = json.dumps(previous_bridge.get("ending_state") or {}, ensure_ascii=False) if previous_bridge else ""
+    hook_text = (story_bible.get("main_plot") or {}).get("next_hook", "")
+    focus_lower = f"{custom_instructions or ''} {bridge_text} {hook_text}".lower()
+
+    def _pit_score(p: Pit) -> tuple[float, float]:
+        desc_l = f"{p.title or ''} {p.description or ''} {p.trigger_hint or ''}".lower()
+        mention_hit = 1.0 if (custom_instructions and any(
+            tok in desc_l for tok in _extract_search_tokens(custom_instructions, 20)
+        )) else 0.0
+        intro_ep = float(ep_num_lookup.get(p.introduced_episode_id) or 0)
+        is_recent_pit = 1.0 if (float(base_episode_number) - intro_ep) <= 8.0 else 0.0
+        _, clues = _split_pit_clues(p.description)
+        clue_bonus = min(len(clues), 4) * 1.5
+        score = p.priority * 3.0 + mention_hit * 50.0 + is_recent_pit * 12.0 + clue_bonus
+        return (-score, -intro_ep)
+
+    active_pits_candidates.sort(key=_pit_score)
+    # Reserve slots so both foundational high-priority mysteries AND recent arc hooks survive at 60+ chapters
+    active_pits_filtered = active_pits_candidates[:20]
+
+    pit_focus_lower = " ".join((p.description or p.title or "") for p in active_pits_filtered[:8]).lower()
+    combined_focus_lower = f"{focus_lower} {pit_focus_lower}"
+
+    # Score & rank assets by (Mention in instructions/bridge/pits + Recency in current arc + Core Cast Frequency)
     assets = list((await db.execute(select(Asset).where(Asset.project_id == project_id))).scalars().all())
-    assets.sort(
-        key=lambda a: (
-            -sum(1 for eid in (a.episode_ids or {}) if eid in branch_ep_ids),
-            -len(a.episode_ids or {}),
-        )
-    )
+
+    def _asset_relevance_score(a: Asset) -> tuple[float, int]:
+        tags = a.tags or {}
+        names = [a.name, *(tags.get("aliases") or [])]
+        ep_keys = set((a.episode_ids or {}).keys())
+        branch_hits = len(ep_keys & lineage_ep_ids)
+        score = float(min(branch_hits, 35) * 6)
+        if ep_keys & latest_ep_ids:
+            score += 260.0
+        elif ep_keys & recent_window_ep_ids:
+            score += 140.0
+        elif ep_keys & recent_arc_ep_ids:
+            score += 65.0
+        if _text_mentions_any(focus_lower, names):
+            score += 1000.0
+        elif _text_mentions_any(combined_focus_lower, names):
+            score += 320.0
+        return (-score, -branch_hits)
+
+    assets.sort(key=_asset_relevance_score)
 
     character_dossier: list[dict] = []
     world_assets: list[dict] = []
@@ -567,7 +947,6 @@ async def build_context_for_generation(
                 style_desc = asset.description
             continue
         if asset.type == "character":
-            # Match cumulative state changes & speech samples by character name/aliases
             state_items: dict[str, str] = {}
             samples: list[str] = []
             names_to_check = [asset.name, *(tags.get("aliases") or [])]
@@ -604,36 +983,43 @@ async def build_context_for_generation(
                 }
             )
 
-    # RAG query combining recent summaries + main plot hook + active pits
-    rag_query_parts = [c.get("summary", "") for _, c in recent_pairs]
-    if story_bible.get("main_plot", {}).get("next_hook"):
-        rag_query_parts.append(story_bible["main_plot"]["next_hook"])
-    rag_query_parts.extend((pit.description or pit.title) for pit in active_pits_filtered[:8])
-    rag_query = " ".join(p for p in rag_query_parts if p)
-    rag_memories = (
-        await search_rag(
-            db,
-            project_id,
-            rag_query,
-            top_k=6,
-            max_episode_number=base_episode_number,
-            prefer_before_number=recent_min_number,
-        )
-        if rag_query
-        else []
+    # Multi-Query Focused Long-Range Recall (replaces single 3500-char diluted soup query)
+    cliffhanger_q = ""
+    if previous_bridge:
+        es = previous_bridge.get("ending_state") or {}
+        cliffhanger_q = f"{es.get('cliffhanger', '')} {es.get('location', '')} {hook_text}".strip()
+    pits_q = " ".join((p.title or p.description or "")[:120] for p in active_pits_filtered[:4])
+    cast_q = " ".join(c["name"] for c in character_dossier[:6])
+
+    rag_memories = await _multi_query_rag(
+        db=db,
+        project_id=project_id,
+        weighted_queries=[
+            (2.2, custom_instructions or ""),
+            (1.5, cliffhanger_q),
+            (1.3, pits_q),
+            (0.9, cast_q),
+        ],
+        top_k=8,
+        max_episode_number=base_episode_number,
+        prefer_before_number=recent_min_number,
+        episode_ids=lineage_ep_ids,
     )
 
-    # Combine user canon rules + auto-discovered world rules cleanly
+    # Combine user canon rules + tiered core/recent world rules
     canon_for_prompt: dict = {}
     if raw_canon:
         canon_for_prompt.update(raw_canon)
-    if story_bible.get("discovered_rules"):
-        canon_for_prompt["discovered_world_rules"] = story_bible["discovered_rules"]
+    core_rules = story_bible.get("core_rules") or []
+    disc_rules = story_bible.get("discovered_rules") or []
+    merged_rules = list(dict.fromkeys([*core_rules, *disc_rules]))
+    if merged_rules:
+        canon_for_prompt["discovered_world_rules"] = merged_rules
 
     lang = (project.language if project else "zh") or "zh"
 
     active_pits_payload = []
-    for pit in active_pits_filtered[:20]:
+    for pit in active_pits_filtered:
         clean_desc, clues = _split_pit_clues(pit.description or pit.title)
         prio_label = "high" if pit.priority >= 8 else ("medium" if pit.priority >= 4 else "low")
         active_pits_payload.append(
@@ -753,6 +1139,7 @@ async def vectorize_and_store_episode_memory(
         vectors = await get_embeddings(texts)
         if not vectors:
             return
+        await vector_store.delete_by_episode(episode_id)
         points = [
             {"id": str(uuid.uuid4()), "vector": vector, "payload": payload}
             for vector, payload in zip(vectors, payloads)

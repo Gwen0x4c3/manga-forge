@@ -48,9 +48,14 @@ _MAX_CHARACTER_REFS = 12
 _REF_KIND_PRIORITY = ("reference", "turnaround", "thumbnail", "lora_dataset")
 
 
-async def _character_reference_blocks(db, known_assets: list[Asset]) -> list[tuple[str, str]]:
-    """(label, data_url) pairs for the best reference sheet of each character
-    that has one, most frequently seen characters first."""
+async def _character_reference_blocks(
+    db,
+    known_assets: list[Asset],
+    recent_ep_ids: set[str] | None = None,
+) -> list[tuple[str, str]]:
+    """(label, data_url) pairs for the best reference sheet of each character,
+    blending series regulars and recently active arc characters."""
+    recent_ids = recent_ep_ids or set()
     candidates: list[tuple[Asset, AssetImage]] = []
     for asset in known_assets:
         if asset.type != "character":
@@ -64,9 +69,26 @@ async def _character_reference_blocks(db, known_assets: list[Asset]) -> list[tup
         )
         candidates.append((asset, best))
 
-    candidates.sort(key=lambda pair: -len(pair[0].episode_ids or {}))
+    def _ref_rank(pair: tuple[Asset, AssetImage]) -> tuple[int, int]:
+        ep_keys = set((pair[0].episode_ids or {}).keys())
+        in_recent = 1 if (ep_keys & recent_ids) else 0
+        return (-in_recent, -len(ep_keys))
+
+    # Reserve half for series regulars and half for characters active in the current arc
+    by_freq = sorted(candidates, key=lambda pair: -len(pair[0].episode_ids or {}))
+    by_recent = sorted(candidates, key=_ref_rank)
+    picked: list[tuple[Asset, AssetImage]] = []
+    seen_aids: set[str] = set()
+    for pair in [*by_freq[:6], *by_recent]:
+        if pair[0].id in seen_aids:
+            continue
+        seen_aids.add(pair[0].id)
+        picked.append(pair)
+        if len(picked) >= _MAX_CHARACTER_REFS:
+            break
+
     blocks: list[tuple[str, str]] = []
-    for asset, image in candidates[:_MAX_CHARACTER_REFS]:
+    for asset, image in picked:
         data = storage_service.get_object_bytes(settings.MINIO_BUCKET, image.image_path)
         if data is None:
             continue
@@ -384,13 +406,25 @@ async def _ensure_project_style_asset(
     await db.commit()
 
 
+def _rule_is_duplicate(candidate: str, existing_pool: list[str]) -> bool:
+    from difflib import SequenceMatcher
+
+    for ex in existing_pool:
+        if candidate == ex:
+            return True
+        if SequenceMatcher(None, candidate[:140], ex[:140]).ratio() >= 0.88:
+            return True
+    return False
+
+
 async def _update_project_story_bible(
     db: AsyncSession,
     project: Project | None,
     episode_label: str,
     understanding_dict: dict,
 ) -> None:
-    """Persist main plotline, current arc, art style, and worldbuilding rules into project.canon_rules.story_bible."""
+    """Persist main plotline, current arc, art style, and tiered worldbuilding rules
+    (permanent foundational core_rules + rolling recent discovered_rules)."""
     if not project:
         return
     canon = dict(project.canon_rules or {})
@@ -411,12 +445,25 @@ async def _update_project_story_bible(
     if art_notes:
         bible["art_style"] = art_notes
 
-    existing_rules = [str(r) for r in (bible.get("discovered_rules") or []) if str(r).strip()]
+    core_rules = [str(r).strip() for r in (bible.get("core_rules") or []) if str(r).strip()]
+    recent_rules = [str(r).strip() for r in (bible.get("discovered_rules") or []) if str(r).strip()]
+
+    # Backfill core_rules from earliest discovered_rules on upgraded projects
+    if not core_rules and recent_rules:
+        core_rules = recent_rules[:15]
+
     for rule in understanding_dict.get("world_rules_discovered") or []:
         rule_str = str(rule).strip()
-        if rule_str and rule_str not in existing_rules:
-            existing_rules.append(rule_str)
-    bible["discovered_rules"] = existing_rules[-40:]
+        if not rule_str or _rule_is_duplicate(rule_str, [*core_rules, *recent_rules]):
+            continue
+        if len(core_rules) < 15:
+            core_rules.append(rule_str)
+        recent_rules.append(rule_str)
+
+    # Keep foundational 15 core rules forever + latest 35 evolving rules (up to 50 distinct rules)
+    rolling_tail = [r for r in recent_rules if r not in core_rules][-35:]
+    bible["core_rules"] = core_rules[:15]
+    bible["discovered_rules"] = [*bible["core_rules"], *rolling_tail]
     bible["last_updated_episode"] = str(episode_label)
 
     canon["story_bible"] = bible
@@ -436,9 +483,59 @@ async def run_multimodal_understanding(
     memories, story bible (main plot), character/item/location assets, auto-cropped
     visual thumbnails, and pit lifecycle changes.
     """
+    from app.models.episode import Episode as EpisodeModel
+
     project = (await db.execute(select(Project).where(Project.id == episode.project_id).limit(1))).scalar_one_or_none()
 
+    recent_branch_eps = list(
+        (
+            await db.execute(
+                select(EpisodeModel)
+                .where(
+                    EpisodeModel.project_id == episode.project_id,
+                    EpisodeModel.branch_id == episode.branch_id,
+                    EpisodeModel.number < episode.number,
+                )
+                .order_by(EpisodeModel.number.desc())
+                .limit(8)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    recent_ep_ids: set[str] = set()
+    for rep in recent_branch_eps:
+        recent_ep_ids.add(rep.id)
+        if rep.parent_episode_id:
+            recent_ep_ids.add(rep.parent_episode_id)
+
     known_assets = list((await db.execute(select(Asset).where(Asset.project_id == episode.project_id))).scalars().all())
+
+    def _understanding_asset_rank(a: Asset) -> tuple[int, int]:
+        ep_keys = set((a.episode_ids or {}).keys())
+        in_recent = 1 if (ep_keys & recent_ep_ids) else 0
+        return (-in_recent, -len(ep_keys))
+
+    ranked_chars = sorted([a for a in known_assets if a.type == "character"], key=_understanding_asset_rank)
+    ranked_others = sorted(
+        [a for a in known_assets if a.type in ("item", "location", "outfit")],
+        key=_understanding_asset_rank,
+    )
+
+    # Cap prompt rosters at 45 each (blending core cast + active arc assets) so 60+ chapter runs stay crisp
+    core_chars = sorted(
+        [a for a in known_assets if a.type == "character"],
+        key=lambda a: -len(a.episode_ids or {}),
+    )[:15]
+    selected_chars: list[Asset] = []
+    seen_cids: set[str] = set()
+    for a in [*core_chars, *ranked_chars]:
+        if a.id not in seen_cids:
+            seen_cids.add(a.id)
+            selected_chars.append(a)
+        if len(selected_chars) >= 45:
+            break
+
     known_characters = [
         {
             "asset_id": a.id,
@@ -447,8 +544,7 @@ async def run_multimodal_understanding(
             "aliases": (a.tags or {}).get("aliases", []),
             "description": (a.description or "")[:300],
         }
-        for a in known_assets
-        if a.type == "character"
+        for a in selected_chars
     ]
     known_other_assets = [
         {
@@ -457,8 +553,7 @@ async def run_multimodal_understanding(
             "type": a.type,
             "description": (a.description or "")[:240],
         }
-        for a in known_assets
-        if a.type in ("item", "location", "outfit")
+        for a in ranked_others[:45]
     ]
 
     open_pits = list(
@@ -472,6 +567,11 @@ async def run_multimodal_understanding(
         .scalars()
         .all()
     )
+    open_pits.sort(
+        key=lambda p: (
+            -(1 if p.introduced_episode_id in recent_ep_ids else 0) * 4 - p.priority,
+        )
+    )
     open_pit_refs = [
         {
             "id": pit.id,
@@ -479,10 +579,10 @@ async def run_multimodal_understanding(
             "priority": "high" if pit.priority >= 8 else ("medium" if pit.priority >= 4 else "low"),
             "trigger_hint": pit.trigger_hint,
         }
-        for pit in open_pits
+        for pit in open_pits[:30]
     ]
 
-    # Build previous context strictly from earlier episodes on this branch when available
+    # Build multi-scale previous context strictly from earlier episodes on this branch
     previous_summary = await memory_service.get_branch_history_before(
         db,
         episode.project_id,
@@ -493,7 +593,7 @@ async def run_multimodal_understanding(
     story_bible = ((project.canon_rules or {}).get("story_bible") or {}) if project else {}
     current_main_plot = story_bible.get("main_plot") or {}
 
-    reference_blocks = await _character_reference_blocks(db, known_assets)
+    reference_blocks = await _character_reference_blocks(db, known_assets, recent_ep_ids=recent_ep_ids)
 
     raw_pages: dict[int, bytes] = {}
     page_blocks: list[tuple[str, str]] = []
