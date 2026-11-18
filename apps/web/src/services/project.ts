@@ -5,12 +5,30 @@ export interface PaginatedParams {
     page_size?: number
 }
 
+export interface MainPlotInfo {
+    core_conflict?: string
+    current_arc?: string
+    protagonist_goal?: string
+    arc_progress?: string
+    next_hook?: string
+}
+
+export interface StoryBible {
+    main_plot?: MainPlotInfo
+    art_style?: string
+    discovered_rules?: string[]
+    last_updated_episode?: string
+}
+
 export interface Project {
     id: string
     title: string
     description?: string
     language: string
-    canon_rules?: Record<string, unknown>
+    canon_rules?: {
+        story_bible?: StoryBible
+        [key: string]: unknown
+    } | null
     long_summary?: string
     created_at: string
     updated_at: string
@@ -26,6 +44,8 @@ export interface UpdateProjectRequest {
     title?: string
     description?: string
     language?: string
+    canon_rules?: Record<string, unknown>
+    long_summary?: string
 }
 
 export interface Branch {
@@ -45,6 +65,8 @@ export interface Branch {
 export interface EpisodeDiffItem {
     number: number
     label: string
+    source_episode_id?: string | null
+    target_episode_id?: string | null
     source_status?: string | null
     target_status?: string | null
     title_source?: string | null
@@ -54,6 +76,7 @@ export interface EpisodeDiffItem {
 }
 
 export interface AssetDiffItem {
+    asset_id?: string | null
     name: string
     asset_type: string
     in_source: boolean
@@ -63,6 +86,8 @@ export interface AssetDiffItem {
 }
 
 export interface PitDiffItem {
+    source_pit_id?: string | null
+    target_pit_id?: string | null
     title: string
     status_source?: string | null
     status_target?: string | null
@@ -93,11 +118,22 @@ export interface Asset {
     type: string
     name: string
     description?: string | null
-    tags?: Record<string, unknown> | null
+    tags?: {
+        visual_tags?: string[]
+        aliases?: string[]
+        role?: string
+        speech_style?: string
+        latest_appearance?: string
+        latest_state?: string
+        context?: string
+        [key: string]: unknown
+    } | null
     prompt_snippets?: Record<string, unknown> | null
     parent_asset_id?: string | null
     embedding?: number[] | null
     episode_ids?: Record<string, unknown> | null
+    preview_image_path?: string | null
+    image_count?: number
     created_at: string
     updated_at: string
 }
@@ -244,82 +280,6 @@ export interface ImportEpisodeRequest {
     category?: string
 }
 
-export const projectService = {
-    list: (keyword?: string, pagination?: PaginatedParams) => api.get<{ items: Project[]; total: number }>('/projects', { params: { keyword, ...pagination } }),
-    get: (id: string) => api.get<Project>(`/projects/${id}`),
-    create: (data: CreateProjectRequest) => api.post<Project>('/projects', data),
-    update: (id: string, data: UpdateProjectRequest) => api.put<Project>(`/projects/${id}`, data),
-    delete: (id: string) => api.delete(`/projects/${id}`),
-}
-
-export const importService = {
-    createProjectFromMangaDex: (data: MangaDexCreateProjectPayload) =>
-        api.post<MangaDexDiscoverResult>('/imports/mangadex/projects/discover', data, { timeout: 180000 }),
-    discoverForProject: (projectId: string, data: MangaDexDiscoverPayload) =>
-        api.post<MangaDexDiscoverResult>(`/imports/projects/${projectId}/mangadex/discover`, data, { timeout: 180000 }),
-    listJobs: (projectId: string) =>
-        api.get<{ items: ImportJob[]; total: number }>(`/imports/projects/${projectId}/jobs`),
-    getJob: (projectId: string, jobId: string) =>
-        api.get<ImportJob>(`/imports/projects/${projectId}/jobs/${jobId}`),
-    listItems: (projectId: string, jobId: string) =>
-        api.get<ImportJobItem[]>(`/imports/projects/${projectId}/jobs/${jobId}/items`),
-    updateSelection: (projectId: string, jobId: string, data: { item_ids: string[]; action: 'select' | 'unselect' }) =>
-        api.patch<MangaDexDiscoverResult>(`/imports/projects/${projectId}/jobs/${jobId}/selection`, data),
-    startJob: (
-        projectId: string,
-        jobId: string,
-        data: { auto_understand?: boolean; only_missing?: boolean; use_data_saver?: boolean; request_curl?: string },
-    ) =>
-        api.post<{ job: ImportJob; task_id: string }>(`/imports/projects/${projectId}/jobs/${jobId}/start`, data),
-    resumeJob: (projectId: string, jobId: string, data?: { request_curl?: string }) =>
-        api.post<{ job: ImportJob; task_id: string }>(`/imports/projects/${projectId}/jobs/${jobId}/resume`, data),
-    pauseJob: (projectId: string, jobId: string) =>
-        api.post<ImportJob>(`/imports/projects/${projectId}/jobs/${jobId}/pause`),
-}
-
-export const branchService = {
-    list: (projectId: string) => api.get<Branch[]>(`/projects/${projectId}/branches`),
-    create: (projectId: string, data: { name: string; description?: string }) => api.post<Branch>(`/projects/${projectId}/branches`, data),
-    get: (branchId: string) => api.get<Branch>(`/branches/${branchId}`),
-    delete: (branchId: string) => api.delete(`/branches/${branchId}`),
-    fork: (projectId: string, data: { episode_id: string; branch_name: string; description?: string }) => api.post<Branch>(`/projects/${projectId}/branches/fork`, data),
-    diff: (projectId: string, data: { source_branch_id: string; target_branch_id: string; episode_number?: number }) => api.post<DiffResponse>(`/projects/${projectId}/branches/diff`, data),
-    merge: (projectId: string, data: { source_branch_id: string; target_branch_id: string; items: MergeItem[] }) => api.post<MergeResponse>(`/projects/${projectId}/branches/merge`, data),
-}
-
-export const episodeService = {
-    list: (projectId: string, branchId?: string, pagination?: PaginatedParams) => api.get<{ items: Episode[]; total: number }>(`/projects/${projectId}/episodes`, { params: { branch_id: branchId, ...pagination } }),
-    get: (episodeId: string) => api.get<Episode>(`/projects/episodes/${episodeId}`),
-    import: (projectId: string, data: ImportEpisodeRequest) => api.post<Episode>(`/projects/${projectId}/episodes/import`, data),
-    importFiles: (projectId: string, formData: FormData) => api.post<Episode>(`/projects/${projectId}/episodes/import-files`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
-    delete: (episodeId: string) => api.delete(`/projects/episodes/${episodeId}`),
-    getPages: (episodeId: string) => api.get<EpisodePage[]>(`/projects/episodes/${episodeId}/pages`),
-    getMemories: (episodeId: string) => api.get<EpisodeMemory[]>(`/projects/episodes/${episodeId}/memories`),
-}
-
-export const storageService = {
-    getFileUrl: (bucket: string, key: string) => api.get<{ url: string }>(`/storage/${bucket}/${key}`),
-    upload: (file: File, bucket?: string, prefix?: string) => {
-        const formData = new FormData()
-        formData.append('file', file)
-        if (bucket) formData.append('bucket', bucket)
-        if (prefix) formData.append('prefix', prefix)
-        return api.post<{ object_key: string; bucket: string }>('/storage/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } })
-    },
-}
-
-export const assetService = {
-    list: (projectId: string, type?: string, pagination?: PaginatedParams) => api.get<{ items: Asset[]; total: number }>(`/projects/${projectId}/assets`, { params: { type, ...pagination } }),
-    get: (assetId: string) => api.get<Asset>(`/projects/assets/${assetId}`),
-    create: (projectId: string, data: AssetCreateRequest) => api.post<Asset>(`/projects/${projectId}/assets`, data),
-    update: (assetId: string, data: AssetUpdateRequest) => api.put<Asset>(`/projects/assets/${assetId}`, data),
-    delete: (assetId: string) => api.delete(`/projects/assets/${assetId}`),
-    cluster: (projectId: string, type?: string) => api.post<AssetClusterResponse>(`/projects/${projectId}/assets/cluster`, null, { params: { type } }),
-    merge: (projectId: string, data: AssetMergeRequest) => api.post<Asset>(`/projects/${projectId}/assets/merge`, data),
-    findSimilar: (assetId: string) => api.get<AssetClusterItem[]>(`/projects/assets/${assetId}/similar`),
-    vectorize: (assetId: string) => api.post<{ message: string }>(`/projects/assets/${assetId}/vectorize`),
-}
-
 export interface Pit {
     id: string
     project_id: string
@@ -342,6 +302,76 @@ export interface EpisodeMemory {
     created_at: string
 }
 
+export interface GenerationContext {
+    project_title?: string
+    language?: string
+    language_label?: string
+    art_style?: string
+    story_bible?: StoryBible
+    canon_rules: string
+    long_summary: string
+    previous_bridge?: {
+        episode_number: string
+        title?: string
+        summary?: string
+        ending_state?: {
+            location?: string
+            time_and_mood?: string
+            active_characters?: string[]
+            cliffhanger?: string
+        }
+        key_events?: Array<{ description: string; significance?: string }>
+        closing_dialogue?: string[]
+    } | null
+    recent_episodes: Array<{
+        number: number
+        label?: string
+        title?: string
+        summary: string
+        events?: Array<{ description: string; significance?: string }>
+        state_changes?: Array<{ character: string; attribute: string; before?: string; after: string }>
+    }>
+    character_dossier?: Array<{
+        id: string
+        name: string
+        role?: string
+        description: string
+        visual_tags?: string[]
+        current_state?: string
+        speech_style?: string
+        speech_samples?: string[]
+    }>
+    world_assets?: Array<{
+        id: string
+        type: string
+        name: string
+        description: string
+        visual_tags?: string[]
+        latest_state?: string
+    }>
+    rag_memories: Array<{
+        content: string
+        episode_number?: number
+        type: string
+    }>
+    active_pits: Array<{
+        id?: string
+        title?: string
+        description: string
+        priority: number
+        priority_label?: string
+        trigger_hint?: string | null
+        clues?: string[]
+    }>
+    assets: Array<{
+        id?: string
+        type: string
+        name: string
+        description: string
+        visual_tags?: string[]
+    }>
+}
+
 export interface GenerationRun {
     id: string
     episode_id: string
@@ -349,6 +379,8 @@ export interface GenerationRun {
     status: string
     backend?: string | null
     model?: string | null
+    params?: Record<string, unknown> | null
+    retrieved_context?: GenerationContext | null
     error?: string | null
     commit_message?: string | null
     created_at?: string | null
@@ -358,6 +390,8 @@ export interface GenerationRun {
 export interface Storyboard {
     title: string
     synopsis: string
+    arc_connection?: string
+    addressed_pit_ids?: string[]
     tone: string
     pages: StoryboardPage[]
 }
@@ -387,49 +421,14 @@ export interface ComposedPage {
 export interface StoryboardPanel {
     panel_id: string
     scene: string
+    location?: string
+    items?: string[]
     characters: { name: string; outfit?: string; emotion?: string; posture?: string }[]
     camera: string
     mood?: string
-    dialogue: { speaker: string; text: string; type: string }[]
+    dialogue: { speaker: string; text: string; type: string; speaker_position?: string }[]
     prompt: string
     negative_prompt?: string
-}
-
-export const memoryService = {
-    getCanonRules: (projectId: string) => api.get<{ canon_rules: Record<string, unknown> | null }>(`/projects/${projectId}/memory/canon`),
-    updateCanonRules: (projectId: string, canonRules: Record<string, unknown>) => api.put<{ canon_rules: Record<string, unknown> }>(`/projects/${projectId}/memory/canon`, canonRules),
-    getLongSummary: (projectId: string) => api.get<{ long_summary: string | null }>(`/projects/${projectId}/memory/summary`),
-    getRecentWindow: (projectId: string, branchId: string, windowSize?: number) => api.get<{ episodes: Array<{ episode_id: string; number: number; title?: string; summary: Record<string, unknown> | null }> }>(`/projects/${projectId}/memory/recent`, { params: { branch_id: branchId, window_size: windowSize } }),
-    searchRag: (projectId: string, query: string, topK?: number) => api.post<{ results: Array<{ id: string; score: number; payload: Record<string, unknown> }>; query: string }>(`/projects/${projectId}/memory/search`, null, { params: { query, top_k: topK } }),
-}
-
-export const generationService = {
-    triggerUnderstand: (episodeId: string) => api.post<{ task_id: string; episode_id: string; status: string }>('/generation/understand', { episode_id: episodeId }),
-    triggerScriptGeneration: (data: { episode_id: string; branch_id: string; base_episode_number: number; tone?: string; custom_instructions?: string }) => api.post<{ task_id: string; episode_id: string; status: string }>('/generation/script', data),
-    triggerRender: (data: { episode_id: string; storyboard_memory_id?: string; image_backend?: string; image_model?: string; image_size?: string }) => api.post<{ task_id: string; episode_id: string; status: string; panel_count: number }>('/generation/render', data),
-    triggerLayout: (data: { episode_id: string; template_override?: Record<number, string> }) => api.post<{ task_id: string; episode_id: string; status: string; page_count: number }>('/generation/layout', data),
-    triggerContinue: (data: {
-        project_id: string;
-        branch_id: string;
-        base_episode_number: number;
-        tone?: string;
-        custom_instructions?: string;
-        title?: string;
-        image_backend?: string;
-        image_model?: string;
-        image_size?: string;
-    }) => api.post<{ episode_id: string; episode_number: number; task_id: string; status: string }>('/generation/continue', data),
-    getRun: (runId: string) => api.get<GenerationRun>(`/generation/runs/${runId}`),
-    listEpisodeRuns: (episodeId: string) => api.get<{ items: GenerationRun[] }>(`/generation/episodes/${episodeId}/runs`),
-    getGeneratedImages: (episodeId: string) => api.get<{ items: GeneratedImage[] }>(`/generation/episodes/${episodeId}/images`),
-    getLayoutResult: (episodeId: string) => api.get<{ pages: ComposedPage[] }>(`/generation/episodes/${episodeId}/layout`),
-}
-
-export const pitService = {
-    list: (projectId: string, status?: string, pagination?: PaginatedParams) => api.get<{ items: Pit[]; total: number }>(`/projects/${projectId}/pits`, { params: { status, ...pagination } }),
-    create: (projectId: string, data: { title: string; description?: string; priority?: number; introduced_episode_id: string; trigger_hint?: string }) => api.post<Pit>(`/projects/${projectId}/pits`, data),
-    update: (pitId: string, data: { title?: string; description?: string; priority?: number; status?: string; trigger_hint?: string }) => api.put<Pit>(`/pits/${pitId}`, data),
-    resolve: (pitId: string, resolvedEpisodeId: string) => api.post<Pit>(`/pits/${pitId}/resolve`, null, { params: { resolved_episode_id: resolvedEpisodeId } }),
 }
 
 export interface AssetImage {
@@ -441,13 +440,213 @@ export interface AssetImage {
     created_at: string
 }
 
+export function storageFileUrl(objectKey?: string | null): string {
+    if (!objectKey) return ''
+    return `/api/v1/storage/file/${objectKey}`
+}
+
+export const projectService = {
+    list: (keyword?: string, pagination?: PaginatedParams) =>
+        api.get<{ items: Project[]; total: number }>('/projects', { params: { keyword, ...pagination } }),
+    get: (id: string) => api.get<Project>(`/projects/${id}`),
+    create: (data: CreateProjectRequest) => api.post<Project>('/projects', data),
+    update: (id: string, data: UpdateProjectRequest) => api.put<Project>(`/projects/${id}`, data),
+    delete: (id: string) => api.delete(`/projects/${id}`),
+}
+
+export const importService = {
+    createProjectFromMangaDex: (data: MangaDexCreateProjectPayload) =>
+        api.post<MangaDexDiscoverResult>('/imports/mangadex/projects/discover', data, { timeout: 180000 }),
+    discoverForProject: (projectId: string, data: MangaDexDiscoverPayload) =>
+        api.post<MangaDexDiscoverResult>(`/imports/projects/${projectId}/mangadex/discover`, data, { timeout: 180000 }),
+    listJobs: (projectId: string) =>
+        api.get<{ items: ImportJob[]; total: number }>(`/imports/projects/${projectId}/jobs`),
+    getJob: (projectId: string, jobId: string) =>
+        api.get<ImportJob>(`/imports/projects/${projectId}/jobs/${jobId}`),
+    listItems: (projectId: string, jobId: string) =>
+        api.get<ImportJobItem[]>(`/imports/projects/${projectId}/jobs/${jobId}/items`),
+    updateSelection: (projectId: string, jobId: string, data: { item_ids: string[]; action: 'select' | 'unselect' }) =>
+        api.patch<MangaDexDiscoverResult>(`/imports/projects/${projectId}/jobs/${jobId}/selection`, data),
+    startJob: (
+        projectId: string,
+        jobId: string,
+        data: { auto_understand?: boolean; only_missing?: boolean; use_data_saver?: boolean; request_curl?: string },
+    ) => api.post<{ job: ImportJob; task_id: string }>(`/imports/projects/${projectId}/jobs/${jobId}/start`, data),
+    resumeJob: (projectId: string, jobId: string, data?: { request_curl?: string }) =>
+        api.post<{ job: ImportJob; task_id: string }>(`/imports/projects/${projectId}/jobs/${jobId}/resume`, data),
+    pauseJob: (projectId: string, jobId: string) =>
+        api.post<ImportJob>(`/imports/projects/${projectId}/jobs/${jobId}/pause`),
+}
+
+export const branchService = {
+    list: (projectId: string) => api.get<Branch[]>(`/projects/${projectId}/branches`),
+    create: (projectId: string, data: { name: string; description?: string }) =>
+        api.post<Branch>(`/projects/${projectId}/branches`, data),
+    get: (branchId: string) => api.get<Branch>(`/projects/branches/${branchId}`),
+    delete: (branchId: string) => api.delete(`/projects/branches/${branchId}`),
+    fork: (projectId: string, data: { episode_id: string; branch_name: string; description?: string }) =>
+        api.post<Branch>(`/projects/${projectId}/branches/fork`, data),
+    diff: (projectId: string, data: { source_branch_id: string; target_branch_id: string; episode_number?: number }) =>
+        api.post<DiffResponse>(`/projects/${projectId}/branches/diff`, data),
+    merge: (projectId: string, data: { source_branch_id: string; target_branch_id: string; items: MergeItem[] }) =>
+        api.post<MergeResponse>(`/projects/${projectId}/branches/merge`, data),
+}
+
+export const episodeService = {
+    list: (projectId: string, branchId?: string, pagination?: PaginatedParams) =>
+        api.get<{ items: Episode[]; total: number }>(`/projects/${projectId}/episodes`, {
+            params: { branch_id: branchId, ...pagination },
+        }),
+    get: (episodeId: string) => api.get<Episode>(`/projects/episodes/${episodeId}`),
+    update: (episodeId: string, data: { title?: string; status?: string; category?: string; label?: string }) =>
+        api.put<Episode>(`/projects/episodes/${episodeId}`, data),
+    import: (projectId: string, data: ImportEpisodeRequest) =>
+        api.post<Episode>(`/projects/${projectId}/episodes/import`, data),
+    importFiles: (projectId: string, formData: FormData) =>
+        api.post<Episode>(`/projects/${projectId}/episodes/import-files`, formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+            timeout: 180000,
+        }),
+    delete: (episodeId: string) => api.delete(`/projects/episodes/${episodeId}`),
+    getPages: (episodeId: string) => api.get<EpisodePage[]>(`/projects/episodes/${episodeId}/pages`),
+    getMemories: (episodeId: string) => api.get<EpisodeMemory[]>(`/projects/episodes/${episodeId}/memories`),
+}
+
+export const storageService = {
+    getFileUrl: (bucket: string, key: string) => api.get<{ url: string }>(`/storage/${bucket}/${key}`),
+    upload: (file: File, bucket?: string, prefix?: string) => {
+        const formData = new FormData()
+        formData.append('file', file)
+        if (bucket) formData.append('bucket', bucket)
+        if (prefix) formData.append('prefix', prefix)
+        return api.post<{ object_key: string; bucket: string }>('/storage/upload', formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+        })
+    },
+}
+
+export const assetService = {
+    list: (projectId: string, type?: string, pagination?: PaginatedParams) =>
+        api.get<{ items: Asset[]; total: number }>(`/projects/${projectId}/assets`, {
+            params: { type, ...pagination },
+        }),
+    get: (assetId: string) => api.get<Asset>(`/projects/assets/${assetId}`),
+    create: (projectId: string, data: AssetCreateRequest) =>
+        api.post<Asset>(`/projects/${projectId}/assets`, data),
+    update: (assetId: string, data: AssetUpdateRequest) =>
+        api.put<Asset>(`/projects/assets/${assetId}`, data),
+    delete: (assetId: string) => api.delete(`/projects/assets/${assetId}`),
+    cluster: (projectId: string, type?: string) =>
+        api.post<AssetClusterResponse>(`/projects/${projectId}/assets/cluster`, null, { params: { type } }),
+    merge: (projectId: string, data: AssetMergeRequest) =>
+        api.post<Asset>(`/projects/${projectId}/assets/merge`, data),
+    findSimilar: (assetId: string) => api.get<AssetClusterItem[]>(`/projects/assets/${assetId}/similar`),
+    vectorize: (assetId: string) => api.post<Asset>(`/projects/assets/${assetId}/vectorize`),
+}
+
+export const memoryService = {
+    getCanonRules: (projectId: string) =>
+        api.get<{ canon_rules: Record<string, unknown> | null }>(`/projects/${projectId}/memory/canon`),
+    updateCanonRules: (projectId: string, canonRules: Record<string, unknown>) =>
+        api.put<{ canon_rules: Record<string, unknown> }>(`/projects/${projectId}/memory/canon`, canonRules),
+    getLongSummary: (projectId: string) =>
+        api.get<{ long_summary: string | null }>(`/projects/${projectId}/memory/summary`),
+    updateLongSummary: (projectId: string, longSummary: string) =>
+        api.put<{ long_summary: string }>(`/projects/${projectId}/memory/summary`, { long_summary: longSummary }),
+    getRecentWindow: (projectId: string, branchId: string, windowSize?: number) =>
+        api.get<{
+            episodes: Array<{ episode_id: string; number: number; title?: string; summary: Record<string, unknown> | null }>
+        }>(`/projects/${projectId}/memory/recent`, { params: { branch_id: branchId, window_size: windowSize } }),
+    searchRag: (projectId: string, query: string, topK?: number) =>
+        api.post<{ results: Array<{ id: string; score: number; payload: Record<string, unknown> }>; query: string }>(
+            `/projects/${projectId}/memory/search`,
+            null,
+            { params: { query, top_k: topK } },
+        ),
+    getGenerationContext: (projectId: string, branchId: string, baseEpisodeNumber: number) =>
+        api.get<GenerationContext>(`/projects/${projectId}/memory/context`, {
+            params: { branch_id: branchId, base_episode_number: baseEpisodeNumber },
+        }),
+}
+
+export const generationService = {
+    triggerUnderstand: (episodeId: string) =>
+        api.post<{ task_id: string; episode_id: string; status: string }>('/generation/understand', {
+            episode_id: episodeId,
+        }),
+    triggerBatchUnderstand: (data: { project_id: string; branch_id?: string; force?: boolean }) =>
+        api.post<{
+            task_id: string
+            project_id: string
+            branch_id: string
+            episode_ids: string[]
+            total: number
+            status: string
+        }>('/generation/understand-batch', data),
+    triggerScriptGeneration: (data: {
+        episode_id: string
+        branch_id: string
+        base_episode_number: number
+        tone?: string
+        custom_instructions?: string
+    }) => api.post<{ task_id: string; episode_id: string; status: string }>('/generation/script', data),
+    updateStoryboard: (episodeId: string, storyboard: Storyboard) =>
+        api.put<{ id: string; episode_id: string; storyboard: Storyboard }>(
+            `/generation/episodes/${episodeId}/storyboard`,
+            { storyboard },
+        ),
+    triggerRender: (data: {
+        episode_id: string
+        storyboard_memory_id?: string
+        image_backend?: string
+        image_model?: string
+        image_size?: string
+    }) => api.post<{ task_id: string; episode_id: string; status: string; panel_count: number }>('/generation/render', data),
+    triggerLayout: (data: { episode_id: string; template_override?: Record<number, string> }) =>
+        api.post<{ task_id: string; episode_id: string; status: string; page_count: number }>('/generation/layout', data),
+    triggerContinue: (data: {
+        project_id: string
+        branch_id: string
+        base_episode_number: number
+        tone?: string
+        custom_instructions?: string
+        title?: string
+        image_backend?: string
+        image_model?: string
+        image_size?: string
+    }) => api.post<{ episode_id: string; episode_number: number; task_id: string; status: string }>('/generation/continue', data),
+    getRun: (runId: string) => api.get<GenerationRun>(`/generation/runs/${runId}`),
+    listEpisodeRuns: (episodeId: string) => api.get<{ items: GenerationRun[] }>(`/generation/episodes/${episodeId}/runs`),
+    getGeneratedImages: (episodeId: string) =>
+        api.get<{ items: GeneratedImage[] }>(`/generation/episodes/${episodeId}/images`),
+    getLayoutResult: (episodeId: string) =>
+        api.get<{ pages: ComposedPage[] }>(`/generation/episodes/${episodeId}/layout`),
+}
+
+export const pitService = {
+    list: (projectId: string, status?: string, pagination?: PaginatedParams) =>
+        api.get<{ items: Pit[]; total: number }>(`/projects/${projectId}/pits`, { params: { status, ...pagination } }),
+    create: (
+        projectId: string,
+        data: { title: string; description?: string; priority?: number; introduced_episode_id: string; trigger_hint?: string },
+    ) => api.post<Pit>(`/projects/${projectId}/pits`, data),
+    update: (
+        pitId: string,
+        data: { title?: string; description?: string; priority?: number; status?: string; trigger_hint?: string },
+    ) => api.put<Pit>(`/projects/pits/${pitId}`, data),
+    resolve: (pitId: string, resolvedEpisodeId: string) =>
+        api.post<Pit>(`/projects/pits/${pitId}/resolve`, null, { params: { resolved_episode_id: resolvedEpisodeId } }),
+}
+
 export const assetImageService = {
     list: (assetId: string) => api.get<{ items: AssetImage[] }>(`/projects/assets/${assetId}/images`),
     upload: (assetId: string, file: File, kind: string = 'reference') => {
         const formData = new FormData()
         formData.append('file', file)
         formData.append('kind', kind)
-        return api.post<AssetImage>(`/projects/assets/${assetId}/images`, formData, { headers: { 'Content-Type': 'multipart/form-data' } })
+        return api.post<AssetImage>(`/projects/assets/${assetId}/images`, formData, {
+            headers: { 'Content-Type': 'multipart/form-data' },
+        })
     },
     remove: (imageId: string) => api.delete(`/projects/asset-images/${imageId}`),
 }

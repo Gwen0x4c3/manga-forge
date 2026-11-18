@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
-import logging
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,17 +20,17 @@ from app.providers.mangadex import (
     MangaDexChapterCandidate,
     extract_headers_from_curl,
     fetch_chapter_candidates,
-    merge_request_headers,
     fetch_manga_metadata,
+    merge_request_headers,
     parse_mangadex_title_url,
     parse_sort_number,
     sanitize_mangadex_input,
     summarize_request_headers,
 )
 from app.schemas.project import ProjectCreate
-from app.services.storage_service import generate_object_key, upload_file
 from app.services.episode_service import get_episode
 from app.services.project_service import create_project, get_project
+from app.services.storage_service import generate_object_key, upload_file
 
 logger = logging.getLogger(__name__)
 trace_logger = get_mangadex_logger()
@@ -47,9 +47,7 @@ async def get_project_main_branch(db: AsyncSession, project_id: str) -> Branch |
 
 
 async def get_branch(db: AsyncSession, project_id: str, branch_id: str) -> Branch | None:
-    result = await db.execute(
-        select(Branch).where(Branch.id == branch_id, Branch.project_id == project_id).limit(1)
-    )
+    result = await db.execute(select(Branch).where(Branch.id == branch_id, Branch.project_id == project_id).limit(1))
     return result.scalar_one_or_none()
 
 
@@ -194,7 +192,7 @@ async def discover_mangadex_for_project(
     manga_id = parse_mangadex_title_url(source_url)
     request_headers = merge_request_headers(extract_headers_from_curl(request_curl))
     logger.info(
-        "MangaDex discover start project_id=%s branch_id=%s manga_id=%s source_url=%s headers=%s requested_languages=%s group_ids=%s",
+        "MangaDex discover start project_id=%s branch_id=%s manga=%s url=%s headers=%s langs=%s groups=%s",
         project_id,
         branch_id,
         manga_id,
@@ -204,7 +202,7 @@ async def discover_mangadex_for_project(
         group_ids or [],
     )
     trace_logger.info(
-        "discover start project_id=%s branch_id=%s manga_id=%s source_url=%s headers=%s requested_languages=%s group_ids=%s",
+        "discover start project_id=%s branch_id=%s manga=%s url=%s headers=%s langs=%s groups=%s",
         project_id,
         branch_id,
         manga_id,

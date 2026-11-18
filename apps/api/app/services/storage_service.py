@@ -15,6 +15,7 @@ def get_minio_client() -> Minio:
         secure=settings.MINIO_SECURE,
     )
 
+
 def get_object_bytes(bucket: str, object_key: str) -> bytes | None:
     client = get_minio_client()
     try:

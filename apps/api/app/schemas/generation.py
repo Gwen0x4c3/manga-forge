@@ -15,6 +15,28 @@ class UnderstandResponse(BaseModel):
     status: str = "queued"
 
 
+class BatchUnderstandRequest(BaseModel):
+    project_id: str
+    branch_id: str | None = Field(default=None, description="Target branch ID (defaults to main branch)")
+    force: bool = Field(
+        default=False,
+        description="Re-understand all episodes in order if True; only status='imported' if False",
+    )
+
+
+class BatchUnderstandResponse(BaseModel):
+    task_id: str
+    project_id: str
+    branch_id: str
+    episode_ids: list[str] = Field(default_factory=list)
+    total: int = 0
+    status: str = "queued"
+
+
+class StoryboardUpdateRequest(BaseModel):
+    storyboard: dict
+
+
 class ScriptGenerateRequest(BaseModel):
     episode_id: str
     branch_id: str
@@ -34,7 +56,7 @@ class RenderRequest(BaseModel):
     storyboard_memory_id: str | None = Field(
         default=None, description="Specific storyboard memory ID, uses latest if None"
     )
-    image_backend: str | None = Field(default=None, description="Override image backend: openai|custom|mock")
+    image_backend: str | None = Field(default=None, description="Override image backend: openai|gemini|custom|mock")
     image_model: str | None = Field(default=None, description="Override image model")
     image_size: str | None = Field(default="1024x1024", description="Image size for generation")
 
@@ -81,7 +103,9 @@ class ComposedPageResponse(BaseModel):
 class ContinueFromEpisodeRequest(BaseModel):
     project_id: str
     branch_id: str
-    base_episode_number: Decimal = Field(description="Continue from this episode number, new episode will be base_episode_number + 1")
+    base_episode_number: Decimal = Field(
+        description="Continue from this episode number, new episode will be base_episode_number + 1"
+    )
     tone: str = Field(default="main", description="main|daily|climax|filler|pit_resolve")
     custom_instructions: str | None = Field(default=None, description="Additional user instructions")
     title: str | None = Field(default=None, description="Optional title for the new episode")
@@ -104,6 +128,8 @@ class GenerationRunResponse(BaseModel):
     status: str
     backend: str | None = None
     model: str | None = None
+    params: dict | None = None
+    retrieved_context: dict | None = None
     error: str | None = None
     commit_message: str | None = None
     created_at: str | None = None

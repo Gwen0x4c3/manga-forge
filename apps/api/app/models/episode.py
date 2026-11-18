@@ -27,7 +27,9 @@ class Episode(Base):
     project_id: Mapped[str] = mapped_column(CHAR(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     branch_id: Mapped[str] = mapped_column(CHAR(36), ForeignKey("branches.id", ondelete="CASCADE"), nullable=False)
     number: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False, comment="Sort order, system-managed")
-    label: Mapped[str] = mapped_column(String(50), nullable=False, default="", comment="Author's original episode number, e.g. '36', '36.5', '番外1'")
+    label: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="", comment="Original episode number, e.g. '36', '36.5', '番外1'"
+    )
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     source: Mapped[str] = mapped_column(String(50), nullable=False, default="import_local")
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="imported")

@@ -4,11 +4,36 @@ import uuid
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.llm import get_embeddings
 from app.models.asset import Asset
 from app.models.asset_image import AssetImage
-from app.schemas.asset import AssetClusterGroup, AssetClusterItem, AssetClusterResponse, AssetCreate, AssetMergeRequest, AssetUpdate
+from app.schemas.asset import (
+    AssetClusterGroup,
+    AssetClusterItem,
+    AssetClusterResponse,
+    AssetCreate,
+    AssetMergeRequest,
+    AssetUpdate,
+)
+
+ASSET_IMAGE_KINDS = ("reference", "thumbnail", "turnaround", "lora_dataset")
+_PREVIEW_PRIORITY = ("reference", "turnaround", "thumbnail", "lora_dataset")
+
+
+def _attach_preview_fields(asset: Asset) -> Asset:
+    imgs = list(asset.__dict__.get("images") or [])
+    asset.image_count = len(imgs)  # type: ignore[attr-defined]
+    if imgs:
+        best = min(
+            imgs,
+            key=lambda i: _PREVIEW_PRIORITY.index(i.kind) if i.kind in _PREVIEW_PRIORITY else 99,
+        )
+        asset.preview_image_path = best.image_path  # type: ignore[attr-defined]
+    else:
+        asset.preview_image_path = None  # type: ignore[attr-defined]
+    return asset
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -34,7 +59,7 @@ def _build_asset_text(asset: Asset) -> str:
 async def list_assets(
     db: AsyncSession, project_id: str, asset_type: str | None = None, page: int = 1, page_size: int = 50
 ):
-    query = select(Asset).where(Asset.project_id == project_id)
+    query = select(Asset).options(selectinload(Asset.images)).where(Asset.project_id == project_id)
     count_query = select(func.count()).select_from(Asset).where(Asset.project_id == project_id)
     if asset_type:
         query = query.where(Asset.type == asset_type)
@@ -42,7 +67,8 @@ async def list_assets(
     total = (await db.execute(count_query)).scalar() or 0
     query = query.order_by(Asset.updated_at.desc()).offset((page - 1) * page_size).limit(page_size)
     result = await db.execute(query)
-    return result.scalars().all(), total
+    items = [_attach_preview_fields(a) for a in result.scalars().all()]
+    return items, total
 
 
 async def create_asset(db: AsyncSession, project_id: str, data: AssetCreate) -> Asset:
@@ -50,20 +76,23 @@ async def create_asset(db: AsyncSession, project_id: str, data: AssetCreate) -> 
     db.add(asset)
     await db.commit()
     await db.refresh(asset)
+    asset.image_count = 0  # type: ignore[attr-defined]
+    asset.preview_image_path = None  # type: ignore[attr-defined]
     return asset
 
 
 async def get_asset(db: AsyncSession, asset_id: str) -> Asset | None:
-    result = await db.execute(select(Asset).where(Asset.id == asset_id))
-    return result.scalar_one_or_none()
+    result = await db.execute(select(Asset).options(selectinload(Asset.images)).where(Asset.id == asset_id).limit(1))
+    asset = result.scalar_one_or_none()
+    return _attach_preview_fields(asset) if asset else None
 
 
 async def update_asset(db: AsyncSession, asset: Asset, data: AssetUpdate) -> Asset:
     for key, value in data.model_dump(exclude_unset=True).items():
         setattr(asset, key, value)
     await db.commit()
-    await db.refresh(asset)
-    return asset
+    refreshed = await get_asset(db, asset.id)
+    return refreshed or asset
 
 
 async def delete_asset(db: AsyncSession, asset: Asset) -> None:
@@ -76,7 +105,7 @@ async def vectorize_asset(db: AsyncSession, asset: Asset) -> None:
     if not text.strip():
         return
     embeddings = await get_embeddings([text])
-    if not embeddings:  # embedding model not configured
+    if not embeddings:
         return
     asset.embedding = embeddings[0]
     await db.commit()
@@ -86,19 +115,44 @@ async def find_similar_assets(
     db: AsyncSession, project_id: str, asset_id: str, top_k: int = 5
 ) -> list[AssetClusterItem]:
     asset = await get_asset(db, asset_id)
-    if not asset or not asset.embedding:
+    if not asset:
         return []
     query = select(Asset).where(
         Asset.project_id == project_id,
         Asset.id != asset_id,
-        Asset.embedding.isnot(None),
     )
     result = await db.execute(query)
-    candidates = result.scalars().all()
-    scored = []
+    candidates = list(result.scalars().all())
+
+    if asset.embedding:
+        scored = []
+        for candidate in candidates:
+            if not candidate.embedding or len(candidate.embedding) != len(asset.embedding):
+                continue
+            sim = _cosine_similarity(asset.embedding, candidate.embedding)
+            scored.append(
+                AssetClusterItem(
+                    asset_id=candidate.id,
+                    name=candidate.name,
+                    asset_type=candidate.type,
+                    similarity=round(sim, 4),
+                )
+            )
+        scored.sort(key=lambda x: x.similarity, reverse=True)
+        if scored:
+            return scored[:top_k]
+
+    # Embedding-free fallback: string + tag overlap similarity
+    from difflib import SequenceMatcher
+
+    base_text = _build_asset_text(asset).lower()
+    fallback_scored = []
     for candidate in candidates:
-        sim = _cosine_similarity(asset.embedding, candidate.embedding)
-        scored.append(
+        cand_text = _build_asset_text(candidate).lower()
+        sim = SequenceMatcher(None, base_text, cand_text).ratio()
+        if candidate.type == asset.type:
+            sim = min(1.0, sim + 0.1)
+        fallback_scored.append(
             AssetClusterItem(
                 asset_id=candidate.id,
                 name=candidate.name,
@@ -106,8 +160,8 @@ async def find_similar_assets(
                 similarity=round(sim, 4),
             )
         )
-    scored.sort(key=lambda x: x.similarity, reverse=True)
-    return scored[:top_k]
+    fallback_scored.sort(key=lambda x: x.similarity, reverse=True)
+    return fallback_scored[:top_k]
 
 
 async def cluster_assets(
@@ -116,6 +170,8 @@ async def cluster_assets(
     asset_type: str | None = None,
     similarity_threshold: float = 0.85,
 ) -> AssetClusterResponse:
+    from difflib import SequenceMatcher
+
     query = select(Asset).where(Asset.project_id == project_id)
     if asset_type:
         query = query.where(Asset.type == asset_type)
@@ -129,17 +185,16 @@ async def cluster_assets(
         if valid:
             batch_texts = [t for _, t in valid]
             embeddings = await get_embeddings(batch_texts)
-            for (asset, _), emb in zip(valid, embeddings):
-                asset.embedding = emb
-            await db.commit()
+            if embeddings:
+                for (asset, _), emb in zip(valid, embeddings):
+                    asset.embedding = emb
+                await db.commit()
 
-    assets_with_emb = [a for a in assets if a.embedding is not None]
     total_assets = len(assets)
-
     visited: set[str] = set()
     clusters: list[AssetClusterGroup] = []
 
-    for i, asset_a in enumerate(assets_with_emb):
+    for i, asset_a in enumerate(assets):
         if asset_a.id in visited:
             continue
         group_items = [
@@ -151,10 +206,16 @@ async def cluster_assets(
             )
         ]
         visited.add(asset_a.id)
-        for j, asset_b in enumerate(assets_with_emb):
-            if j <= i or asset_b.id in visited:
+        for j, asset_b in enumerate(assets):
+            if j <= i or asset_b.id in visited or asset_b.type != asset_a.type:
                 continue
-            sim = _cosine_similarity(asset_a.embedding, asset_b.embedding)
+            if asset_a.embedding and asset_b.embedding and len(asset_a.embedding) == len(asset_b.embedding):
+                sim = _cosine_similarity(asset_a.embedding, asset_b.embedding)
+            else:
+                # Embedding-free name/alias similarity
+                sim = SequenceMatcher(None, asset_a.name.lower(), asset_b.name.lower()).ratio()
+                if asset_a.name.lower() in asset_b.name.lower() or asset_b.name.lower() in asset_a.name.lower():
+                    sim = max(sim, 0.88)
             if sim >= similarity_threshold:
                 group_items.append(
                     AssetClusterItem(
@@ -183,17 +244,14 @@ async def cluster_assets(
     )
 
 
-async def merge_assets(
-    db: AsyncSession, project_id: str, data: AssetMergeRequest
-) -> Asset:
+async def merge_assets(db: AsyncSession, project_id: str, data: AssetMergeRequest) -> Asset:
     source_assets = []
     for sid in data.source_asset_ids:
-        result = await db.execute(
-            select(Asset).where(Asset.id == sid, Asset.project_id == project_id)
-        )
+        result = await db.execute(select(Asset).where(Asset.id == sid, Asset.project_id == project_id).limit(1))
         asset = result.scalar_one_or_none()
         if not asset:
             from fastapi import HTTPException
+
             raise HTTPException(status_code=404, detail=f"Asset {sid} not found")
         source_assets.append(asset)
 
@@ -203,6 +261,7 @@ async def merge_assets(
         merged_description = " | ".join(descriptions) if descriptions else None
 
     merged_tags: dict = {}
+    aliases = [a.name for a in source_assets if a.name != data.target_name]
     for a in source_assets:
         if a.tags:
             for k, v in a.tags.items():
@@ -212,6 +271,8 @@ async def merge_assets(
                     merged_tags[k] = list(dict.fromkeys(existing + new_vals))
                 else:
                     merged_tags[k] = v
+    if aliases:
+        merged_tags["aliases"] = list(dict.fromkeys([*(merged_tags.get("aliases") or []), *aliases]))
 
     merged_snippets: dict = {}
     for a in source_assets:
@@ -243,13 +304,9 @@ async def merge_assets(
         episode_ids=merged_episode_ids if merged_episode_ids else None,
     )
     db.add(merged_asset)
+    await db.flush()
 
-    for a in source_assets:
-        a.parent_asset_id = merged_asset.id
-
-    img_result = await db.execute(
-        select(AssetImage).where(AssetImage.asset_id.in_(data.source_asset_ids))
-    )
+    img_result = await db.execute(select(AssetImage).where(AssetImage.asset_id.in_(data.source_asset_ids)))
     images = img_result.scalars().all()
     for img in images:
         new_img = AssetImage(
@@ -261,12 +318,13 @@ async def merge_assets(
         )
         db.add(new_img)
 
+    # Remove duplicate source assets so asset gallery stays clean
+    for a in source_assets:
+        await db.delete(a)
+
     await db.commit()
-    await db.refresh(merged_asset)
-    return merged_asset
-
-
-ASSET_IMAGE_KINDS = ("reference", "thumbnail", "turnaround", "lora_dataset")
+    refreshed = await get_asset(db, merged_asset.id)
+    return refreshed or merged_asset
 
 
 async def list_asset_images(db: AsyncSession, asset_id: str) -> list[AssetImage]:
@@ -317,4 +375,4 @@ async def delete_asset_image(db: AsyncSession, image: AssetImage) -> None:
 
         storage_service.get_minio_client().remove_object(settings.MINIO_BUCKET, image.image_path)
     except Exception:
-        pass  # object already gone — row deletion is what matters
+        pass

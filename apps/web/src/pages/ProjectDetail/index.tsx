@@ -1,28 +1,74 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Tabs, TabPane, Typography, Spin, Button, Table, Tag, Modal, Form, Select, Toast, Empty, Input, TextArea, Descriptions, Checkbox, RadioGroup } from '@douyinfe/semi-ui'
+import {
+    Tabs,
+    TabPane,
+    Spin,
+    Button,
+    Table,
+    Tag,
+    Modal,
+    Form,
+    Select,
+    Toast,
+    Empty,
+    Input,
+    TextArea,
+    Descriptions,
+    Checkbox,
+    RadioGroup,
+    Banner,
+} from '@douyinfe/semi-ui'
 import type { TagColor } from '@douyinfe/semi-ui/lib/es/tag'
-import { IconPlus, IconForward, IconDelete, IconCopy, IconRefresh, IconSearch, IconLink } from '@douyinfe/semi-icons'
+import {
+    IconPlus,
+    IconForward,
+    IconDelete,
+    IconCopy,
+    IconRefresh,
+    IconSearch,
+    IconLink,
+    IconBolt,
+    IconEdit,
+    IconImage,
+} from '@douyinfe/semi-icons'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { projectService, branchService, episodeService, memoryService, generationService, pitService, assetService, assetImageService } from '@/services/project'
-import type { Episode, Pit, Branch, DiffResponse, MergeItem, Asset, AssetClusterResponse, AssetClusterItem } from '@/services/project'
+import {
+    projectService,
+    branchService,
+    episodeService,
+    memoryService,
+    generationService,
+    pitService,
+    assetService,
+    assetImageService,
+    storageFileUrl,
+} from '@/services/project'
+import type {
+    Episode,
+    Pit,
+    Branch,
+    DiffResponse,
+    MergeItem,
+    Asset,
+    AssetClusterResponse,
+    AssetClusterItem,
+} from '@/services/project'
 
-const { Title, Paragraph } = Typography
-
-const STATUS_COLORS: Record<string, TagColor> = {
-    imported: 'blue',
-    understood: 'cyan',
-    scripted: 'green',
-    rendered: 'orange',
-    published: 'purple',
-    draft: 'grey',
-    generating: 'violet',
+const STATUS_META: Record<string, { label: string; color: TagColor }> = {
+    imported: { label: '已导入 · 待理解', color: 'blue' },
+    understood: { label: '已理解剧情', color: 'cyan' },
+    scripted: { label: '已生成分镜', color: 'green' },
+    rendered: { label: '已生成原画', color: 'orange' },
+    published: { label: '已排版成稿', color: 'purple' },
+    draft: { label: '续画草稿', color: 'grey' },
+    generating: { label: '生成中', color: 'violet' },
 }
 
-const PIT_STATUS_COLORS: Record<string, TagColor> = {
-    open: 'blue',
-    resolved: 'green',
-    abandoned: 'grey',
+const PIT_STATUS_META: Record<string, { label: string; color: TagColor }> = {
+    open: { label: '待回收伏笔', color: 'blue' },
+    resolved: { label: '已回收', color: 'green' },
+    abandoned: { label: '已搁置', color: 'grey' },
 }
 
 const CATEGORY_LABELS: Record<string, { text: string; color: TagColor }> = {
@@ -32,19 +78,19 @@ const CATEGORY_LABELS: Record<string, { text: string; color: TagColor }> = {
 }
 
 const ASSET_TYPE_OPTIONS = [
-    { value: 'character', label: '角色' },
-    { value: 'outfit', label: '服装' },
-    { value: 'location', label: '场景' },
-    { value: 'item', label: '道具' },
-    { value: 'style', label: '风格' },
+    { value: 'character', label: '核心角色' },
+    { value: 'item', label: '关键物品/道具' },
+    { value: 'location', label: '重要场景/地点' },
+    { value: 'outfit', label: '服装造型' },
+    { value: 'style', label: '画风基准' },
 ]
 
-const ASSET_TYPE_COLORS: Record<string, TagColor> = {
-    character: 'blue',
-    outfit: 'purple',
-    location: 'green',
-    item: 'orange',
-    style: 'cyan',
+const ASSET_TYPE_META: Record<string, { label: string; color: TagColor }> = {
+    character: { label: '角色', color: 'blue' },
+    item: { label: '道具物品', color: 'orange' },
+    location: { label: '关键场景', color: 'green' },
+    outfit: { label: '服装造型', color: 'purple' },
+    style: { label: '画风基准', color: 'cyan' },
 }
 
 interface ImportFormValues {
@@ -52,13 +98,32 @@ interface ImportFormValues {
     number: number
     label?: string
     title?: string
+    category?: string
     auto_understand?: boolean
+}
+
+function splitPitClues(desc?: string): { summary: string; clues: string[] } {
+    if (!desc) return { summary: '', clues: [] }
+    const summaryLines: string[] = []
+    const clues: string[] = []
+    for (const raw of desc.split('\n')) {
+        const line = raw.trim()
+        if (!line) continue
+        if (line.startsWith('[第') && line.includes('线索]')) {
+            clues.push(line)
+        } else {
+            summaryLines.push(line)
+        }
+    }
+    return { summary: summaryLines.join(' '), clues }
 }
 
 export default function ProjectDetail() {
     const { id: projectId } = useParams<{ id: string }>()
     const navigate = useNavigate()
     const queryClient = useQueryClient()
+
+    const [activeTab, setActiveTab] = useState('episodes')
     const [showImport, setShowImport] = useState(false)
     const [showContinue, setShowContinue] = useState(false)
     const [showCreatePit, setShowCreatePit] = useState(false)
@@ -66,11 +131,17 @@ export default function ProjectDetail() {
     const [resolvingPit, setResolvingPit] = useState<Pit | null>(null)
     const [selectedBranch, setSelectedBranch] = useState<string | undefined>()
     const [uploadFiles, setUploadFiles] = useState<File[]>([])
-    const [canonRules, setCanonRules] = useState<Record<string, unknown>>({})
+
+    const [canonDraft, setCanonDraft] = useState<string | null>(null)
     const [canonValid, setCanonValid] = useState(true)
+    const [longSummaryDraft, setLongSummaryDraft] = useState('')
+    const [editingSummary, setEditingSummary] = useState(false)
+
     const [ragQuery, setRagQuery] = useState('')
     const [ragResults, setRagResults] = useState<Array<{ score: number; payload: Record<string, unknown> }>>([])
     const [pitStatusFilter, setPitStatusFilter] = useState<string | undefined>('open')
+    const [batchTaskNotice, setBatchTaskNotice] = useState<string | null>(null)
+
     const [continueForm, setContinueForm] = useState({
         base_episode_id: '',
         tone: 'main',
@@ -78,7 +149,7 @@ export default function ProjectDetail() {
         title: '',
         image_backend: undefined as string | undefined,
         image_model: undefined as string | undefined,
-        image_size: undefined as string | undefined,
+        image_size: '1024x1024',
     })
 
     const [showCreateBranch, setShowCreateBranch] = useState(false)
@@ -91,6 +162,7 @@ export default function ProjectDetail() {
     const [mergeTargetBranch, setMergeTargetBranch] = useState('')
 
     const [assetTypeFilter, setAssetTypeFilter] = useState<string | undefined>()
+    const [assetViewMode, setAssetViewMode] = useState<'gallery' | 'table'>('gallery')
     const [showCreateAsset, setShowCreateAsset] = useState(false)
     const [editingAsset, setEditingAsset] = useState<Asset | null>(null)
     const [showClusterResult, setShowClusterResult] = useState(false)
@@ -98,32 +170,15 @@ export default function ProjectDetail() {
     const [showSimilar, setShowSimilar] = useState(false)
     const [similarAssets, setSimilarAssets] = useState<AssetClusterItem[]>([])
     const [imageAsset, setImageAsset] = useState<Asset | null>(null)
+    const [uploadImageKind, setUploadImageKind] = useState<string>('reference')
     const fileInputRef = useRef<HTMLInputElement>(null)
-    const { data: assetImagesData, isLoading: assetImagesLoading } = useQuery({
-        queryKey: ['asset-images', imageAsset?.id],
-        queryFn: () => assetImageService.list(imageAsset!.id),
-        enabled: !!imageAsset,
-    })
-    const uploadImageMutation = useMutation({
-        mutationFn: (file: File) => assetImageService.upload(imageAsset!.id, file),
-        onSuccess: () => {
-            queryClient.invalidateQueries({ queryKey: ['asset-images', imageAsset?.id] })
-            Toast.success('参考图已上传')
-        },
-        onError: () => {},
-    })
-    const deleteImageMutation = useMutation({
-        mutationFn: (imageId: string) => assetImageService.remove(imageId),
-        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['asset-images', imageAsset?.id] }),
-        onError: () => {},
-    })
     const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([])
     const [showAssetMerge, setShowAssetMerge] = useState(false)
 
     const [episodePage, setEpisodePage] = useState(1)
     const [episodePageSize, setEpisodePageSize] = useState(50)
     const [assetPage, setAssetPage] = useState(1)
-    const [assetPageSize, setAssetPageSize] = useState(50)
+    const assetPageSize = 48
     const [pitPage, setPitPage] = useState(1)
     const [pitPageSize, setPitPageSize] = useState(50)
 
@@ -131,6 +186,7 @@ export default function ProjectDetail() {
         queryKey: ['project', projectId],
         queryFn: () => projectService.get(projectId!),
         enabled: !!projectId,
+        refetchInterval: batchTaskNotice ? 4000 : false,
     })
 
     const { data: branches } = useQuery({
@@ -143,24 +199,104 @@ export default function ProjectDetail() {
         queryKey: ['episodes', projectId, selectedBranch, episodePage, episodePageSize],
         queryFn: () => episodeService.list(projectId!, selectedBranch, { page: episodePage, page_size: episodePageSize }),
         enabled: !!projectId,
+        refetchInterval: batchTaskNotice ? 3500 : false,
     })
 
     const { data: pitsData, isLoading: pitsLoading } = useQuery({
         queryKey: ['pits', projectId, pitStatusFilter, pitPage, pitPageSize],
-        queryFn: () => pitService.list(projectId!, pitStatusFilter, { page: pitPage, page_size: pitPageSize }),
+        queryFn: () => pitService.list(projectId!, pitStatusFilter || undefined, { page: pitPage, page_size: pitPageSize }),
         enabled: !!projectId,
+        refetchInterval: batchTaskNotice ? 4500 : false,
     })
 
     const { data: assetsData, isLoading: assetsLoading } = useQuery({
         queryKey: ['assets', projectId, assetTypeFilter, assetPage, assetPageSize],
-        queryFn: () => assetService.list(projectId!, assetTypeFilter, { page: assetPage, page_size: assetPageSize }),
+        queryFn: () => assetService.list(projectId!, assetTypeFilter || undefined, { page: assetPage, page_size: assetPageSize }),
         enabled: !!projectId,
+        refetchInterval: batchTaskNotice ? 4500 : false,
     })
 
-    const mainBranch = branches?.find((b) => b.name === 'main')
+    const { data: assetImagesData, isLoading: assetImagesLoading } = useQuery({
+        queryKey: ['asset-images', imageAsset?.id],
+        queryFn: () => assetImageService.list(imageAsset!.id),
+        enabled: !!imageAsset,
+    })
+
+    const defaultCanonText = useMemo(() => {
+        if (!project) return '{}'
+        const rawCanon = { ...(project.canon_rules || {}) }
+        delete rawCanon.story_bible
+        return JSON.stringify(rawCanon, null, 2)
+    }, [project])
+    const canonText = canonDraft ?? defaultCanonText
+
+    const mainBranch = useMemo(
+        () => branches?.find((b) => b.is_default) || branches?.[0],
+        [branches],
+    )
+
+    const episodes = useMemo(() => episodesData?.items || [], [episodesData])
+    const unanalyzedCount = useMemo(
+        () => episodes.filter((e) => e.status === 'imported').length,
+        [episodes],
+    )
+    const understoodCount = useMemo(
+        () => episodes.filter((e) => ['understood', 'scripted', 'rendered', 'published'].includes(e.status)).length,
+        [episodes],
+    )
+
+    const activeBatchNotice = batchTaskNotice && unanalyzedCount > 0 ? batchTaskNotice : null
+
+    // Default base episode for Continue modal = latest episode on branch
+    const openContinueModal = (presetEpisodeId?: string) => {
+        const defaultEp =
+            (presetEpisodeId && episodes.find((e) => e.id === presetEpisodeId)) ||
+            [...episodes].reverse().find((e) => ['understood', 'published'].includes(e.status)) ||
+            episodes[episodes.length - 1]
+        setContinueForm((prev) => ({
+            ...prev,
+            base_episode_id: defaultEp?.id || '',
+        }))
+        setShowContinue(true)
+    }
+
+    const epLabelById = useMemo(() => {
+        const m: Record<string, string> = {}
+        for (const ep of episodes) {
+            m[ep.id] = `第 ${ep.label || ep.number} 话`
+        }
+        return m
+    }, [episodes])
+
+    const uploadImageMutation = useMutation({
+        mutationFn: (file: File) => assetImageService.upload(imageAsset!.id, file, uploadImageKind),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['asset-images', imageAsset?.id] })
+            queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
+            Toast.success('参考图已上传')
+        },
+        onError: () => {},
+    })
+
+    const deleteImageMutation = useMutation({
+        mutationFn: (imageId: string) => assetImageService.remove(imageId),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['asset-images', imageAsset?.id] })
+            queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
+        },
+        onError: () => {},
+    })
 
     const importMutation = useMutation({
-        mutationFn: async (data: { branch_id: string; number: number; label?: string; title?: string; category?: string; auto_understand?: boolean; files: File[] }) => {
+        mutationFn: async (data: {
+            branch_id: string
+            number: number
+            label?: string
+            title?: string
+            category?: string
+            auto_understand?: boolean
+            files: File[]
+        }) => {
             const formData = new FormData()
             formData.append('branch_id', data.branch_id)
             formData.append('number', String(data.number))
@@ -175,15 +311,44 @@ export default function ProjectDetail() {
             queryClient.invalidateQueries({ queryKey: ['episodes', projectId] })
             setShowImport(false)
             setUploadFiles([])
-            Toast.success('Episode imported')
+            Toast.success('章节已导入')
+        },
+        onError: () => {},
+    })
+
+    const batchUnderstandMutation = useMutation({
+        mutationFn: (force: boolean) =>
+            generationService.triggerBatchUnderstand({
+                project_id: projectId!,
+                branch_id: selectedBranch || mainBranch?.id,
+                force,
+            }),
+        onSuccess: (res) => {
+            if (res.total === 0) {
+                Toast.info('当前分支没有待理解的新章节')
+                return
+            }
+            setBatchTaskNotice(`正在按话数顺序理解全书（共 ${res.total} 话），人物设定、主线脉络与伏笔将自动跨话传递...`)
+            Toast.success(`已提交 ${res.total} 话按序理解任务`)
+            queryClient.invalidateQueries({ queryKey: ['episodes', projectId] })
+        },
+        onError: () => {},
+    })
+
+    const singleUnderstandMutation = useMutation({
+        mutationFn: (episodeId: string) => generationService.triggerUnderstand(episodeId),
+        onSuccess: () => {
+            Toast.success('已启动本话多模态理解')
+            setBatchTaskNotice('正在执行章节多模态剧情与人物识别...')
+            queryClient.invalidateQueries({ queryKey: ['episodes', projectId] })
         },
         onError: () => {},
     })
 
     const continueMutation = useMutation({
         mutationFn: () => {
-            const baseEpisode = episodesData?.items?.find((e: Episode) => e.id === continueForm.base_episode_id)
-            if (!baseEpisode) return Promise.reject(new Error('No base episode selected'))
+            const baseEpisode = episodes.find((e: Episode) => e.id === continueForm.base_episode_id)
+            if (!baseEpisode) return Promise.reject(new Error('请选择作为续画起点的基础章节'))
             return generationService.triggerContinue({
                 project_id: projectId!,
                 branch_id: baseEpisode.branch_id,
@@ -193,25 +358,30 @@ export default function ProjectDetail() {
                 title: continueForm.title || undefined,
                 image_backend: continueForm.image_backend,
                 image_model: continueForm.image_model,
-                image_size: continueForm.image_size,
+                image_size: continueForm.image_size || '1024x1024',
             })
         },
         onSuccess: (data) => {
             queryClient.invalidateQueries({ queryKey: ['episodes', projectId] })
             setShowContinue(false)
-            Toast.success('Continue generation started')
+            Toast.success('全流程续画流水线已启动')
             navigate(`/projects/${projectId}/episodes/${data.episode_id}/generate`)
         },
         onError: () => {},
     })
 
     const createPitMutation = useMutation({
-        mutationFn: (data: { title: string; description?: string; priority?: number; introduced_episode_id: string; trigger_hint?: string }) =>
-            pitService.create(projectId!, data),
+        mutationFn: (data: {
+            title: string
+            description?: string
+            priority?: number
+            introduced_episode_id: string
+            trigger_hint?: string
+        }) => pitService.create(projectId!, data),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['pits', projectId] })
             setShowCreatePit(false)
-            Toast.success('Pit created')
+            Toast.success('伏笔已记录')
         },
         onError: () => {},
     })
@@ -223,7 +393,7 @@ export default function ProjectDetail() {
             queryClient.invalidateQueries({ queryKey: ['pits', projectId] })
             setShowResolvePit(false)
             setResolvingPit(null)
-            Toast.success('Pit resolved')
+            Toast.success('伏笔已标记为回收')
         },
         onError: () => {},
     })
@@ -232,7 +402,8 @@ export default function ProjectDetail() {
         mutationFn: (episodeId: string) => episodeService.delete(episodeId),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['episodes', projectId] })
-            Toast.success('Episode deleted')
+            queryClient.invalidateQueries({ queryKey: ['pits', projectId] })
+            Toast.success('章节已删除')
         },
         onError: () => {},
     })
@@ -242,7 +413,7 @@ export default function ProjectDetail() {
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['branches', projectId] })
             setShowCreateBranch(false)
-            Toast.success('Branch created')
+            Toast.success('分支已创建')
         },
         onError: () => {},
     })
@@ -251,66 +422,81 @@ export default function ProjectDetail() {
         mutationFn: (branchId: string) => branchService.delete(branchId),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['branches', projectId] })
-            Toast.success('Branch deleted')
+            queryClient.invalidateQueries({ queryKey: ['episodes', projectId] })
+            Toast.success('分支已删除')
         },
         onError: () => {},
     })
 
     const forkMutation = useMutation({
-        mutationFn: (data: { episode_id: string; branch_name: string; description?: string }) => branchService.fork(projectId!, data),
+        mutationFn: (data: { episode_id: string; branch_name: string; description?: string }) =>
+            branchService.fork(projectId!, data),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['branches', projectId] })
             queryClient.invalidateQueries({ queryKey: ['episodes', projectId] })
             setShowFork(false)
-            Toast.success('Branch forked')
+            Toast.success('已从指定章节派生平行世界线分支')
         },
         onError: () => {},
     })
 
     const diffMutation = useMutation({
-        mutationFn: (data: { source_branch_id: string; target_branch_id: string; episode_number?: number }) => branchService.diff(projectId!, data),
+        mutationFn: (data: { source_branch_id: string; target_branch_id: string; episode_number?: number }) =>
+            branchService.diff(projectId!, data),
         onSuccess: (data) => {
             setDiffResult(data)
-            Toast.success('Diff completed')
         },
         onError: () => {},
     })
 
     const mergeMutation = useMutation({
-        mutationFn: (data: { source_branch_id: string; target_branch_id: string; items: MergeItem[] }) => branchService.merge(projectId!, data),
+        mutationFn: (data: { source_branch_id: string; target_branch_id: string; items: MergeItem[] }) =>
+            branchService.merge(projectId!, data),
         onSuccess: (data) => {
             queryClient.invalidateQueries({ queryKey: ['branches', projectId] })
             queryClient.invalidateQueries({ queryKey: ['episodes', projectId] })
+            queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
+            queryClient.invalidateQueries({ queryKey: ['pits', projectId] })
             setShowMerge(false)
             setDiffResult(null)
             setMergeItems([])
-            setMergeSourceBranch('')
-            setMergeTargetBranch('')
             if (data.errors.length > 0) {
-                Toast.warning(`Merged ${data.merged_items.length}, skipped ${data.skipped_items.length}, errors: ${data.errors.join(', ')}`)
+                Toast.warning(`已合并 ${data.merged_items.length} 项，警告：${data.errors.join(', ')}`)
             } else {
-                Toast.success(`Merged ${data.merged_items.length} items, skipped ${data.skipped_items.length}`)
+                Toast.success(`成功合并 ${data.merged_items.length} 项变更`)
             }
         },
         onError: () => {},
     })
 
     const createAssetMutation = useMutation({
-        mutationFn: (data: { type: string; name: string; description?: string }) => assetService.create(projectId!, data),
+        mutationFn: (data: { type: string; name: string; description?: string; visual_tags?: string }) => {
+            const vtags = (data.visual_tags || '')
+                .split(/[,，]/)
+                .map((s) => s.trim())
+                .filter(Boolean)
+            return assetService.create(projectId!, {
+                type: data.type,
+                name: data.name,
+                description: data.description,
+                tags: vtags.length ? { visual_tags: vtags } : undefined,
+            })
+        },
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
             setShowCreateAsset(false)
-            Toast.success('Asset created')
+            Toast.success('视觉资产已创建')
         },
         onError: () => {},
     })
 
     const updateAssetMutation = useMutation({
-        mutationFn: (data: { assetId: string; updates: { name?: string; description?: string } }) => assetService.update(data.assetId, data.updates),
+        mutationFn: (data: { assetId: string; updates: { name?: string; description?: string; tags?: Record<string, unknown> } }) =>
+            assetService.update(data.assetId, data.updates),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
             setEditingAsset(null)
-            Toast.success('Asset updated')
+            Toast.success('资产信息已保存')
         },
         onError: () => {},
     })
@@ -319,7 +505,7 @@ export default function ProjectDetail() {
         mutationFn: (assetId: string) => assetService.delete(assetId),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
-            Toast.success('Asset deleted')
+            Toast.success('资产已删除')
         },
         onError: () => {},
     })
@@ -329,277 +515,34 @@ export default function ProjectDetail() {
         onSuccess: (data) => {
             setClusterData(data)
             setShowClusterResult(true)
-            Toast.success('Clustering completed')
         },
         onError: () => {},
     })
 
     const assetMergeMutation = useMutation({
-        mutationFn: (data: { source_asset_ids: string[]; target_name: string; target_description?: string }) => assetService.merge(projectId!, data),
+        mutationFn: (data: { source_asset_ids: string[]; target_name: string; target_description?: string }) =>
+            assetService.merge(projectId!, data),
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
             setShowAssetMerge(false)
             setSelectedAssetIds([])
-            Toast.success('Assets merged')
+            Toast.success('同名/相似资产已合并')
         },
         onError: () => {},
     })
 
-    const vectorizeMutation = useMutation({
-        mutationFn: (assetId: string) => assetService.vectorize(assetId),
-        onSuccess: () => {
-            Toast.success('Asset vectorized')
-        },
-        onError: () => {},
-    })
-
-    if (projectLoading) return <Spin size="large" />
-    if (!project) return <Empty description="Project not found" />
-
-    const episodeColumns = [
-        { title: '#', dataIndex: 'label', key: 'label', width: 80 },
-        { title: 'Title', dataIndex: 'title', key: 'title', render: (text: string) => text || '-' },
-        {
-            title: 'Category',
-            dataIndex: 'category',
-            key: 'category',
-            width: 80,
-            render: (text: string) => {
-                const cat = CATEGORY_LABELS[text]
-                return cat ? <Tag color={cat.color}>{cat.text}</Tag> : <Tag>{text}</Tag>
-            },
-        },
-        { title: 'Source', dataIndex: 'source', key: 'source', render: (text: string) => <Tag>{text}</Tag> },
-        {
-            title: 'Status',
-            dataIndex: 'status',
-            key: 'status',
-            render: (text: string) => <Tag color={STATUS_COLORS[text] || 'default' as TagColor}>{text}</Tag>,
-        },
-        {
-            title: 'Updated',
-            dataIndex: 'updated_at',
-            key: 'updated_at',
-            render: (text: string) => new Date(text).toLocaleDateString(),
-        },
-        {
-            title: 'Actions',
-            key: 'actions',
-            render: (_: unknown, record: Episode) => (
-                <div className="flex gap-1">
-                    <Button size="small" onClick={() => navigate(`/projects/${projectId}/episodes/${record.id}`)}>
-                        View
-                    </Button>
-                    <Button
-                        size="small"
-                        type="danger"
-                        icon={<IconDelete />}
-                        loading={deleteEpisodeMutation.isPending}
-                        onClick={() => {
-                            Modal.confirm({
-                                title: 'Delete Episode',
-                                content: `Are you sure you want to delete "${record.label} - ${record.title || record.status}"? This action cannot be undone.`,
-                                onOk: () => deleteEpisodeMutation.mutate(record.id),
-                            })
-                        }}
-                    />
-                </div>
-            ),
-        },
-    ]
-
-    const pitColumns = [
-        { title: 'Title', dataIndex: 'title', key: 'title' },
-        { title: 'Priority', dataIndex: 'priority', key: 'priority', width: 80 },
-        {
-            title: 'Status',
-            dataIndex: 'status',
-            key: 'status',
-            width: 100,
-            render: (text: string) => <Tag color={PIT_STATUS_COLORS[text] || ('default' as TagColor)}>{text}</Tag>,
-        },
-        {
-            title: 'Introduced Episode',
-            dataIndex: 'introduced_episode_id',
-            key: 'introduced_episode_id',
-            width: 160,
-            render: (text: string) => <Button size="small" onClick={() => navigate(`/projects/${projectId}/episodes/${text}`)}>View Episode</Button>,
-        },
-        {
-            title: 'Trigger Hint',
-            dataIndex: 'trigger_hint',
-            key: 'trigger_hint',
-            render: (text: string) => text || '-',
-        },
-        {
-            title: 'Actions',
-            key: 'actions',
-            width: 100,
-            render: (_: unknown, record: Pit) => (
-                record.status === 'open' ? (
-                    <Button size="small" theme="solid" onClick={() => { setResolvingPit(record); setShowResolvePit(true) }}>
-                        Resolve
-                    </Button>
-                ) : null
-            ),
-        },
-    ]
-
-    const branchColumns = [
-        {
-            title: 'Name',
-            dataIndex: 'name',
-            key: 'name',
-            render: (text: string, record: Branch) => (
-                <span className="flex items-center gap-2">
-                    {text}
-                    {record.is_default && <Tag color="green" size="small">Default</Tag>}
-                </span>
-            ),
-        },
-        {
-            title: 'Description',
-            dataIndex: 'description',
-            key: 'description',
-            render: (text: string) => text || '-',
-        },
-        {
-            title: 'Episodes',
-            dataIndex: 'episode_count',
-            key: 'episode_count',
-            width: 90,
-            render: (text: number) => text ?? '-',
-        },
-        {
-            title: 'Latest Episode',
-            dataIndex: 'latest_episode_number',
-            key: 'latest_episode_number',
-            width: 120,
-            render: (text: number | null) => text != null ? String(text) : '-',
-        },
-        {
-            title: 'Base Branch',
-            dataIndex: 'base_branch_id',
-            key: 'base_branch_id',
-            width: 120,
-            render: (text: string) => {
-                if (!text) return '-'
-                const baseBranch = branches?.find((b) => b.id === text)
-                return baseBranch ? <Tag>{baseBranch.name}</Tag> : text
-            },
-        },
-        {
-            title: 'Created',
-            dataIndex: 'created_at',
-            key: 'created_at',
-            width: 110,
-            render: (t: string) => new Date(t).toLocaleDateString(),
-        },
-        {
-            title: 'Actions',
-            key: 'actions',
-            width: 80,
-            render: (_: unknown, record: Branch) => (
-                !record.is_default ? (
-                    <Button
-                        size="small"
-                        type="danger"
-                        icon={<IconDelete />}
-                        loading={deleteBranchMutation.isPending}
-                        onClick={() => {
-                            Modal.confirm({
-                                title: 'Delete Branch',
-                                content: `Are you sure you want to delete branch "${record.name}"? This action cannot be undone.`,
-                                onOk: () => deleteBranchMutation.mutate(record.id),
-                            })
-                        }}
-                    />
-                ) : null
-            ),
-        },
-    ]
-
-    const assetColumns = [
-        {
-            title: 'Name',
-            dataIndex: 'name',
-            key: 'name',
-        },
-        {
-            title: 'Type',
-            dataIndex: 'type',
-            key: 'type',
-            width: 100,
-            render: (text: string) => <Tag color={ASSET_TYPE_COLORS[text] || ('default' as TagColor)}>{text}</Tag>,
-        },
-        {
-            title: 'Description',
-            dataIndex: 'description',
-            key: 'description',
-            render: (text: string) => text || '-',
-        },
-        {
-            title: 'Tags',
-            dataIndex: 'tags',
-            key: 'tags',
-            width: 150,
-            render: (tags: Record<string, unknown> | null) => {
-                if (!tags || Object.keys(tags).length === 0) return '-'
-                return (
-                    <div className="flex flex-wrap gap-1">
-                        {Object.entries(tags).slice(0, 3).map(([k, v]) => (
-                            <Tag key={k} size="small">{k}: {String(v)}</Tag>
-                        ))}
-                        {Object.keys(tags).length > 3 && <Tag size="small">+{Object.keys(tags).length - 3}</Tag>}
-                    </div>
-                )
-            },
-        },
-        {
-            title: 'Created',
-            dataIndex: 'created_at',
-            key: 'created_at',
-            width: 110,
-            render: (t: string) => new Date(t).toLocaleDateString(),
-        },
-        {
-            title: 'Actions',
-            key: 'actions',
-            width: 280,
-            render: (_: unknown, record: Asset) => (
-                <div className="flex gap-1">
-                    <Button size="small" onClick={() => setEditingAsset(record)}>Edit</Button>
-                    <Button size="small" onClick={() => setImageAsset(record)}>Images</Button>
-                    <Button size="small" icon={<IconSearch />} onClick={() => {
-                        assetService.findSimilar(record.id).then((data) => {
-                            setSimilarAssets(data)
-                            setShowSimilar(true)
-                        }).catch(() => {})
-                    }}>Similar</Button>
-                    <Button size="small" icon={<IconRefresh />} loading={vectorizeMutation.isPending} onClick={() => vectorizeMutation.mutate(record.id)} />
-                    <Button
-                        size="small"
-                        type="danger"
-                        icon={<IconDelete />}
-                        onClick={() => {
-                            Modal.confirm({
-                                title: 'Delete Asset',
-                                content: `Are you sure you want to delete "${record.name}"?`,
-                                onOk: () => deleteAssetMutation.mutate(record.id),
-                            })
-                        }}
-                    />
-                </div>
-            ),
-        },
-    ]
-
-    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const files = e.target.files
-        if (files) {
-            setUploadFiles(Array.from(files))
-        }
+    if (projectLoading) {
+        return (
+            <div className="py-20 flex justify-center">
+                <Spin size="large" />
+            </div>
+        )
     }
+    if (!project) return <Empty description="未找到该连载项目" />
+
+    const storyBible = project.canon_rules?.story_bible
+    const mainPlot = storyBible?.main_plot
+    const discoveredRules = storyBible?.discovered_rules || []
 
     const handleDiffForMerge = (sourceId: string, targetId: string) => {
         setMergeSourceBranch(sourceId)
@@ -610,18 +553,18 @@ export default function ProjectDetail() {
                 onSuccess: (data) => {
                     const items: MergeItem[] = []
                     data.episodes.forEach((ep) => {
-                        if (ep.source_status && !ep.target_status) {
-                            items.push({ item_type: 'episode', source_id: String(ep.number), action: 'adopt' })
+                        if (ep.source_episode_id && ep.source_status && !ep.target_status) {
+                            items.push({ item_type: 'episode', source_id: ep.source_episode_id, action: 'adopt' })
                         }
                     })
                     data.assets.forEach((asset) => {
-                        if (asset.in_source && !asset.in_target) {
-                            items.push({ item_type: 'asset', source_id: asset.name, action: 'adopt' })
+                        if (asset.asset_id && asset.in_source && !asset.in_target) {
+                            items.push({ item_type: 'asset', source_id: asset.asset_id, action: 'adopt' })
                         }
                     })
                     data.pits.forEach((pit) => {
-                        if (pit.status_source && !pit.status_target) {
-                            items.push({ item_type: 'pit', source_id: pit.title, action: 'adopt' })
+                        if (pit.source_pit_id && pit.status_source && !pit.status_target) {
+                            items.push({ item_type: 'pit', source_id: pit.source_pit_id, action: 'adopt' })
                         }
                     })
                     setMergeItems(items)
@@ -630,364 +573,989 @@ export default function ProjectDetail() {
         )
     }
 
-    const renderDiffResult = (diff: DiffResponse) => (
-        <div className="space-y-4 mt-4">
-            {diff.episodes.length > 0 && (
-                <div>
-                    <Title heading={6}>Episodes</Title>
-                    <Table
-                        columns={[
-                            { title: '#', dataIndex: 'number', key: 'number', width: 60 },
-                            { title: 'Label', dataIndex: 'label', key: 'label', width: 80 },
-                            {
-                                title: 'Source Status',
-                                dataIndex: 'source_status',
-                                key: 'source_status',
-                                width: 120,
-                                render: (text: string | null) => text ? <Tag color={STATUS_COLORS[text] || ('default' as TagColor)}>{text}</Tag> : <Tag color="grey">N/A</Tag>,
-                            },
-                            {
-                                title: 'Target Status',
-                                dataIndex: 'target_status',
-                                key: 'target_status',
-                                width: 120,
-                                render: (text: string | null) => text ? <Tag color={STATUS_COLORS[text] || ('default' as TagColor)}>{text}</Tag> : <Tag color="grey">N/A</Tag>,
-                            },
-                            { title: 'Source Title', dataIndex: 'title_source', key: 'title_source', render: (t: string | null) => t || '-' },
-                            { title: 'Target Title', dataIndex: 'title_target', key: 'title_target', render: (t: string | null) => t || '-' },
-                        ]}
-                        dataSource={diff.episodes}
-                        rowKey={(r?: { number: number }) => String(r?.number ?? '')}
-                        pagination={false}
+    const episodeColumns = [
+        {
+            title: '话数',
+            dataIndex: 'label',
+            key: 'label',
+            width: 96,
+            render: (text: string, record: Episode) => (
+                <span className="font-bold text-slate-900">第 {text || record.number} 话</span>
+            ),
+        },
+        {
+            title: '章节标题',
+            dataIndex: 'title',
+            key: 'title',
+            render: (text: string, record: Episode) => (
+                <span
+                    className="font-medium text-slate-800 hover:text-indigo-600 cursor-pointer"
+                    onClick={() => navigate(`/projects/${projectId}/episodes/${record.id}`)}
+                >
+                    {text || '（未命名章节）'}
+                </span>
+            ),
+        },
+        {
+            title: '类型',
+            dataIndex: 'category',
+            key: 'category',
+            width: 84,
+            render: (text: string) => {
+                const cat = CATEGORY_LABELS[text]
+                return cat ? <Tag color={cat.color}>{cat.text}</Tag> : <Tag>{text}</Tag>
+            },
+        },
+        {
+            title: '来源',
+            dataIndex: 'source',
+            key: 'source',
+            width: 110,
+            render: (text: string) => (
+                <Tag color={text === 'generated' ? 'violet' : 'grey'}>
+                    {text === 'generated' ? 'AI 续画' : text === 'import_mangadex' ? 'MangaDex' : '原作导入'}
+                </Tag>
+            ),
+        },
+        {
+            title: '当前状态',
+            dataIndex: 'status',
+            key: 'status',
+            width: 140,
+            render: (text: string) => {
+                const m = STATUS_META[text]
+                return <Tag color={m?.color || ('default' as TagColor)}>{m?.label || text}</Tag>
+            },
+        },
+        {
+            title: '更新时间',
+            dataIndex: 'updated_at',
+            key: 'updated_at',
+            width: 120,
+            render: (text: string) => <span className="text-xs text-slate-500">{new Date(text).toLocaleDateString()}</span>,
+        },
+        {
+            title: '操作',
+            key: 'actions',
+            width: 310,
+            render: (_: unknown, record: Episode) => (
+                <div className="flex flex-wrap gap-1.5">
+                    <Button size="small" onClick={() => navigate(`/projects/${projectId}/episodes/${record.id}`)}>
+                        阅读与解析
+                    </Button>
+                    {record.status === 'imported' && (
+                        <Button
+                            size="small"
+                            theme="light"
+                            type="primary"
+                            icon={<IconBolt />}
+                            loading={singleUnderstandMutation.isPending}
+                            onClick={() => singleUnderstandMutation.mutate(record.id)}
+                        >
+                            理解本话
+                        </Button>
+                    )}
+                    {record.source === 'generated' && (
+                        <Button
+                            size="small"
+                            theme="light"
+                            onClick={() => navigate(`/projects/${projectId}/episodes/${record.id}/generate`)}
+                        >
+                            分镜工坊
+                        </Button>
+                    )}
+                    {['understood', 'published'].includes(record.status) && (
+                        <Button
+                            size="small"
+                            icon={<IconForward />}
+                            onClick={() => openContinueModal(record.id)}
+                        >
+                            续画
+                        </Button>
+                    )}
+                    <Button
                         size="small"
+                        type="danger"
+                        theme="borderless"
+                        icon={<IconDelete />}
+                        onClick={() => {
+                            Modal.confirm({
+                                title: '确认删除该章节？',
+                                content: `将删除“第 ${record.label} 话 ${record.title || ''}”，关联伏笔状态将自动安全回退。`,
+                                onOk: () => deleteEpisodeMutation.mutate(record.id),
+                            })
+                        }}
                     />
                 </div>
-            )}
-            {diff.assets.length > 0 && (
-                <div>
-                    <Title heading={6}>Assets</Title>
-                    <Table
-                        columns={[
-                            { title: 'Name', dataIndex: 'name', key: 'name' },
-                            {
-                                title: 'Type',
-                                dataIndex: 'asset_type',
-                                key: 'asset_type',
-                                width: 100,
-                                render: (t: string) => <Tag color={ASSET_TYPE_COLORS[t] || ('default' as TagColor)}>{t}</Tag>,
-                            },
-                            {
-                                title: 'In Source',
-                                dataIndex: 'in_source',
-                                key: 'in_source',
-                                width: 90,
-                                render: (v: boolean) => v ? <Tag color="green">Yes</Tag> : <Tag color="red">No</Tag>,
-                            },
-                            {
-                                title: 'In Target',
-                                dataIndex: 'in_target',
-                                key: 'in_target',
-                                width: 90,
-                                render: (v: boolean) => v ? <Tag color="green">Yes</Tag> : <Tag color="red">No</Tag>,
-                            },
-                            { title: 'Source Desc', dataIndex: 'description_source', key: 'description_source', render: (t: string | null) => t || '-' },
-                            { title: 'Target Desc', dataIndex: 'description_target', key: 'description_target', render: (t: string | null) => t || '-' },
-                        ]}
-                        dataSource={diff.assets}
-                        rowKey={(r?: { name: string; asset_type: string }) => `${r?.name ?? ''}-${r?.asset_type ?? ''}`}
-                        pagination={false}
+            ),
+        },
+    ]
+
+    const pitColumns = [
+        {
+            title: '优先级',
+            dataIndex: 'priority',
+            key: 'priority',
+            width: 110,
+            render: (prio: number) =>
+                prio >= 8 ? (
+                    <Tag color="red">主线核心 ({prio})</Tag>
+                ) : prio >= 4 ? (
+                    <Tag color="orange">重要支线 ({prio})</Tag>
+                ) : (
+                    <Tag color="grey">细节线索 ({prio})</Tag>
+                ),
+        },
+        {
+            title: '伏笔与悬念详情',
+            dataIndex: 'title',
+            key: 'title',
+            render: (_: string, record: Pit) => {
+                const { summary, clues } = splitPitClues(record.description || record.title)
+                return (
+                    <div className="space-y-1.5 py-1">
+                        <div className="font-semibold text-slate-900 text-sm">{record.title}</div>
+                        {summary && summary !== record.title && (
+                            <div className="text-xs text-slate-600 leading-relaxed">{summary}</div>
+                        )}
+                        {clues.length > 0 && (
+                            <div className="space-y-1 pt-1">
+                                {clues.map((c, idx) => (
+                                    <div
+                                        key={idx}
+                                        className="text-xs bg-amber-50 border border-amber-200 text-amber-900 rounded px-2 py-1"
+                                    >
+                                        {c}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                )
+            },
+        },
+        {
+            title: '状态',
+            dataIndex: 'status',
+            key: 'status',
+            width: 110,
+            render: (text: string) => {
+                const m = PIT_STATUS_META[text]
+                return <Tag color={m?.color || ('default' as TagColor)}>{m?.label || text}</Tag>
+            },
+        },
+        {
+            title: '埋设 / 回收章节',
+            dataIndex: 'introduced_episode_id',
+            key: 'introduced_episode_id',
+            width: 160,
+            render: (introId: string, record: Pit) => (
+                <div className="space-y-1 text-xs">
+                    <div>
+                        <span className="text-slate-400">埋设：</span>
+                        <span
+                            className="text-indigo-600 hover:underline cursor-pointer"
+                            onClick={() => navigate(`/projects/${projectId}/episodes/${introId}`)}
+                        >
+                            {epLabelById[introId] || '查看章节'}
+                        </span>
+                    </div>
+                    {record.resolved_episode_id && (
+                        <div>
+                            <span className="text-slate-400">回收：</span>
+                            <span
+                                className="text-emerald-600 hover:underline cursor-pointer"
+                                onClick={() => navigate(`/projects/${projectId}/episodes/${record.resolved_episode_id}`)}
+                            >
+                                {epLabelById[record.resolved_episode_id] || '查看章节'}
+                            </span>
+                        </div>
+                    )}
+                </div>
+            ),
+        },
+        {
+            title: '回收触发条件',
+            dataIndex: 'trigger_hint',
+            key: 'trigger_hint',
+            width: 220,
+            render: (text: string) => <span className="text-xs text-slate-500">{text || '-'}</span>,
+        },
+        {
+            title: '操作',
+            key: 'actions',
+            width: 110,
+            render: (_: unknown, record: Pit) =>
+                record.status === 'open' ? (
+                    <Button
                         size="small"
-                    />
-                </div>
-            )}
-            {diff.pits.length > 0 && (
-                <div>
-                    <Title heading={6}>Pits</Title>
-                    <Table
-                        columns={[
-                            { title: 'Title', dataIndex: 'title', key: 'title' },
-                            {
-                                title: 'Source Status',
-                                dataIndex: 'status_source',
-                                key: 'status_source',
-                                width: 120,
-                                render: (t: string | null) => t ? <Tag color={PIT_STATUS_COLORS[t] || ('default' as TagColor)}>{t}</Tag> : <Tag color="grey">N/A</Tag>,
-                            },
-                            {
-                                title: 'Target Status',
-                                dataIndex: 'status_target',
-                                key: 'status_target',
-                                width: 120,
-                                render: (t: string | null) => t ? <Tag color={PIT_STATUS_COLORS[t] || ('default' as TagColor)}>{t}</Tag> : <Tag color="grey">N/A</Tag>,
-                            },
-                        ]}
-                        dataSource={diff.pits}
-                        rowKey={(r?: { title: string }) => r?.title ?? ''}
-                        pagination={false}
+                        theme="light"
+                        type="primary"
+                        onClick={() => {
+                            setResolvingPit(record)
+                            setShowResolvePit(true)
+                        }}
+                    >
+                        标记回收
+                    </Button>
+                ) : null,
+        },
+    ]
+
+    const branchColumns = [
+        {
+            title: '分支名称',
+            dataIndex: 'name',
+            key: 'name',
+            render: (text: string, record: Branch) => (
+                <span className="flex items-center gap-2 font-medium">
+                    {text}
+                    {record.is_default && (
+                        <Tag color="green" size="small">
+                            主世界线
+                        </Tag>
+                    )}
+                </span>
+            ),
+        },
+        { title: '分支说明', dataIndex: 'description', key: 'description', render: (t: string) => t || '-' },
+        { title: '章节数', dataIndex: 'episode_count', key: 'episode_count', width: 90, render: (t: number) => t ?? 0 },
+        {
+            title: '最新话数',
+            dataIndex: 'latest_episode_number',
+            key: 'latest_episode_number',
+            width: 110,
+            render: (t: number | null) => (t != null ? `第 ${t} 话` : '-'),
+        },
+        {
+            title: '派生自',
+            dataIndex: 'base_branch_id',
+            key: 'base_branch_id',
+            width: 130,
+            render: (t: string) => {
+                if (!t) return '-'
+                const b = branches?.find((item) => item.id === t)
+                return b ? <Tag>{b.name}</Tag> : t
+            },
+        },
+        {
+            title: '操作',
+            key: 'actions',
+            width: 100,
+            render: (_: unknown, record: Branch) =>
+                !record.is_default ? (
+                    <Button
                         size="small"
+                        type="danger"
+                        theme="light"
+                        icon={<IconDelete />}
+                        loading={deleteBranchMutation.isPending}
+                        onClick={() => {
+                            Modal.confirm({
+                                title: '删除平行分支',
+                                content: `确认删除分支 "${record.name}" 及其下属章节？`,
+                                onOk: () => deleteBranchMutation.mutate(record.id),
+                            })
+                        }}
                     />
-                </div>
-            )}
-            {diff.canon_diff && (
-                <div>
-                    <Title heading={6}>Canon Rules Diff</Title>
-                    <TextArea
-                        value={JSON.stringify(diff.canon_diff, null, 2)}
-                        rows={6}
-                        readOnly
-                    />
-                </div>
-            )}
-            {diff.episodes.length === 0 && diff.assets.length === 0 && diff.pits.length === 0 && !diff.canon_diff && (
-                <Empty description="No differences found" />
-            )}
-        </div>
-    )
+                ) : null,
+        },
+    ]
+
+    const assets = assetsData?.items || []
 
     return (
-        <div>
-            <div className="mb-6">
-                <Title heading={3}>{project.title}</Title>
-                <Paragraph>{project.description || 'No description'}</Paragraph>
-                <div className="flex gap-2">
-                    <Tag>{project.language.toUpperCase()}</Tag>
-                    <Tag color="green">Main Branch</Tag>
+        <div className="space-y-6">
+            {/* Project Studio Header */}
+            <div className="studio-card p-6 space-y-5">
+                <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
+                    <div className="space-y-2">
+                        <div className="flex flex-wrap items-center gap-2.5">
+                            <h1 className="text-2xl font-extrabold text-slate-900 m-0">{project.title}</h1>
+                            <Tag color="indigo">{project.language.toUpperCase()}</Tag>
+                            {storyBible?.art_style && (
+                                <Tag color="cyan">画风已锚定</Tag>
+                            )}
+                        </div>
+                        <p className="text-sm text-slate-500 m-0 max-w-3xl">
+                            {project.description || '导入连载章节并执行多模态理解后，系统将自动提取人物/道具/场景设定、主线脉络与伏笔。'}
+                        </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2.5">
+                        <Button icon={<IconLink />} onClick={() => navigate(`/projects/${projectId}/imports/mangadex`)}>
+                            MangaDex 抓取
+                        </Button>
+                        <Button icon={<IconPlus />} onClick={() => setShowImport(true)}>
+                            导入章节 (图片/ZIP)
+                        </Button>
+                        <Button
+                            icon={<IconBolt />}
+                            theme="light"
+                            type="primary"
+                            loading={batchUnderstandMutation.isPending}
+                            onClick={() => batchUnderstandMutation.mutate(false)}
+                        >
+                            一键按序理解全书{unanalyzedCount > 0 ? ` (${unanalyzedCount} 话待解析)` : ''}
+                        </Button>
+                        <Button
+                            icon={<IconForward />}
+                            theme="solid"
+                            style={{ backgroundColor: '#4f46e5', color: '#fff' }}
+                            disabled={episodes.length === 0}
+                            onClick={() => openContinueModal()}
+                        >
+                            智能续画下一话
+                        </Button>
+                    </div>
+                </div>
+
+                {/* Live Metrics Strip */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-2 border-t border-slate-100">
+                    <div className="rounded-xl bg-slate-50 px-4 py-3">
+                        <div className="text-xs text-slate-500">当前连载章节</div>
+                        <div className="text-xl font-bold text-slate-900 mt-0.5">
+                            {episodesData?.total || 0} <span className="text-xs font-normal text-slate-500">话 (已理解 {understoodCount})</span>
+                        </div>
+                    </div>
+                    <div
+                        className="rounded-xl bg-slate-50 px-4 py-3 cursor-pointer hover:bg-indigo-50/50 transition-colors"
+                        onClick={() => setActiveTab('story')}
+                    >
+                        <div className="text-xs text-slate-500">主线篇章状态</div>
+                        <div className="text-sm font-bold text-indigo-700 mt-1 line-clamp-1">
+                            {mainPlot?.current_arc || (project.long_summary ? '已生成长程摘要' : '待理解提炼')}
+                        </div>
+                    </div>
+                    <div
+                        className="rounded-xl bg-slate-50 px-4 py-3 cursor-pointer hover:bg-indigo-50/50 transition-colors"
+                        onClick={() => setActiveTab('assets')}
+                    >
+                        <div className="text-xs text-slate-500">已识别角色 / 物品 / 场景</div>
+                        <div className="text-xl font-bold text-slate-900 mt-0.5">
+                            {assetsData?.total || 0} <span className="text-xs font-normal text-slate-500">项视觉资产</span>
+                        </div>
+                    </div>
+                    <div
+                        className="rounded-xl bg-slate-50 px-4 py-3 cursor-pointer hover:bg-indigo-50/50 transition-colors"
+                        onClick={() => setActiveTab('pits')}
+                    >
+                        <div className="text-xs text-slate-500">活跃伏笔 / 悬念线</div>
+                        <div className="text-xl font-bold text-amber-600 mt-0.5">
+                            {pitsData?.total || 0} <span className="text-xs font-normal text-slate-500">条 ({pitStatusFilter === 'open' ? '待填' : '当前筛选'})</span>
+                        </div>
+                    </div>
                 </div>
             </div>
 
-            <Tabs>
-                <TabPane tab="Episodes" itemKey="episodes">
-                    <div className="flex justify-between items-center mb-4">
-                        <div className="flex gap-2 items-center">
-                            <span>Branch:</span>
-                            <select
-                                className="border rounded px-2 py-1 text-sm"
-                                value={selectedBranch || ''}
-                                onChange={(e) => { setSelectedBranch(e.target.value || undefined); setEpisodePage(1) }}
-                            >
-                                <option value="">All</option>
-                                {branches?.map((b) => (
-                                    <option key={b.id} value={b.id}>{b.name}</option>
-                                ))}
-                            </select>
-                        </div>
-                        <div className="flex gap-2">
-                            <Button icon={<IconLink />} onClick={() => navigate(`/projects/${projectId}/imports/mangadex`)}>
-                                MangaDex 导入
-                            </Button>
-                            <Button icon={<IconForward />} onClick={() => setShowContinue(true)}>
-                                Continue from Episode
-                            </Button>
-                            <Button icon={<IconPlus />} theme="solid" onClick={() => setShowImport(true)}>
-                                Import Episode
-                            </Button>
-                        </div>
-                    </div>
+            {activeBatchNotice && (
+                <Banner
+                    type="info"
+                    description={activeBatchNotice}
+                    onClose={() => setBatchTaskNotice(null)}
+                />
+            )}
 
-                    <Table
-                        columns={episodeColumns}
-                        dataSource={episodesData?.items || []}
-                        loading={episodesLoading}
-                        rowKey="id"
-                        pagination={{
-                            currentPage: episodePage,
-                            pageSize: episodePageSize,
-                            total: episodesData?.total || 0,
-                            showTotal: true,
-                            onChange: (currentPage: number, pageSize: number) => {
-                                setEpisodePage(currentPage)
-                                setEpisodePageSize(pageSize)
-                            },
-                        }}
-                    />
-                </TabPane>
-
-                <TabPane tab="Assets" itemKey="assets">
-                    <div className="flex justify-between items-center mb-4">
-                        <div className="flex gap-2 items-center">
-                            <span>Type:</span>
-                            <Select
-                                value={assetTypeFilter}
-                                onChange={(v: string | string[] | undefined) => { setAssetTypeFilter(v ? String(v) : undefined); setAssetPage(1) }}
-                                style={{ width: 140 }}
-                                placeholder="All Types"
-                            >
-                                <Select.Option value="">All</Select.Option>
-                                {ASSET_TYPE_OPTIONS.map((opt) => (
-                                    <Select.Option key={opt.value} value={opt.value}>{opt.label}</Select.Option>
-                                ))}
-                            </Select>
-                        </div>
-                        <div className="flex gap-2">
-                            {selectedAssetIds.length >= 2 && (
-                                <Button icon={<IconCopy />} onClick={() => setShowAssetMerge(true)}>
-                                    Merge Selected ({selectedAssetIds.length})
-                                </Button>
-                            )}
-                            <Button icon={<IconSearch />} loading={clusterMutation.isPending} onClick={() => clusterMutation.mutate()}>
-                                Cluster Assets
-                            </Button>
-                            <Button icon={<IconPlus />} theme="solid" onClick={() => setShowCreateAsset(true)}>
-                                Create Asset
-                            </Button>
-                        </div>
-                    </div>
-                    <Table
-                        columns={[
-                            {
-                                title: '',
-                                key: 'select',
-                                width: 50,
-                                render: (_: unknown, record: Asset) => (
-                                    <Checkbox
-                                        checked={selectedAssetIds.includes(record.id)}
-                                        onChange={(e) => {
-                                            if (Boolean(e.target.checked)) {
-                                                setSelectedAssetIds([...selectedAssetIds, record.id])
-                                            } else {
-                                                setSelectedAssetIds(selectedAssetIds.filter((id) => id !== record.id))
-                                            }
-                                        }}
-                                    />
-                                ),
-                            },
-                            ...assetColumns,
-                        ]}
-                        dataSource={assetsData?.items || []}
-                        loading={assetsLoading}
-                        rowKey="id"
-                        pagination={{
-                            currentPage: assetPage,
-                            pageSize: assetPageSize,
-                            total: assetsData?.total || 0,
-                            showTotal: true,
-                            onChange: (currentPage: number, pageSize: number) => {
-                                setAssetPage(currentPage)
-                                setAssetPageSize(pageSize)
-                            },
-                        }}
-                    />
-                </TabPane>
-
-                <TabPane tab="Pits" itemKey="pits">
-                    <div className="flex justify-between items-center mb-4">
-                        <div className="flex gap-2 items-center">
-                            <span>Status:</span>
-                            <Select
-                                value={pitStatusFilter}
-                                onChange={(v: string | string[] | undefined) => { setPitStatusFilter(v ? String(v) : undefined); setPitPage(1) }}
-                                style={{ width: 120 }}
-                            >
-                                <Select.Option value="">All</Select.Option>
-                                <Select.Option value="open">Open</Select.Option>
-                                <Select.Option value="resolved">Resolved</Select.Option>
-                                <Select.Option value="abandoned">Abandoned</Select.Option>
-                            </Select>
-                        </div>
-                        <Button icon={<IconPlus />} theme="solid" onClick={() => setShowCreatePit(true)}>
-                            Create Pit
-                        </Button>
-                    </div>
-                    <Table
-                        columns={pitColumns}
-                        dataSource={pitsData?.items || []}
-                        loading={pitsLoading}
-                        rowKey="id"
-                        pagination={{
-                            currentPage: pitPage,
-                            pageSize: pitPageSize,
-                            total: pitsData?.total || 0,
-                            showTotal: true,
-                            onChange: (currentPage: number, pageSize: number) => {
-                                setPitPage(currentPage)
-                                setPitPageSize(pageSize)
-                            },
-                        }}
-                    />
-                </TabPane>
-
-                <TabPane tab="Memory" itemKey="memory">
-                    <div className="space-y-4">
-                        <div>
-                            <Title heading={5}>Canon Rules (Hard Settings)</Title>
-                            <TextArea
-                                value={JSON.stringify(canonRules, null, 2)}
-                                onChange={(val: string) => {
-                                    try { setCanonRules(JSON.parse(val)); setCanonValid(true) } catch { setCanonValid(false) }
-                                }}
-                                rows={8}
-                                placeholder="Enter canon rules as JSON..."
-                            />
-                            <div className="mt-2 flex items-center gap-2">
-                                <Button
-                                    theme="solid"
-                                    disabled={!canonValid}
-                                    onClick={() => {
-                                        memoryService.updateCanonRules(projectId!, canonRules).then(() => Toast.success('Canon rules updated')).catch(() => {})
+            <div className="studio-card p-6">
+                <Tabs activeKey={activeTab} onChange={(k) => setActiveTab(k)}>
+                    {/* TAB 1: EPISODES */}
+                    <TabPane tab={`连载章节 (${episodesData?.total || 0})`} itemKey="episodes">
+                        <div className="flex flex-wrap justify-between items-center gap-3 mb-4 pt-2">
+                            <div className="flex items-center gap-2">
+                                <span className="text-sm text-slate-600 font-medium">世界线分支：</span>
+                                <Select
+                                    value={selectedBranch || ''}
+                                    onChange={(v) => {
+                                        setSelectedBranch(v ? String(v) : undefined)
+                                        setEpisodePage(1)
                                     }}
-                                >Save Canon Rules</Button>
-                                {!canonValid && <Tag color="red">Invalid JSON</Tag>}
-                            </div>
-                        </div>
-                        <div>
-                            <Title heading={5}>Long Summary</Title>
-                            <Paragraph>{project?.long_summary || 'No long summary yet. Understanding episodes will build this automatically.'}</Paragraph>
-                        </div>
-                        <div>
-                            <Title heading={5}>RAG Search</Title>
-                            <div className="flex gap-2">
-                                <Input
-                                    value={ragQuery}
-                                    onChange={setRagQuery}
-                                    placeholder="Search memories..."
-                                    style={{ flex: 1 }}
-                                />
-                                <Button theme="solid" onClick={() => {
-                                    memoryService.searchRag(projectId!, ragQuery).then((res) => setRagResults(res.results)).catch(() => {})
-                                }}>Search</Button>
-                            </div>
-                            {ragResults.length > 0 && (
-                                <div className="mt-2 space-y-2">
-                                    {ragResults.map((r, i) => (
-                                        <div key={i} className="border rounded p-2">
-                                            <Tag size="small">Score: {r.score?.toFixed(3)}</Tag>
-                                            <span className="ml-2 text-sm">{String(r.payload?.content || '')}</span>
-                                        </div>
+                                    style={{ width: 180 }}
+                                >
+                                    <Select.Option value="">全部分支</Select.Option>
+                                    {branches?.map((b) => (
+                                        <Select.Option key={b.id} value={b.id}>
+                                            {b.name} {b.is_default ? '(默认)' : ''}
+                                        </Select.Option>
                                     ))}
+                                </Select>
+                            </div>
+                            <div className="flex items-center gap-2 text-xs text-slate-500">
+                                {episodes.length > 0 && (
+                                    <Button
+                                        size="small"
+                                        icon={<IconRefresh />}
+                                        onClick={() => {
+                                            Modal.confirm({
+                                                title: '重新按序理解全部章节？',
+                                                content: '将从第 1 话起按顺序重新分析本分支所有章节，刷新人物档案、主线与伏笔。',
+                                                onOk: () => batchUnderstandMutation.mutate(true),
+                                            })
+                                        }}
+                                    >
+                                        全分支重跑理解
+                                    </Button>
+                                )}
+                            </div>
+                        </div>
+
+                        <Table
+                            columns={episodeColumns}
+                            dataSource={episodes}
+                            loading={episodesLoading}
+                            rowKey="id"
+                            pagination={{
+                                currentPage: episodePage,
+                                pageSize: episodePageSize,
+                                total: episodesData?.total || 0,
+                                showTotal: true,
+                                onChange: (cp: number, ps: number) => {
+                                    setEpisodePage(cp)
+                                    setEpisodePageSize(ps)
+                                },
+                            }}
+                        />
+                    </TabPane>
+
+                    {/* TAB 2: STORY BIBLE & MAIN PLOTLINE */}
+                    <TabPane tab="剧情主线与世界观" itemKey="story">
+                        <div className="space-y-6 pt-3">
+                            {/* Main Plotline Dashboard */}
+                            <div className="rounded-2xl bg-gradient-to-br from-indigo-50/90 via-white to-violet-50/70 border border-indigo-100 p-5 space-y-4">
+                                <div className="flex items-center justify-between">
+                                    <div>
+                                        <h3 className="text-base font-bold text-indigo-950 m-0">主线核心脉络与篇章追踪</h3>
+                                        <p className="text-xs text-slate-500 m-0 mt-0.5">
+                                            由多模态理解引擎随章节推进自动提炼，并在续画分镜时作为最高优先级叙事纲领注入 LLM
+                                        </p>
+                                    </div>
+                                    {storyBible?.last_updated_episode && (
+                                        <Tag color="indigo">已同步至第 {storyBible.last_updated_episode} 话</Tag>
+                                    )}
+                                </div>
+
+                                {!mainPlot?.core_conflict && !mainPlot?.current_arc ? (
+                                    <Empty description="尚未提炼主线脉络。请先导入章节并点击顶部「一键按序理解全书」。" />
+                                ) : (
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div className="bg-white rounded-xl p-4 border border-indigo-100/80">
+                                            <div className="text-xs font-semibold text-indigo-600 mb-1">全书核心矛盾 / 主线悬念</div>
+                                            <div className="text-sm text-slate-800 leading-relaxed">
+                                                {mainPlot?.core_conflict || '-'}
+                                            </div>
+                                        </div>
+                                        <div className="bg-white rounded-xl p-4 border border-indigo-100/80">
+                                            <div className="text-xs font-semibold text-violet-600 mb-1">当前所在篇章 (Current Arc)</div>
+                                            <div className="text-sm text-slate-800 leading-relaxed">
+                                                {mainPlot?.current_arc || '-'}
+                                            </div>
+                                        </div>
+                                        <div className="bg-white rounded-xl p-4 border border-indigo-100/80">
+                                            <div className="text-xs font-semibold text-emerald-600 mb-1">主角当前目标与动机</div>
+                                            <div className="text-sm text-slate-800 leading-relaxed">
+                                                {mainPlot?.protagonist_goal || '-'}
+                                            </div>
+                                        </div>
+                                        <div className="bg-white rounded-xl p-4 border border-amber-200/80">
+                                            <div className="text-xs font-semibold text-amber-600 mb-1">下一话衔接悬念钩子 (Next Hook)</div>
+                                            <div className="text-sm text-slate-800 leading-relaxed">
+                                                {mainPlot?.next_hook || mainPlot?.arc_progress || '-'}
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {storyBible?.art_style && (
+                                    <div className="bg-white/90 rounded-xl px-4 py-3 border border-slate-200 text-xs text-slate-700">
+                                        <span className="font-semibold text-slate-900">原作画风特征锚点：</span>
+                                        {storyBible.art_style}
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Auto-discovered World Rules */}
+                            {discoveredRules.length > 0 && (
+                                <div className="space-y-2">
+                                    <h4 className="text-sm font-bold text-slate-900 m-0">自动提炼的世界观与设定法则 ({discoveredRules.length})</h4>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                                        {discoveredRules.map((rule, idx) => (
+                                            <div key={idx} className="rounded-lg bg-slate-50 border border-slate-200 px-3.5 py-2.5 text-xs text-slate-700">
+                                                • {rule}
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
                             )}
-                        </div>
-                    </div>
-                </TabPane>
 
-                <TabPane tab="Branches" itemKey="branches">
-                    <div className="flex justify-between items-center mb-4">
-                        <div />
-                        <div className="flex gap-2">
-                            <Button icon={<IconCopy />} onClick={() => setShowFork(true)}>
-                                Fork from Episode
-                            </Button>
-                            <Button icon={<IconSearch />} onClick={() => { setDiffResult(null); setShowDiff(true) }}>
-                                Compare Branches
-                            </Button>
-                            <Button icon={<IconPlus />} theme="solid" onClick={() => setShowCreateBranch(true)}>
-                                Create Branch
+                            {/* Rolling Long Summary (Editable) */}
+                            <div className="space-y-2">
+                                <div className="flex items-center justify-between">
+                                    <div>
+                                        <h4 className="text-sm font-bold text-slate-900 m-0">长程滚动剧情记忆 (Long Summary)</h4>
+                                        <span className="text-xs text-slate-500">按话数去重累积，超出预算时由 LLM 自动保真压缩关键状态与伏笔</span>
+                                    </div>
+                                    {!editingSummary ? (
+                                        <Button
+                                            size="small"
+                                            icon={<IconEdit />}
+                                            onClick={() => {
+                                                setLongSummaryDraft(project.long_summary || '')
+                                                setEditingSummary(true)
+                                            }}
+                                        >
+                                            手动修订摘要
+                                        </Button>
+                                    ) : (
+                                        <div className="flex gap-2">
+                                            <Button
+                                                size="small"
+                                                onClick={() => {
+                                                    setEditingSummary(false)
+                                                    setLongSummaryDraft(project.long_summary || '')
+                                                }}
+                                            >
+                                                取消
+                                            </Button>
+                                            <Button
+                                                size="small"
+                                                theme="solid"
+                                                onClick={() => {
+                                                    memoryService
+                                                        .updateLongSummary(projectId!, longSummaryDraft)
+                                                        .then(() => {
+                                                            setEditingSummary(false)
+                                                            queryClient.invalidateQueries({ queryKey: ['project', projectId] })
+                                                            Toast.success('长程摘要已保存')
+                                                        })
+                                                        .catch(() => {})
+                                                }}
+                                            >
+                                                保存长程摘要
+                                            </Button>
+                                        </div>
+                                    )}
+                                </div>
+                                {editingSummary ? (
+                                    <TextArea value={longSummaryDraft} onChange={setLongSummaryDraft} rows={8} />
+                                ) : (
+                                    <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">
+                                        {project.long_summary || '暂无长程摘要，执行章节理解后自动生成。'}
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Manual Canon Rules + RAG Search */}
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                                <div className="space-y-2">
+                                    <h4 className="text-sm font-bold text-slate-900 m-0">作者硬设定 (Canon Rules JSON)</h4>
+                                    <p className="text-xs text-slate-500 m-0">人工录入绝对不可违背的世界法则、战力体系或人物铁律（自动保留 story_bible）</p>
+                                    <TextArea
+                                        value={canonText}
+                                        onChange={(val: string) => {
+                                            setCanonDraft(val)
+                                            try {
+                                                JSON.parse(val)
+                                                setCanonValid(true)
+                                            } catch {
+                                                setCanonValid(false)
+                                            }
+                                        }}
+                                        rows={7}
+                                        placeholder='{"魔法规则": "咏唱需要星之匣共鸣", "禁忌": "不可在白天开启阁楼暗门"}'
+                                    />
+                                    <div className="flex items-center gap-2">
+                                        <Button
+                                            theme="solid"
+                                            size="small"
+                                            disabled={!canonValid}
+                                            onClick={() => {
+                                                const parsed = JSON.parse(canonText)
+                                                memoryService
+                                                    .updateCanonRules(projectId!, parsed)
+                                                    .then(() => {
+                                                        setCanonDraft(null)
+                                                        queryClient.invalidateQueries({ queryKey: ['project', projectId] })
+                                                        Toast.success('硬设定已更新')
+                                                    })
+                                                    .catch(() => {})
+                                            }}
+                                        >
+                                            保存硬设定
+                                        </Button>
+                                        {!canonValid && <Tag color="red">JSON 格式有误</Tag>}
+                                    </div>
+                                </div>
+
+                                <div className="space-y-2">
+                                    <h4 className="text-sm font-bold text-slate-900 m-0">跨章节剧情记忆检索 (RAG / 分词召回)</h4>
+                                    <p className="text-xs text-slate-500 m-0">输入人物、道具或事件关键词，测试跨话历史记忆召回效果</p>
+                                    <div className="flex gap-2">
+                                        <Input
+                                            value={ragQuery}
+                                            onChange={setRagQuery}
+                                            placeholder="例如：星之匣 / 钥匙 / 小樱受伤..."
+                                        />
+                                        <Button
+                                            theme="solid"
+                                            icon={<IconSearch />}
+                                            onClick={() => {
+                                                if (!ragQuery.trim()) return
+                                                memoryService
+                                                    .searchRag(projectId!, ragQuery)
+                                                    .then((res) => setRagResults(res.results))
+                                                    .catch(() => {})
+                                            }}
+                                        >
+                                            检索记忆
+                                        </Button>
+                                    </div>
+                                    <div className="space-y-2 max-h-56 overflow-y-auto pt-1">
+                                        {ragResults.map((r, i) => (
+                                            <div key={i} className="rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-xs space-y-1">
+                                                <div className="flex items-center gap-2">
+                                                    {r.payload?.episode_number != null && (
+                                                        <Tag size="small" color="indigo">
+                                                            第 {String(r.payload.episode_number)} 话
+                                                        </Tag>
+                                                    )}
+                                                    <Tag size="small">{String(r.payload?.type || 'memory')}</Tag>
+                                                    <span className="text-slate-400 ml-auto">相关度 {r.score?.toFixed(3)}</span>
+                                                </div>
+                                                <div className="text-slate-700 leading-relaxed">{String(r.payload?.content || '')}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </TabPane>
+
+                    {/* TAB 3: VISUAL ASSETS GALLERY */}
+                    <TabPane tab={`角色·物品·场景图鉴 (${assetsData?.total || 0})`} itemKey="assets">
+                        <div className="flex flex-wrap justify-between items-center gap-3 mb-4 pt-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                                <Select
+                                    value={assetTypeFilter || ''}
+                                    onChange={(v) => {
+                                        setAssetTypeFilter(v ? String(v) : undefined)
+                                        setAssetPage(1)
+                                    }}
+                                    style={{ width: 160 }}
+                                >
+                                    <Select.Option value="">全部资产类型</Select.Option>
+                                    {ASSET_TYPE_OPTIONS.map((opt) => (
+                                        <Select.Option key={opt.value} value={opt.value}>
+                                            {opt.label}
+                                        </Select.Option>
+                                    ))}
+                                </Select>
+                                <RadioGroup
+                                    type="button"
+                                    value={assetViewMode}
+                                    onChange={(e) => setAssetViewMode(e.target.value as 'gallery' | 'table')}
+                                    options={[
+                                        { label: '卡片图鉴', value: 'gallery' },
+                                        { label: '列表视图', value: 'table' },
+                                    ]}
+                                />
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                {selectedAssetIds.length >= 2 && (
+                                    <Button icon={<IconCopy />} theme="solid" onClick={() => setShowAssetMerge(true)}>
+                                        合并选中资产 ({selectedAssetIds.length})
+                                    </Button>
+                                )}
+                                <Button icon={<IconSearch />} loading={clusterMutation.isPending} onClick={() => clusterMutation.mutate()}>
+                                    相似资产聚类去重
+                                </Button>
+                                <Button icon={<IconPlus />} theme="solid" onClick={() => setShowCreateAsset(true)}>
+                                    手动新增资产
+                                </Button>
+                            </div>
+                        </div>
+
+                        {assetsLoading ? (
+                            <div className="py-12 flex justify-center">
+                                <Spin />
+                            </div>
+                        ) : assets.length === 0 ? (
+                            <Empty description="暂无资产记录。理解漫画章节后将自动识别角色、关键道具与场景，并自动截取参考图。" />
+                        ) : assetViewMode === 'gallery' ? (
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                                {assets.map((asset) => {
+                                    const meta = ASSET_TYPE_META[asset.type] || { label: asset.type, color: 'grey' as TagColor }
+                                    const epCount = Object.keys(asset.episode_ids || {}).length
+                                    const vtags = asset.tags?.visual_tags || []
+                                    const checked = selectedAssetIds.includes(asset.id)
+                                    return (
+                                        <div
+                                            key={asset.id}
+                                            className={`rounded-xl border p-4 flex flex-col justify-between space-y-3 transition-all ${
+                                                checked ? 'border-indigo-500 bg-indigo-50/30' : 'border-slate-200 bg-white hover:border-slate-300'
+                                            }`}
+                                        >
+                                            <div className="space-y-3">
+                                                <div className="flex items-start gap-3">
+                                                    <div
+                                                        onClick={() => setImageAsset(asset)}
+                                                        className="w-20 h-24 rounded-lg bg-slate-100 border border-slate-200 overflow-hidden shrink-0 flex items-center justify-center cursor-pointer relative group"
+                                                    >
+                                                        {asset.preview_image_path ? (
+                                                            <img
+                                                                src={storageFileUrl(asset.preview_image_path)}
+                                                                alt={asset.name}
+                                                                className="w-full h-full object-cover"
+                                                            />
+                                                        ) : (
+                                                            <div className="text-center text-[11px] text-slate-400 px-1">
+                                                                <IconImage />
+                                                                <div>上传参考图</div>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                    <div className="min-w-0 flex-1 space-y-1">
+                                                        <div className="flex items-start justify-between gap-1">
+                                                            <div className="font-bold text-slate-900 text-sm truncate" title={asset.name}>
+                                                                {asset.name}
+                                                            </div>
+                                                            <Checkbox
+                                                                checked={checked}
+                                                                onChange={(e) => {
+                                                                    if (e.target.checked) {
+                                                                        setSelectedAssetIds([...selectedAssetIds, asset.id])
+                                                                    } else {
+                                                                        setSelectedAssetIds(selectedAssetIds.filter((id) => id !== asset.id))
+                                                                    }
+                                                                }}
+                                                            />
+                                                        </div>
+                                                        <div className="flex flex-wrap gap-1">
+                                                            <Tag size="small" color={meta.color}>
+                                                                {meta.label}
+                                                            </Tag>
+                                                            {epCount > 0 && (
+                                                                <Tag size="small" color="grey">
+                                                                    登场 {epCount} 话
+                                                                </Tag>
+                                                            )}
+                                                            {asset.tags?.role && (
+                                                                <Tag size="small" color="cyan">
+                                                                    {asset.tags.role}
+                                                                </Tag>
+                                                            )}
+                                                        </div>
+                                                        {asset.tags?.aliases && asset.tags.aliases.length > 0 && (
+                                                            <div className="text-[11px] text-slate-400 truncate">
+                                                                别名：{asset.tags.aliases.join(' / ')}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </div>
+
+                                                <p className="text-xs text-slate-600 line-clamp-3 m-0 leading-relaxed">
+                                                    {asset.description || '暂无外貌或设定描述'}
+                                                </p>
+
+                                                {asset.tags?.speech_style && (
+                                                    <div className="rounded bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-600">
+                                                        <span className="font-semibold text-slate-700">语气特征：</span>
+                                                        {asset.tags.speech_style}
+                                                    </div>
+                                                )}
+
+                                                {vtags.length > 0 && (
+                                                    <div className="flex flex-wrap gap-1">
+                                                        {vtags.slice(0, 4).map((t, idx) => (
+                                                            <span
+                                                                key={idx}
+                                                                className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded"
+                                                            >
+                                                                {String(t)}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </div>
+
+                                            <div className="flex items-center justify-between pt-2.5 border-t border-slate-100">
+                                                <div className="flex gap-1">
+                                                    <Button size="small" onClick={() => setImageAsset(asset)}>
+                                                        参考图 ({asset.image_count || 0})
+                                                    </Button>
+                                                    <Button size="small" onClick={() => setEditingAsset(asset)}>
+                                                        编辑
+                                                    </Button>
+                                                </div>
+                                                <div className="flex gap-1">
+                                                    <Button
+                                                        size="small"
+                                                        theme="borderless"
+                                                        icon={<IconSearch />}
+                                                        onClick={() => {
+                                                            assetService
+                                                                .findSimilar(asset.id)
+                                                                .then((res) => {
+                                                                    setSimilarAssets(res)
+                                                                    setShowSimilar(true)
+                                                                })
+                                                                .catch(() => {})
+                                                        }}
+                                                    />
+                                                    <Button
+                                                        size="small"
+                                                        type="danger"
+                                                        theme="borderless"
+                                                        icon={<IconDelete />}
+                                                        onClick={() => {
+                                                            Modal.confirm({
+                                                                title: `确认删除资产 "${asset.name}"？`,
+                                                                onOk: () => deleteAssetMutation.mutate(asset.id),
+                                                            })
+                                                        }}
+                                                    />
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )
+                                })}
+                            </div>
+                        ) : (
+                            <Table
+                                rowKey="id"
+                                dataSource={assets}
+                                pagination={false}
+                                columns={[
+                                    { title: '名称', dataIndex: 'name', key: 'name', width: 150 },
+                                    {
+                                        title: '类型',
+                                        dataIndex: 'type',
+                                        key: 'type',
+                                        width: 110,
+                                        render: (t: string) => {
+                                            const m = ASSET_TYPE_META[t]
+                                            return <Tag color={m?.color || 'grey'}>{m?.label || t}</Tag>
+                                        },
+                                    },
+                                    { title: '外貌与设定描述', dataIndex: 'description', key: 'description' },
+                                    {
+                                        title: '参考图',
+                                        dataIndex: 'image_count',
+                                        key: 'image_count',
+                                        width: 90,
+                                        render: (c: number) => `${c || 0} 张`,
+                                    },
+                                    {
+                                        title: '操作',
+                                        key: 'actions',
+                                        width: 180,
+                                        render: (_: unknown, record: Asset) => (
+                                            <div className="flex gap-1">
+                                                <Button size="small" onClick={() => setImageAsset(record)}>
+                                                    参考图
+                                                </Button>
+                                                <Button size="small" onClick={() => setEditingAsset(record)}>
+                                                    编辑
+                                                </Button>
+                                            </div>
+                                        ),
+                                    },
+                                ]}
+                            />
+                        )}
+                    </TabPane>
+
+                    {/* TAB 4: PITS / FORESHADOWING */}
+                    <TabPane tab={`伏笔追踪 (${pitsData?.total || 0})`} itemKey="pits">
+                        <div className="flex flex-wrap justify-between items-center gap-3 mb-4 pt-2">
+                            <div className="flex items-center gap-2">
+                                <span className="text-sm text-slate-600 font-medium">伏笔状态：</span>
+                                <Select
+                                    value={pitStatusFilter ?? ''}
+                                    onChange={(v) => {
+                                        setPitStatusFilter(v ? String(v) : undefined)
+                                        setPitPage(1)
+                                    }}
+                                    style={{ width: 150 }}
+                                >
+                                    <Select.Option value="">全部伏笔</Select.Option>
+                                    <Select.Option value="open">待回收伏笔</Select.Option>
+                                    <Select.Option value="resolved">已回收伏笔</Select.Option>
+                                    <Select.Option value="abandoned">已搁置</Select.Option>
+                                </Select>
+                            </div>
+                            <Button icon={<IconPlus />} theme="solid" onClick={() => setShowCreatePit(true)}>
+                                手动埋设新伏笔
                             </Button>
                         </div>
-                    </div>
-                    <Table
-                        columns={branchColumns}
-                        dataSource={branches || []}
-                        rowKey="id"
-                        pagination={{ pageSize: 50, showTotal: true }}
-                    />
-                </TabPane>
-            </Tabs>
 
+                        <Table
+                            columns={pitColumns}
+                            dataSource={pitsData?.items || []}
+                            loading={pitsLoading}
+                            rowKey="id"
+                            pagination={{
+                                currentPage: pitPage,
+                                pageSize: pitPageSize,
+                                total: pitsData?.total || 0,
+                                showTotal: true,
+                                onChange: (cp: number, ps: number) => {
+                                    setPitPage(cp)
+                                    setPitPageSize(ps)
+                                },
+                            }}
+                        />
+                    </TabPane>
+
+                    {/* TAB 5: BRANCHES */}
+                    <TabPane tab={`平行世界线 (${branches?.length || 0})`} itemKey="branches">
+                        <div className="flex flex-wrap justify-between items-center gap-3 mb-4 pt-2">
+                            <span className="text-xs text-slate-500">
+                                可从任意章节 Fork 出独立世界线探索 IF 剧情，续画上下文将严格隔离不串线
+                            </span>
+                            <div className="flex flex-wrap gap-2">
+                                <Button icon={<IconCopy />} onClick={() => setShowFork(true)}>
+                                    从指定章节派生分支 (Fork)
+                                </Button>
+                                <Button
+                                    icon={<IconSearch />}
+                                    onClick={() => {
+                                        setDiffResult(null)
+                                        setShowDiff(true)
+                                    }}
+                                >
+                                    对比分支差异
+                                </Button>
+                                <Button
+                                    onClick={() => {
+                                        setDiffResult(null)
+                                        setShowMerge(true)
+                                    }}
+                                >
+                                    合并分支成果
+                                </Button>
+                                <Button icon={<IconPlus />} theme="solid" onClick={() => setShowCreateBranch(true)}>
+                                    新建空分支
+                                </Button>
+                            </div>
+                        </div>
+
+                        <Table
+                            columns={branchColumns}
+                            dataSource={branches || []}
+                            rowKey="id"
+                            pagination={false}
+                        />
+                    </TabPane>
+                </Tabs>
+            </div>
+
+            {/* MODAL: IMPORT EPISODE */}
             <Modal
-                title="Import Episode"
+                title="导入漫画章节 (图片或 ZIP)"
                 visible={showImport}
-                onCancel={() => { setShowImport(false); setUploadFiles([]) }}
+                onCancel={() => {
+                    setShowImport(false)
+                    setUploadFiles([])
+                }}
                 footer={null}
             >
                 <Form
@@ -1003,192 +1571,220 @@ export default function ProjectDetail() {
                             files: uploadFiles,
                         })
                     }}
-                    initValues={{ branch_id: mainBranch?.id }}
+                    initValues={{
+                        branch_id: selectedBranch || mainBranch?.id,
+                        number: episodes.length > 0 ? Math.floor(episodes[episodes.length - 1].number) + 1 : 1,
+                        auto_understand: true,
+                    }}
                 >
-                    <Form.Select field="branch_id" label="Branch" style={{ width: '100%' }}>
+                    <Form.Select field="branch_id" label="所属分支" style={{ width: '100%' }}>
                         {branches?.map((b) => (
-                            <Select.Option key={b.id} value={b.id}>{b.name}</Select.Option>
+                            <Select.Option key={b.id} value={b.id}>
+                                {b.name}
+                            </Select.Option>
                         ))}
                     </Form.Select>
-                    <Form.InputNumber field="number" label="Sort Order" min={0.01} step={0.5} rules={[{ required: true }]} />
-                    <Form.Input field="label" label="Episode Number (e.g. 36, 36.5, 番外1)" />
-                    <Form.Select field="category" label="Category" style={{ width: '100%' }} initValue="regular">
-                        <Select.Option value="regular">正篇</Select.Option>
-                        <Select.Option value="special">番外</Select.Option>
-                        <Select.Option value="extra">加笔</Select.Option>
-                    </Form.Select>
-                    <Form.Input field="title" label="Title (optional)" />
-                    <Form.Checkbox field="auto_understand" label="导入后自动执行剧情理解（多模态 LLM 分析页面）" />
+                    <div className="grid grid-cols-2 gap-3">
+                        <Form.InputNumber
+                            field="number"
+                            label="排序序号"
+                            min={0.01}
+                            step={1}
+                            style={{ width: '100%' }}
+                            rules={[{ required: true }]}
+                        />
+                        <Form.Input field="label" label="展示话数 (如 12, 12.5, 番外1)" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                        <Form.Select field="category" label="章节分类" style={{ width: '100%' }} initValue="regular">
+                            <Select.Option value="regular">正篇</Select.Option>
+                            <Select.Option value="special">番外</Select.Option>
+                            <Select.Option value="extra">加笔</Select.Option>
+                        </Form.Select>
+                        <Form.Input field="title" label="章节标题（可选）" />
+                    </div>
+                    <Form.Checkbox field="auto_understand" label="导入后立即执行多模态剧情理解（若一次导入多话，建议取消勾选后用「一键按序理解全书」）" />
                     <div className="mb-4">
-                        <label className="block text-sm font-medium mb-1">Images</label>
+                        <label className="block text-sm font-medium mb-1">漫画页面图片或单话 ZIP 压缩包</label>
                         <input
                             type="file"
                             multiple
                             accept="image/*,.zip"
-                            onChange={handleFileChange}
-                            className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                            onChange={(e) => e.target.files && setUploadFiles(Array.from(e.target.files))}
+                            className="block w-full text-sm text-slate-600 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
                         />
                         {uploadFiles.length > 0 && (
-                            <div className="mt-2 text-sm text-gray-600">
-                                {uploadFiles.length} file(s) selected
-                            </div>
+                            <div className="mt-1.5 text-xs text-indigo-600">已选择 {uploadFiles.length} 个文件（将按文件名自然序排列页码）</div>
                         )}
                     </div>
                     <div className="flex justify-end gap-2">
-                        <Button onClick={() => { setShowImport(false); setUploadFiles([]) }}>Cancel</Button>
-                        <Button htmlType="submit" theme="solid" loading={importMutation.isPending}>Import</Button>
+                        <Button onClick={() => setShowImport(false)}>取消</Button>
+                        <Button htmlType="submit" theme="solid" loading={importMutation.isPending}>
+                            开始导入
+                        </Button>
                     </div>
                 </Form>
             </Modal>
 
+            {/* MODAL: CONTINUE GENERATION */}
             <Modal
-                title="Continue from Episode"
+                title="智能续画新章节（全自动闭环）"
                 visible={showContinue}
                 onCancel={() => setShowContinue(false)}
                 footer={null}
-                width={520}
+                width={560}
             >
                 <div className="space-y-4">
+                    <Banner
+                        type="info"
+                        closeIcon={null}
+                        description="将自动组装「主线脉络 + 上话结尾桥接 + 角色累积状态与原声样本 + 道具场景设定 + 未解伏笔」，依次执行：分镜编剧 → 一致性审校 → 参考图一致生图 → 气泡排版 → 记忆回写。"
+                    />
                     <div>
-                        <label className="block text-sm font-medium mb-1">Base Episode</label>
+                        <label className="block text-sm font-medium mb-1">接续自哪一话（严格截断未来剧透）</label>
                         <Select
                             value={continueForm.base_episode_id}
-                            onChange={(v: string | string[] | undefined) => setContinueForm({ ...continueForm, base_episode_id: String(v || '') })}
+                            onChange={(v) => setContinueForm({ ...continueForm, base_episode_id: String(v || '') })}
                             style={{ width: '100%' }}
-                            placeholder="Select an episode"
+                            placeholder="选择基础章节"
                         >
-                            {(episodesData?.items || []).map((e: Episode) => (
+                            {episodes.map((e: Episode) => (
                                 <Select.Option key={e.id} value={e.id}>
-                                    {e.label} - {e.title || e.status}
+                                    第 {e.label} 话 - {e.title || STATUS_META[e.status]?.label || e.status}
                                 </Select.Option>
                             ))}
                         </Select>
                     </div>
-                    <div>
-                        <label className="block text-sm font-medium mb-1">Tone</label>
-                        <Select
-                            value={continueForm.tone}
-                            onChange={(v: string | string[] | undefined) => setContinueForm({ ...continueForm, tone: String(v || 'main') })}
-                            style={{ width: '100%' }}
-                        >
-                            <Select.Option value="main">Main Plot</Select.Option>
-                            <Select.Option value="daily">Daily / Slice of Life</Select.Option>
-                            <Select.Option value="climax">Climax</Select.Option>
-                            <Select.Option value="filler">Filler</Select.Option>
-                            <Select.Option value="pit_resolve">Resolve Foreshadowing</Select.Option>
-                        </Select>
+                    <div className="grid grid-cols-2 gap-3">
+                        <div>
+                            <label className="block text-sm font-medium mb-1">本话叙事基调</label>
+                            <Select
+                                value={continueForm.tone}
+                                onChange={(v) => setContinueForm({ ...continueForm, tone: String(v || 'main') })}
+                                style={{ width: '100%' }}
+                            >
+                                <Select.Option value="main">主线推进 (Main Plot)</Select.Option>
+                                <Select.Option value="pit_resolve">伏笔回收揭秘 (Resolve Pit)</Select.Option>
+                                <Select.Option value="climax">高潮决战 / 转折 (Climax)</Select.Option>
+                                <Select.Option value="daily">日常互动 / 羁绊升温 (Daily)</Select.Option>
+                                <Select.Option value="filler">支线过渡章 (Side Story)</Select.Option>
+                            </Select>
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium mb-1">自定义新话标题（可选）</label>
+                            <Input
+                                value={continueForm.title}
+                                onChange={(v) => setContinueForm({ ...continueForm, title: v })}
+                                placeholder="留空则由编剧模型自动拟定"
+                            />
+                        </div>
                     </div>
                     <div>
-                        <label className="block text-sm font-medium mb-1">Custom Instructions (optional)</label>
+                        <label className="block text-sm font-medium mb-1">导演剧情指令（可选）</label>
                         <TextArea
                             value={continueForm.custom_instructions}
-                            onChange={(v: string) => setContinueForm({ ...continueForm, custom_instructions: v })}
-                            placeholder="Any specific requirements for the next episode..."
+                            onChange={(v) => setContinueForm({ ...continueForm, custom_instructions: v })}
+                            placeholder="例如：本话让小樱和阿明解读爷爷留下的发光信件，揭示星之匣真正的来历，结尾引出新的神秘人物..."
                             rows={3}
                         />
                     </div>
-                    <div>
-                        <label className="block text-sm font-medium mb-1">Title (optional)</label>
-                        <Input
-                            value={continueForm.title}
-                            onChange={(v: string) => setContinueForm({ ...continueForm, title: v })}
-                            placeholder="Episode title"
-                        />
-                    </div>
-                    <div className="grid grid-cols-3 gap-4">
+                    <div className="grid grid-cols-3 gap-3">
                         <div>
-                            <label className="block text-sm font-medium mb-1">Image Backend</label>
+                            <label className="block text-xs font-medium text-slate-600 mb-1">生图引擎</label>
                             <Select
                                 value={continueForm.image_backend}
-                                onChange={(v: string | string[] | undefined) => setContinueForm({ ...continueForm, image_backend: v ? String(v) : undefined })}
+                                onChange={(v) => setContinueForm({ ...continueForm, image_backend: v ? String(v) : undefined })}
                                 style={{ width: '100%' }}
-                                placeholder="Default"
+                                placeholder="默认配置"
                             >
-                                <Select.Option value="openai">OpenAI</Select.Option>
+                                <Select.Option value="openai">OpenAI (GPT-Image)</Select.Option>
+                                <Select.Option value="gemini">Gemini (Nano Banana)</Select.Option>
                                 <Select.Option value="custom">Custom HTTP</Select.Option>
-                                <Select.Option value="mock">Mock</Select.Option>
+                                <Select.Option value="mock">Mock 预览模式</Select.Option>
                             </Select>
                         </div>
                         <div>
-                            <label className="block text-sm font-medium mb-1">Image Model</label>
+                            <label className="block text-xs font-medium text-slate-600 mb-1">生图模型</label>
                             <Select
                                 value={continueForm.image_model}
-                                onChange={(v: string | string[] | undefined) => setContinueForm({ ...continueForm, image_model: v ? String(v) : undefined })}
+                                onChange={(v) => setContinueForm({ ...continueForm, image_model: v ? String(v) : undefined })}
                                 style={{ width: '100%' }}
-                                placeholder="Default"
+                                placeholder="默认模型"
                             >
-                                <Select.Option value="gpt-image-2">GPT-Image-2</Select.Option>
-                                <Select.Option value="dall-e-3">DALL-E 3</Select.Option>
+                                <Select.Option value="gpt-image-2">gpt-image-2</Select.Option>
+                                <Select.Option value="gemini-3.1-flash-image">gemini-3.1-flash-image (NB2)</Select.Option>
+                                <Select.Option value="gemini-3-pro-image">gemini-3-pro-image</Select.Option>
                             </Select>
                         </div>
                         <div>
-                            <label className="block text-sm font-medium mb-1">Image Size</label>
+                            <label className="block text-xs font-medium text-slate-600 mb-1">单格画幅</label>
                             <Select
                                 value={continueForm.image_size}
-                                onChange={(v: string | string[] | undefined) => setContinueForm({ ...continueForm, image_size: v ? String(v) : undefined })}
+                                onChange={(v) => setContinueForm({ ...continueForm, image_size: String(v || '1024x1024') })}
                                 style={{ width: '100%' }}
-                                placeholder="Default"
                             >
                                 <Select.Option value="1024x1024">1024x1024</Select.Option>
-                                <Select.Option value="1024x1792">1024x1792</Select.Option>
-                                <Select.Option value="1792x1024">1792x1024</Select.Option>
+                                <Select.Option value="1024x1536">1024x1536 (竖构图)</Select.Option>
+                                <Select.Option value="1536x1024">1536x1024 (横构图)</Select.Option>
                             </Select>
                         </div>
                     </div>
-                    <div className="flex justify-end gap-2">
-                        <Button onClick={() => setShowContinue(false)}>Cancel</Button>
+                    <div className="flex justify-end gap-2 pt-2">
+                        <Button onClick={() => setShowContinue(false)}>取消</Button>
                         <Button
                             theme="solid"
                             loading={continueMutation.isPending}
                             disabled={!continueForm.base_episode_id}
                             onClick={() => continueMutation.mutate()}
                         >
-                            Continue Generation
+                            启动续画创作
                         </Button>
                     </div>
                 </div>
             </Modal>
 
-            <Modal
-                title="Create Pit"
-                visible={showCreatePit}
-                onCancel={() => setShowCreatePit(false)}
-                footer={null}
-            >
+            {/* MODAL: CREATE PIT */}
+            <Modal title="手动埋设伏笔" visible={showCreatePit} onCancel={() => setShowCreatePit(false)} footer={null}>
                 <Form
                     onSubmit={(values: Record<string, unknown>) => {
                         createPitMutation.mutate({
                             title: String(values.title || ''),
                             description: values.description ? String(values.description) : undefined,
-                            priority: values.priority ? Number(values.priority) : 0,
+                            priority: values.priority ? Number(values.priority) : 5,
                             introduced_episode_id: String(values.introduced_episode_id || ''),
                             trigger_hint: values.trigger_hint ? String(values.trigger_hint) : undefined,
                         })
                     }}
-                    initValues={{ priority: 0 }}
+                    initValues={{ priority: 8, introduced_episode_id: episodes[episodes.length - 1]?.id }}
                 >
-                    <Form.Input field="title" label="Title" rules={[{ required: true }]} />
-                    <Form.TextArea field="description" label="Description (optional)" />
-                    <Form.InputNumber field="priority" label="Priority" min={0} max={10} />
-                    <Form.Select field="introduced_episode_id" label="Introduced Episode" style={{ width: '100%' }} rules={[{ required: true }]}>
-                        {(episodesData?.items || []).map((e: Episode) => (
+                    <Form.Input field="title" label="伏笔简述标题" rules={[{ required: true }]} />
+                    <Form.TextArea field="description" label="详细悬念说明" rows={3} />
+                    <Form.InputNumber field="priority" label="重要度 (0-10，≥8 为核心主线)" min={0} max={10} />
+                    <Form.Select field="introduced_episode_id" label="埋设章节" style={{ width: '100%' }} rules={[{ required: true }]}>
+                        {episodes.map((e: Episode) => (
                             <Select.Option key={e.id} value={e.id}>
-                                {e.label} - {e.title || e.status}
+                                第 {e.label} 话 - {e.title || e.status}
                             </Select.Option>
                         ))}
                     </Form.Select>
-                    <Form.Input field="trigger_hint" label="Trigger Hint (optional)" />
-                    <div className="flex justify-end gap-2">
-                        <Button onClick={() => setShowCreatePit(false)}>Cancel</Button>
-                        <Button htmlType="submit" theme="solid" loading={createPitMutation.isPending}>Create</Button>
+                    <Form.Input field="trigger_hint" label="回收触发时机提示（可选）" />
+                    <div className="flex justify-end gap-2 mt-4">
+                        <Button onClick={() => setShowCreatePit(false)}>取消</Button>
+                        <Button htmlType="submit" theme="solid" loading={createPitMutation.isPending}>
+                            保存伏笔
+                        </Button>
                     </div>
                 </Form>
             </Modal>
 
+            {/* MODAL: RESOLVE PIT */}
             <Modal
-                title="Resolve Pit"
+                title="标记伏笔回收"
                 visible={showResolvePit}
-                onCancel={() => { setShowResolvePit(false); setResolvingPit(null) }}
+                onCancel={() => {
+                    setShowResolvePit(false)
+                    setResolvingPit(null)
+                }}
                 footer={null}
             >
                 {resolvingPit && (
@@ -1199,335 +1795,44 @@ export default function ProjectDetail() {
                                 resolvedEpisodeId: String(values.resolved_episode_id || ''),
                             })
                         }}
+                        initValues={{ resolved_episode_id: episodes[episodes.length - 1]?.id }}
                     >
-                        <div className="mb-4">
-                            <Tag color="blue">{resolvingPit.title}</Tag>
-                            <span className="ml-2 text-sm text-gray-600">{resolvingPit.description}</span>
+                        <div className="mb-4 rounded-lg bg-slate-50 p-3 text-xs text-slate-700">
+                            <div className="font-bold text-slate-900 mb-1">{resolvingPit.title}</div>
+                            <div>{resolvingPit.description}</div>
                         </div>
-                        <Form.Select field="resolved_episode_id" label="Resolved Episode" style={{ width: '100%' }} rules={[{ required: true }]}>
-                            {(episodesData?.items || []).map((e: Episode) => (
+                        <Form.Select field="resolved_episode_id" label="在哪一话完成回收" style={{ width: '100%' }} rules={[{ required: true }]}>
+                            {episodes.map((e: Episode) => (
                                 <Select.Option key={e.id} value={e.id}>
-                                    {e.label} - {e.title || e.status}
+                                    第 {e.label} 话 - {e.title || e.status}
                                 </Select.Option>
                             ))}
                         </Form.Select>
-                        <div className="flex justify-end gap-2">
-                            <Button onClick={() => { setShowResolvePit(false); setResolvingPit(null) }}>Cancel</Button>
-                            <Button htmlType="submit" theme="solid" loading={resolvePitMutation.isPending}>Resolve</Button>
-                        </div>
-                    </Form>
-                )}
-            </Modal>
-
-            <Modal
-                title="Create Branch"
-                visible={showCreateBranch}
-                onCancel={() => setShowCreateBranch(false)}
-                footer={null}
-            >
-                <Form
-                    onSubmit={(values: Record<string, unknown>) => {
-                        createBranchMutation.mutate({
-                            name: String(values.name || ''),
-                            description: values.description ? String(values.description) : undefined,
-                        })
-                    }}
-                >
-                    <Form.Input field="name" label="Branch Name" rules={[{ required: true }]} />
-                    <Form.TextArea field="description" label="Description (optional)" />
-                    <div className="flex justify-end gap-2">
-                        <Button onClick={() => setShowCreateBranch(false)}>Cancel</Button>
-                        <Button htmlType="submit" theme="solid" loading={createBranchMutation.isPending}>Create</Button>
-                    </div>
-                </Form>
-            </Modal>
-
-            <Modal
-                title="Fork from Episode"
-                visible={showFork}
-                onCancel={() => setShowFork(false)}
-                footer={null}
-            >
-                <Form
-                    onSubmit={(values: Record<string, unknown>) => {
-                        forkMutation.mutate({
-                            episode_id: String(values.episode_id || ''),
-                            branch_name: String(values.branch_name || ''),
-                            description: values.description ? String(values.description) : undefined,
-                        })
-                    }}
-                >
-                    <Form.Select field="episode_id" label="Episode" style={{ width: '100%' }} rules={[{ required: true }]}>
-                        {(episodesData?.items || []).map((e: Episode) => (
-                            <Select.Option key={e.id} value={e.id}>
-                                {e.label} - {e.title || e.status}
-                            </Select.Option>
-                        ))}
-                    </Form.Select>
-                    <Form.Input field="branch_name" label="Branch Name" rules={[{ required: true }]} />
-                    <Form.TextArea field="description" label="Description (optional)" />
-                    <div className="flex justify-end gap-2">
-                        <Button onClick={() => setShowFork(false)}>Cancel</Button>
-                        <Button htmlType="submit" theme="solid" loading={forkMutation.isPending}>Fork</Button>
-                    </div>
-                </Form>
-            </Modal>
-
-            <Modal
-                title="Compare Branches (Diff)"
-                visible={showDiff}
-                onCancel={() => { setShowDiff(false); setDiffResult(null) }}
-                footer={null}
-                width={900}
-            >
-                <Form
-                    onSubmit={(values: Record<string, unknown>) => {
-                        diffMutation.mutate({
-                            source_branch_id: String(values.source_branch_id || ''),
-                            target_branch_id: String(values.target_branch_id || ''),
-                            episode_number: values.episode_number ? Number(values.episode_number) : undefined,
-                        })
-                    }}
-                >
-                    <div className="grid grid-cols-2 gap-4">
-                        <Form.Select field="source_branch_id" label="Source Branch" style={{ width: '100%' }} rules={[{ required: true }]}>
-                            {branches?.map((b) => (
-                                <Select.Option key={b.id} value={b.id}>{b.name}</Select.Option>
-                            ))}
-                        </Form.Select>
-                        <Form.Select field="target_branch_id" label="Target Branch" style={{ width: '100%' }} rules={[{ required: true }]}>
-                            {branches?.map((b) => (
-                                <Select.Option key={b.id} value={b.id}>{b.name}</Select.Option>
-                            ))}
-                        </Form.Select>
-                    </div>
-                    <Form.InputNumber field="episode_number" label="Episode Number Filter (optional)" />
-                    <div className="flex justify-end gap-2">
-                        <Button onClick={() => { setShowDiff(false); setDiffResult(null) }}>Cancel</Button>
-                        <Button htmlType="submit" theme="solid" loading={diffMutation.isPending}>Compare</Button>
-                    </div>
-                </Form>
-                {diffResult && renderDiffResult(diffResult)}
-            </Modal>
-
-            <Modal
-                title="Merge Branches"
-                visible={showMerge}
-                onCancel={() => {
-                    setShowMerge(false)
-                    setDiffResult(null)
-                    setMergeItems([])
-                    setMergeSourceBranch('')
-                    setMergeTargetBranch('')
-                }}
-                footer={null}
-                width={900}
-            >
-                {!diffResult ? (
-                    <Form
-                        onSubmit={(values: Record<string, unknown>) => {
-                            handleDiffForMerge(
-                                String(values.source_branch_id || ''),
-                                String(values.target_branch_id || ''),
-                            )
-                        }}
-                    >
-                        <div className="grid grid-cols-2 gap-4">
-                            <Form.Select field="source_branch_id" label="Source Branch" style={{ width: '100%' }} rules={[{ required: true }]}>
-                                {branches?.map((b) => (
-                                    <Select.Option key={b.id} value={b.id}>{b.name}</Select.Option>
-                                ))}
-                            </Form.Select>
-                            <Form.Select field="target_branch_id" label="Target Branch" style={{ width: '100%' }} rules={[{ required: true }]}>
-                                {branches?.map((b) => (
-                                    <Select.Option key={b.id} value={b.id}>{b.name}</Select.Option>
-                                ))}
-                            </Form.Select>
-                        </div>
                         <div className="flex justify-end gap-2 mt-4">
-                            <Button onClick={() => { setShowMerge(false); setMergeSourceBranch(''); setMergeTargetBranch('') }}>Cancel</Button>
-                            <Button htmlType="submit" theme="solid" loading={diffMutation.isPending}>Load Diff</Button>
-                        </div>
-                    </Form>
-                ) : (
-                    <div>
-                        {renderDiffResult(diffResult)}
-                        <div className="mt-4 border-t pt-4">
-                            <Title heading={6}>Merge Actions</Title>
-                            {mergeItems.length === 0 ? (
-                                <Empty description="No items to merge" />
-                            ) : (
-                                <Table
-                                    columns={[
-                                        { title: 'Type', dataIndex: 'item_type', key: 'item_type', width: 100, render: (t: string) => <Tag>{t}</Tag> },
-                                        { title: 'Source ID', dataIndex: 'source_id', key: 'source_id' },
-                                        {
-                                            title: 'Action',
-                                            dataIndex: 'action',
-                                            key: 'action',
-                                            width: 160,
-                                            render: (action: string, _record: MergeItem, index: number) => (
-                                                <RadioGroup
-                                                    value={action}
-                                                    options={[
-                                                        { label: 'Adopt', value: 'adopt' },
-                                                        { label: 'Skip', value: 'skip' },
-                                                    ]}
-                                                    onChange={(e) => {
-                                                        const newItems = [...mergeItems]
-                                                        newItems[index] = { ...newItems[index], action: String(e.target.value) as 'adopt' | 'skip' }
-                                                        setMergeItems(newItems)
-                                                    }}
-                                                    type="button"
-                                                />
-                                            ),
-                                        },
-                                    ]}
-                                    dataSource={mergeItems}
-                                    rowKey={(r?: MergeItem) => `${r?.item_type ?? ''}-${r?.source_id ?? ''}`}
-                                    pagination={false}
-                                    size="small"
-                                />
-                            )}
-                        </div>
-                        <div className="flex justify-end gap-2 mt-4">
-                            <Button onClick={() => {
-                                setShowMerge(false)
-                                setDiffResult(null)
-                                setMergeItems([])
-                                setMergeSourceBranch('')
-                                setMergeTargetBranch('')
-                            }}>Cancel</Button>
-                            <Button
-                                theme="solid"
-                                loading={mergeMutation.isPending}
-                                disabled={mergeItems.length === 0}
-                                onClick={() => {
-                                    mergeMutation.mutate({
-                                        source_branch_id: mergeSourceBranch,
-                                        target_branch_id: mergeTargetBranch,
-                                        items: mergeItems,
-                                    })
-                                }}
-                            >
-                                Merge ({mergeItems.filter((i) => i.action === 'adopt').length} adopt, {mergeItems.filter((i) => i.action === 'skip').length} skip)
+                            <Button onClick={() => setShowResolvePit(false)}>取消</Button>
+                            <Button htmlType="submit" theme="solid" loading={resolvePitMutation.isPending}>
+                                确认已回收
                             </Button>
                         </div>
-                    </div>
-                )}
-            </Modal>
-
-            <Modal
-                title="Create Asset"
-                visible={showCreateAsset}
-                onCancel={() => setShowCreateAsset(false)}
-                footer={null}
-            >
-                <Form
-                    onSubmit={(values: Record<string, unknown>) => {
-                        createAssetMutation.mutate({
-                            type: String(values.type || ''),
-                            name: String(values.name || ''),
-                            description: values.description ? String(values.description) : undefined,
-                        })
-                    }}
-                    initValues={{ type: 'character' }}
-                >
-                    <Form.Select field="type" label="Type" style={{ width: '100%' }} rules={[{ required: true }]}>
-                        {ASSET_TYPE_OPTIONS.map((opt) => (
-                            <Select.Option key={opt.value} value={opt.value}>{opt.label}</Select.Option>
-                        ))}
-                    </Form.Select>
-                    <Form.Input field="name" label="Name" rules={[{ required: true }]} />
-                    <Form.TextArea field="description" label="Description (optional)" />
-                    <div className="flex justify-end gap-2">
-                        <Button onClick={() => setShowCreateAsset(false)}>Cancel</Button>
-                        <Button htmlType="submit" theme="solid" loading={createAssetMutation.isPending}>Create</Button>
-                    </div>
-                </Form>
-            </Modal>
-
-            <Modal
-                title="Edit Asset"
-                visible={!!editingAsset}
-                onCancel={() => setEditingAsset(null)}
-                footer={null}
-            >
-                {editingAsset && (
-                    <Form
-                        onSubmit={(values: Record<string, unknown>) => {
-                            updateAssetMutation.mutate({
-                                assetId: editingAsset.id,
-                                updates: {
-                                    name: String(values.name || ''),
-                                    description: values.description ? String(values.description) : undefined,
-                                },
-                            })
-                        }}
-                        initValues={{ name: editingAsset.name, description: editingAsset.description || '' }}
-                    >
-                        <Form.Input field="name" label="Name" rules={[{ required: true }]} />
-                        <Form.TextArea field="description" label="Description" />
-                        <div className="flex justify-end gap-2">
-                            <Button onClick={() => setEditingAsset(null)}>Cancel</Button>
-                            <Button htmlType="submit" theme="solid" loading={updateAssetMutation.isPending}>Save</Button>
-                        </div>
                     </Form>
                 )}
             </Modal>
 
+            {/* MODAL: ASSET IMAGES */}
             <Modal
-                title="Asset Clusters"
-                visible={showClusterResult}
-                onCancel={() => { setShowClusterResult(false); setClusterData(null) }}
-                footer={null}
-                width={800}
-            >
-                {clusterData && (
-                    <div className="space-y-4">
-                        <Descriptions
-                            data={[
-                                { key: 'Total Assets', value: String(clusterData.total_assets) },
-                                { key: 'Clusters', value: String(clusterData.clusters.length) },
-                                { key: 'Unclustered', value: String(clusterData.unclustered) },
-                            ]}
-                        />
-                        {clusterData.clusters.length === 0 ? (
-                            <Empty description="No clusters found" />
-                        ) : (
-                            clusterData.clusters.map((group, i) => (
-                                <div key={i} className="border rounded p-3">
-                                    <div className="flex items-center gap-2 mb-2">
-                                        <Tag color={ASSET_TYPE_COLORS[group.asset_type] || ('default' as TagColor)}>{group.asset_type}</Tag>
-                                        <span className="font-medium">{group.representative_name}</span>
-                                        <Tag size="small">{group.items.length} items</Tag>
-                                    </div>
-                                    <Table
-                                        columns={[
-                                            { title: 'Name', dataIndex: 'name', key: 'name' },
-                                            { title: 'Type', dataIndex: 'asset_type', key: 'asset_type', width: 100, render: (t: string) => <Tag color={ASSET_TYPE_COLORS[t] || ('default' as TagColor)}>{t}</Tag> },
-                                            { title: 'Similarity', dataIndex: 'similarity', key: 'similarity', width: 100, render: (v: number) => `${(v * 100).toFixed(1)}%` },
-                                        ]}
-                                        dataSource={group.items}
-                                        rowKey="asset_id"
-                                        pagination={false}
-                                        size="small"
-                                    />
-                                </div>
-                            ))
-                        )}
-                    </div>
-                )}
-            </Modal>
-
-            <Modal
-                title={`参考图 · ${imageAsset?.name || ''}`}
+                title={`视觉参考锚点 · ${imageAsset?.name || ''}`}
                 visible={!!imageAsset}
                 onCancel={() => setImageAsset(null)}
                 footer={null}
-                width={680}
+                width={700}
             >
-                <div className="mb-3">
+                <div className="flex flex-wrap items-center gap-3 mb-4">
+                    <Select value={uploadImageKind} onChange={(v) => setUploadImageKind(String(v))} style={{ width: 170 }}>
+                        <Select.Option value="reference">标准设定图 (优先)</Select.Option>
+                        <Select.Option value="turnaround">多视角三视图</Select.Option>
+                        <Select.Option value="thumbnail">漫画原画截框</Select.Option>
+                        <Select.Option value="lora_dataset">训练集素材</Select.Option>
+                    </Select>
                     <input
                         ref={fileInputRef}
                         type="file"
@@ -1539,31 +1844,40 @@ export default function ProjectDetail() {
                             e.target.value = ''
                         }}
                     />
-                    <Button icon={<IconPlus />} theme="solid" loading={uploadImageMutation.isPending} onClick={() => fileInputRef.current?.click()}>
-                        上传参考图
+                    <Button
+                        icon={<IconPlus />}
+                        theme="solid"
+                        loading={uploadImageMutation.isPending}
+                        onClick={() => fileInputRef.current?.click()}
+                    >
+                        上传高清参考图
                     </Button>
-                    <span className="text-xs text-gray-400 ml-2">角色设定图 / 三视图 / LoRA 数据集，用于生成时的形象参考</span>
+                    <span className="text-xs text-slate-400">同时用于多模态人脸匹配与生图角色一致性锚定</span>
                 </div>
+
                 {assetImagesLoading ? (
                     <Spin />
                 ) : (assetImagesData?.items || []).length === 0 ? (
-                    <Empty description="暂无参考图" />
+                    <Empty description="暂无参考图，可上传角色立绘或漫画截图" />
                 ) : (
-                    <div className="grid grid-cols-3 gap-3">
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                         {(assetImagesData?.items || []).map((img) => (
-                            <div key={img.id} className="border rounded p-2">
-                                <div className="w-full h-32 overflow-hidden flex items-center justify-center bg-gray-50">
+                            <div key={img.id} className="border border-slate-200 rounded-xl p-2.5 space-y-2">
+                                <div className="w-full h-36 rounded-lg overflow-hidden flex items-center justify-center bg-slate-50">
                                     <img
-                                        src={`/api/v1/storage/mangaforge/${img.image_path}`}
+                                        src={storageFileUrl(img.image_path)}
                                         alt={img.kind}
                                         className="max-w-full max-h-full object-contain"
                                     />
                                 </div>
-                                <div className="flex items-center justify-between mt-1">
-                                    <Tag size="small">{img.kind}</Tag>
+                                <div className="flex items-center justify-between">
+                                    <Tag size="small" color={img.kind === 'reference' ? 'indigo' : 'grey'}>
+                                        {img.kind}
+                                    </Tag>
                                     <Button
                                         size="small"
                                         type="danger"
+                                        theme="borderless"
                                         icon={<IconDelete />}
                                         loading={deleteImageMutation.isPending}
                                         onClick={() => deleteImageMutation.mutate(img.id)}
@@ -1575,33 +1889,86 @@ export default function ProjectDetail() {
                 )}
             </Modal>
 
-            <Modal
-                title="Similar Assets"
-                visible={showSimilar}
-                onCancel={() => { setShowSimilar(false); setSimilarAssets([]) }}
-                footer={null}
-            >
-                {similarAssets.length === 0 ? (
-                    <Empty description="No similar assets found" />
-                ) : (
-                    <Table
-                        columns={[
-                            { title: 'Name', dataIndex: 'name', key: 'name' },
-                            { title: 'Type', dataIndex: 'asset_type', key: 'asset_type', width: 100, render: (t: string) => <Tag color={ASSET_TYPE_COLORS[t] || ('default' as TagColor)}>{t}</Tag> },
-                            { title: 'Similarity', dataIndex: 'similarity', key: 'similarity', width: 100, render: (v: number) => `${(v * 100).toFixed(1)}%` },
-                        ]}
-                        dataSource={similarAssets}
-                        rowKey="asset_id"
-                        pagination={false}
-                        size="small"
-                    />
+            {/* MODAL: CREATE / EDIT / MERGE / SIMILAR / CLUSTER ASSETS */}
+            <Modal title="手动新增视觉资产" visible={showCreateAsset} onCancel={() => setShowCreateAsset(false)} footer={null}>
+                <Form
+                    onSubmit={(values: Record<string, unknown>) => {
+                        createAssetMutation.mutate({
+                            type: String(values.type || 'character'),
+                            name: String(values.name || ''),
+                            description: values.description ? String(values.description) : undefined,
+                            visual_tags: values.visual_tags ? String(values.visual_tags) : undefined,
+                        })
+                    }}
+                    initValues={{ type: 'character' }}
+                >
+                    <Form.Select field="type" label="资产类型" style={{ width: '100%' }} rules={[{ required: true }]}>
+                        {ASSET_TYPE_OPTIONS.map((opt) => (
+                            <Select.Option key={opt.value} value={opt.value}>
+                                {opt.label}
+                            </Select.Option>
+                        ))}
+                    </Form.Select>
+                    <Form.Input field="name" label="名称" rules={[{ required: true }]} />
+                    <Form.TextArea field="description" label="外貌 / 材质 / 场景视觉细节描述" rows={4} />
+                    <Form.Input field="visual_tags" label="英文视觉 Prompt 标签（逗号分隔，可选）" placeholder="pink twin-tails, blue sailor uniform, star-shaped key" />
+                    <div className="flex justify-end gap-2 mt-4">
+                        <Button onClick={() => setShowCreateAsset(false)}>取消</Button>
+                        <Button htmlType="submit" theme="solid" loading={createAssetMutation.isPending}>
+                            创建资产
+                        </Button>
+                    </div>
+                </Form>
+            </Modal>
+
+            <Modal title="编辑资产设定" visible={!!editingAsset} onCancel={() => setEditingAsset(null)} footer={null}>
+                {editingAsset && (
+                    <Form
+                        onSubmit={(values: Record<string, unknown>) => {
+                            const vtags = String(values.visual_tags || '')
+                                .split(/[,，]/)
+                                .map((s) => s.trim())
+                                .filter(Boolean)
+                            updateAssetMutation.mutate({
+                                assetId: editingAsset.id,
+                                updates: {
+                                    name: String(values.name || ''),
+                                    description: values.description ? String(values.description) : undefined,
+                                    tags: {
+                                        ...(editingAsset.tags || {}),
+                                        visual_tags: vtags,
+                                        speech_style: values.speech_style ? String(values.speech_style) : editingAsset.tags?.speech_style,
+                                    },
+                                },
+                            })
+                        }}
+                        initValues={{
+                            name: editingAsset.name,
+                            description: editingAsset.description || '',
+                            visual_tags: (editingAsset.tags?.visual_tags || []).join(', '),
+                            speech_style: editingAsset.tags?.speech_style || '',
+                        }}
+                    >
+                        <Form.Input field="name" label="名称" rules={[{ required: true }]} />
+                        <Form.TextArea field="description" label="视觉与背景描述" rows={4} />
+                        <Form.Input field="visual_tags" label="英文视觉标签（逗号分隔）" />
+                        {editingAsset.type === 'character' && (
+                            <Form.Input field="speech_style" label="角色说话语气 / 口癖特征" />
+                        )}
+                        <div className="flex justify-end gap-2 mt-4">
+                            <Button onClick={() => setEditingAsset(null)}>取消</Button>
+                            <Button htmlType="submit" theme="solid" loading={updateAssetMutation.isPending}>
+                                保存修改
+                            </Button>
+                        </div>
+                    </Form>
                 )}
             </Modal>
 
             <Modal
-                title="Merge Assets"
+                title={`合并选中的 ${selectedAssetIds.length} 项资产`}
                 visible={showAssetMerge}
-                onCancel={() => { setShowAssetMerge(false); setSelectedAssetIds([]) }}
+                onCancel={() => setShowAssetMerge(false)}
                 footer={null}
             >
                 <Form
@@ -1612,26 +1979,296 @@ export default function ProjectDetail() {
                             target_description: values.target_description ? String(values.target_description) : undefined,
                         })
                     }}
-                    initValues={{
-                        target_name: assetsData?.items?.find((a: Asset) => a.id === selectedAssetIds[0])?.name || '',
-                    }}
                 >
-                    <div className="mb-4">
-                        <span className="text-sm text-gray-600">Merging {selectedAssetIds.length} assets:</span>
-                        <div className="flex flex-wrap gap-1 mt-1">
-                            {selectedAssetIds.map((id) => {
-                                const asset = assetsData?.items?.find((a: Asset) => a.id === id)
-                                return asset ? <Tag key={id}>{asset.name}</Tag> : null
-                            })}
-                        </div>
-                    </div>
-                    <Form.Input field="target_name" label="Target Name" rules={[{ required: true }]} />
-                    <Form.TextArea field="target_description" label="Target Description (optional)" />
-                    <div className="flex justify-end gap-2">
-                        <Button onClick={() => { setShowAssetMerge(false); setSelectedAssetIds([]) }}>Cancel</Button>
-                        <Button htmlType="submit" theme="solid" loading={assetMergeMutation.isPending}>Merge</Button>
+                    <Form.Input field="target_name" label="合并后的标准名称" rules={[{ required: true }]} />
+                    <Form.TextArea field="target_description" label="合并后描述（留空则自动拼接保留全部细节）" rows={3} />
+                    <div className="flex justify-end gap-2 mt-4">
+                        <Button onClick={() => setShowAssetMerge(false)}>取消</Button>
+                        <Button htmlType="submit" theme="solid" loading={assetMergeMutation.isPending}>
+                            执行合并
+                        </Button>
                     </div>
                 </Form>
+            </Modal>
+
+            <Modal title="相似资产检索结果" visible={showSimilar} onCancel={() => setShowSimilar(false)} footer={null}>
+                {similarAssets.length === 0 ? (
+                    <Empty description="未找到其他相似资产" />
+                ) : (
+                    <Table
+                        dataSource={similarAssets}
+                        rowKey="asset_id"
+                        pagination={false}
+                        size="small"
+                        columns={[
+                            { title: '名称', dataIndex: 'name', key: 'name' },
+                            { title: '类型', dataIndex: 'asset_type', key: 'asset_type', width: 90 },
+                            {
+                                title: '相似度',
+                                dataIndex: 'similarity',
+                                key: 'similarity',
+                                width: 100,
+                                render: (v: number) => `${(v * 100).toFixed(1)}%`,
+                            },
+                        ]}
+                    />
+                )}
+            </Modal>
+
+            <Modal
+                title="资产相似聚类结果"
+                visible={showClusterResult}
+                onCancel={() => setShowClusterResult(false)}
+                footer={null}
+                width={720}
+            >
+                {clusterData && (
+                    <div className="space-y-4">
+                        <Descriptions
+                            row
+                            data={[
+                                { key: '总资产数', value: String(clusterData.total_assets) },
+                                { key: '潜在重复簇', value: String(clusterData.clusters.length) },
+                                { key: '独立资产', value: String(clusterData.unclustered) },
+                            ]}
+                        />
+                        {clusterData.clusters.length === 0 ? (
+                            <Empty description="当前资产命名清晰，未发现重复簇" />
+                        ) : (
+                            clusterData.clusters.map((group, idx) => (
+                                <div key={idx} className="border border-slate-200 rounded-xl p-3 space-y-2">
+                                    <div className="flex items-center justify-between">
+                                        <span className="font-bold text-sm">{group.representative_name}</span>
+                                        <Button
+                                            size="small"
+                                            theme="light"
+                                            onClick={() => {
+                                                setSelectedAssetIds(group.items.map((it) => it.asset_id))
+                                                setShowClusterResult(false)
+                                                setShowAssetMerge(true)
+                                            }}
+                                        >
+                                            一键合并此簇
+                                        </Button>
+                                    </div>
+                                    <div className="flex flex-wrap gap-1.5">
+                                        {group.items.map((it) => (
+                                            <Tag key={it.asset_id}>
+                                                {it.name} ({(it.similarity * 100).toFixed(0)}%)
+                                            </Tag>
+                                        ))}
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
+                )}
+            </Modal>
+
+            {/* BRANCH MODALS: CREATE / FORK / DIFF / MERGE */}
+            <Modal title="新建平行分支" visible={showCreateBranch} onCancel={() => setShowCreateBranch(false)} footer={null}>
+                <Form
+                    onSubmit={(values: Record<string, unknown>) => {
+                        createBranchMutation.mutate({
+                            name: String(values.name || ''),
+                            description: values.description ? String(values.description) : undefined,
+                        })
+                    }}
+                >
+                    <Form.Input field="name" label="分支名称" rules={[{ required: true }]} />
+                    <Form.TextArea field="description" label="分支剧情走向备注（可选）" />
+                    <div className="flex justify-end gap-2 mt-4">
+                        <Button onClick={() => setShowCreateBranch(false)}>取消</Button>
+                        <Button htmlType="submit" theme="solid" loading={createBranchMutation.isPending}>
+                            创建分支
+                        </Button>
+                    </div>
+                </Form>
+            </Modal>
+
+            <Modal title="从指定章节派生 IF 世界线 (Fork)" visible={showFork} onCancel={() => setShowFork(false)} footer={null}>
+                <Form
+                    onSubmit={(values: Record<string, unknown>) => {
+                        forkMutation.mutate({
+                            episode_id: String(values.episode_id || ''),
+                            branch_name: String(values.branch_name || ''),
+                            description: values.description ? String(values.description) : undefined,
+                        })
+                    }}
+                >
+                    <Form.Select field="episode_id" label="分叉起点章节（将完整克隆该话及之前的记忆与页面）" style={{ width: '100%' }} rules={[{ required: true }]}>
+                        {episodes.map((e: Episode) => (
+                            <Select.Option key={e.id} value={e.id}>
+                                第 {e.label} 话 - {e.title || e.status}
+                            </Select.Option>
+                        ))}
+                    </Form.Select>
+                    <Form.Input field="branch_name" label="新世界线名称" placeholder="例如：if-route-keep-box-sealed" rules={[{ required: true }]} />
+                    <Form.TextArea field="description" label="IF 线构想说明（可选）" />
+                    <div className="flex justify-end gap-2 mt-4">
+                        <Button onClick={() => setShowFork(false)}>取消</Button>
+                        <Button htmlType="submit" theme="solid" loading={forkMutation.isPending}>
+                            确认派生分支
+                        </Button>
+                    </div>
+                </Form>
+            </Modal>
+
+            <Modal
+                title="对比分支差异 (Diff)"
+                visible={showDiff}
+                onCancel={() => {
+                    setShowDiff(false)
+                    setDiffResult(null)
+                }}
+                footer={null}
+                width={860}
+            >
+                <Form
+                    onSubmit={(values: Record<string, unknown>) => {
+                        diffMutation.mutate({
+                            source_branch_id: String(values.source_branch_id || ''),
+                            target_branch_id: String(values.target_branch_id || ''),
+                        })
+                    }}
+                >
+                    <div className="grid grid-cols-2 gap-4">
+                        <Form.Select field="source_branch_id" label="源分支 (Source)" style={{ width: '100%' }} rules={[{ required: true }]}>
+                            {branches?.map((b) => (
+                                <Select.Option key={b.id} value={b.id}>
+                                    {b.name}
+                                </Select.Option>
+                            ))}
+                        </Form.Select>
+                        <Form.Select field="target_branch_id" label="目标分支 (Target)" style={{ width: '100%' }} rules={[{ required: true }]}>
+                            {branches?.map((b) => (
+                                <Select.Option key={b.id} value={b.id}>
+                                    {b.name}
+                                </Select.Option>
+                            ))}
+                        </Form.Select>
+                    </div>
+                    <div className="flex justify-end gap-2 mt-3">
+                        <Button htmlType="submit" theme="solid" loading={diffMutation.isPending}>
+                            对比差异
+                        </Button>
+                    </div>
+                </Form>
+                {diffResult && (
+                    <div className="space-y-4 mt-4 max-h-96 overflow-y-auto">
+                        <Table
+                            size="small"
+                            pagination={false}
+                            dataSource={diffResult.episodes}
+                            rowKey={(r?: { number: number }) => String(r?.number ?? '')}
+                            columns={[
+                                { title: '话数', dataIndex: 'label', key: 'label', width: 80 },
+                                { title: '源分支标题', dataIndex: 'title_source', key: 'title_source', render: (t: string | null) => t || '-' },
+                                { title: '目标分支标题', dataIndex: 'title_target', key: 'title_target', render: (t: string | null) => t || '-' },
+                                { title: '源状态', dataIndex: 'source_status', key: 'source_status', width: 100, render: (t: string | null) => t || '无' },
+                                { title: '目标状态', dataIndex: 'target_status', key: 'target_status', width: 100, render: (t: string | null) => t || '无' },
+                            ]}
+                        />
+                    </div>
+                )}
+            </Modal>
+
+            <Modal
+                title="合并分支成果 (Merge)"
+                visible={showMerge}
+                onCancel={() => {
+                    setShowMerge(false)
+                    setDiffResult(null)
+                    setMergeItems([])
+                }}
+                footer={null}
+                width={820}
+            >
+                {!diffResult ? (
+                    <Form
+                        onSubmit={(values: Record<string, unknown>) => {
+                            handleDiffForMerge(String(values.source_branch_id || ''), String(values.target_branch_id || ''))
+                        }}
+                    >
+                        <div className="grid grid-cols-2 gap-4">
+                            <Form.Select field="source_branch_id" label="从哪个分支合并 (Source)" style={{ width: '100%' }} rules={[{ required: true }]}>
+                                {branches?.map((b) => (
+                                    <Select.Option key={b.id} value={b.id}>
+                                        {b.name}
+                                    </Select.Option>
+                                ))}
+                            </Form.Select>
+                            <Form.Select field="target_branch_id" label="合并入目标分支 (Target)" style={{ width: '100%' }} rules={[{ required: true }]}>
+                                {branches?.map((b) => (
+                                    <Select.Option key={b.id} value={b.id}>
+                                        {b.name}
+                                    </Select.Option>
+                                ))}
+                            </Form.Select>
+                        </div>
+                        <div className="flex justify-end gap-2 mt-4">
+                            <Button onClick={() => setShowMerge(false)}>取消</Button>
+                            <Button htmlType="submit" theme="solid" loading={diffMutation.isPending}>
+                                分析可合并条目
+                            </Button>
+                        </div>
+                    </Form>
+                ) : (
+                    <div className="space-y-4">
+                        {mergeItems.length === 0 ? (
+                            <Empty description="源分支没有目标分支缺失的新增章节、资产或伏笔" />
+                        ) : (
+                            <Table
+                                size="small"
+                                pagination={false}
+                                dataSource={mergeItems}
+                                rowKey={(r?: MergeItem) => `${r?.item_type}-${r?.source_id}`}
+                                columns={[
+                                    { title: '类型', dataIndex: 'item_type', key: 'item_type', width: 100 },
+                                    { title: '条目 ID', dataIndex: 'source_id', key: 'source_id' },
+                                    {
+                                        title: '决策',
+                                        dataIndex: 'action',
+                                        key: 'action',
+                                        width: 180,
+                                        render: (action: string, _r: MergeItem, index: number) => (
+                                            <RadioGroup
+                                                type="button"
+                                                value={action}
+                                                options={[
+                                                    { label: '采纳', value: 'adopt' },
+                                                    { label: '跳过', value: 'skip' },
+                                                ]}
+                                                onChange={(e) => {
+                                                    const next = [...mergeItems]
+                                                    next[index] = { ...next[index], action: e.target.value as 'adopt' | 'skip' }
+                                                    setMergeItems(next)
+                                                }}
+                                            />
+                                        ),
+                                    },
+                                ]}
+                            />
+                        )}
+                        <div className="flex justify-end gap-2">
+                            <Button onClick={() => setShowMerge(false)}>取消</Button>
+                            <Button
+                                theme="solid"
+                                disabled={mergeItems.length === 0}
+                                loading={mergeMutation.isPending}
+                                onClick={() =>
+                                    mergeMutation.mutate({
+                                        source_branch_id: mergeSourceBranch,
+                                        target_branch_id: mergeTargetBranch,
+                                        items: mergeItems,
+                                    })
+                                }
+                            >
+                                确认合并 ({mergeItems.filter((i) => i.action === 'adopt').length} 项)
+                            </Button>
+                        </div>
+                    </div>
+                )}
             </Modal>
         </div>
     )

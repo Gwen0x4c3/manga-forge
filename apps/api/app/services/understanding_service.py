@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import base64
 import logging
+import uuid
 from io import BytesIO
 from typing import TYPE_CHECKING
 
 from jinja2 import Template
-from sqlalchemy import select
+from PIL import Image
+from sqlalchemy import delete, func, select
 
 from app.config import settings
 from app.core.llm import get_llm_client
@@ -28,7 +30,9 @@ logger = logging.getLogger(__name__)
 
 # Long-edge cap for images sent to the LLM: keeps payloads and vision tokens
 # reasonable while staying well above readable resolution for manga pages.
-_MAX_IMAGE_EDGE = 1568
+_MAX_IMAGE_EDGE = 1344
+_MAX_PAGES_PER_CHUNK = 12
+_CHUNK_SIZE = 10
 
 _MIME_BY_EXT = {
     "jpg": "image/jpeg",
@@ -51,9 +55,7 @@ async def _character_reference_blocks(db, known_assets: list[Asset]) -> list[tup
     for asset in known_assets:
         if asset.type != "character":
             continue
-        images = (
-            await db.execute(select(AssetImage).where(AssetImage.asset_id == asset.id))
-        ).scalars().all()
+        images = (await db.execute(select(AssetImage).where(AssetImage.asset_id == asset.id))).scalars().all()
         if not images:
             continue
         best = min(
@@ -75,28 +77,350 @@ async def _character_reference_blocks(db, known_assets: list[Asset]) -> list[tup
 def image_to_data_url(data: bytes, object_key: str) -> str:
     ext = object_key.rsplit(".", 1)[-1].lower() if "." in object_key else "png"
     mime = _MIME_BY_EXT.get(ext, "image/png")
-    if ext in ("jpg", "jpeg", "webp", "bmp"):
-        data = _downscale(data, mime)
-    return f"data:{mime};base64," + base64.b64encode(data).decode()
+    data, out_mime = _downscale_with_mime(data, mime)
+    return f"data:{out_mime};base64," + base64.b64encode(data).decode()
 
 
-def _downscale(data: bytes, mime: str) -> bytes:
-    try:
-        from PIL import Image
-    except ImportError:  # Pillow unavailable — send original bytes
-        return data
+def _downscale_with_mime(data: bytes, mime: str) -> tuple[bytes, str]:
+    """Downscale any oversized image (including PNG/WebP/BMP/JPEG) so LLM vision payloads stay bounded."""
     try:
         img = Image.open(BytesIO(data))
-        if max(img.size) <= _MAX_IMAGE_EDGE:
-            return data
-        ratio = _MAX_IMAGE_EDGE / max(img.size)
-        img = img.convert("RGB").resize((round(img.width * ratio), round(img.height * ratio)))
+        if max(img.size) <= _MAX_IMAGE_EDGE and len(data) <= 1_800_000:
+            return data, mime
+        ratio = min(1.0, _MAX_IMAGE_EDGE / max(img.size))
+        target_size = (max(1, round(img.width * ratio)), max(1, round(img.height * ratio)))
+        rgb = img.convert("RGB")
+        if ratio < 1.0:
+            rgb = rgb.resize(target_size, Image.Resampling.LANCZOS)
         buf = BytesIO()
-        img.save(buf, format="JPEG", quality=88)
-        return buf.getvalue()
+        rgb.save(buf, format="JPEG", quality=88)
+        return buf.getvalue(), "image/jpeg"
     except Exception:
         logger.warning("Image downscale failed, sending original bytes", exc_info=True)
-        return data
+        return data, mime
+
+
+def _prepare_page_blocks(page_number: int, data: bytes, object_key: str) -> list[tuple[str, str]]:
+    """Convert one manga page into 1+ vision blocks; slices ultra-tall webtoon strips so text stays readable."""
+    try:
+        img = Image.open(BytesIO(data))
+        w, h = img.size
+        if w > 0 and h / w > 3.2 and h > 2200:
+            slice_h = int(w * 2.2)
+            overlap = int(slice_h * 0.08)
+            step = max(400, slice_h - overlap)
+            blocks: list[tuple[str, str]] = []
+            top = 0
+            part = 1
+            rgb = img.convert("RGB")
+            while top < h:
+                bottom = min(h, top + slice_h)
+                cropped = rgb.crop((0, top, w, bottom))
+                buf = BytesIO()
+                cropped.save(buf, format="JPEG", quality=88)
+                blocks.append((f"第 {page_number} 页 (分段{part})", image_to_data_url(buf.getvalue(), "slice.jpg")))
+                if bottom >= h:
+                    break
+                top += step
+                part += 1
+            return blocks
+    except Exception:
+        logger.debug("Tall-strip inspection skipped for page %s", page_number, exc_info=True)
+
+    return [(f"第 {page_number} 页", image_to_data_url(data, object_key))]
+
+
+def _merge_chunk_understandings(chunks: list[dict]) -> dict:
+    """Merge multi-window understandings of a long manga chapter into a single coherent dict."""
+    if not chunks:
+        return {}
+    if len(chunks) == 1:
+        return chunks[0]
+
+    summaries = [c.get("summary", "").strip() for c in chunks if c.get("summary")]
+    merged_summary = " ".join(summaries)
+
+    events, state_changes, page_dialogues = [], [], []
+    characters_by_key: dict[str, dict] = {}
+    asset_sightings_by_id: dict[str, dict] = {}
+    new_assets_by_key: dict[str, dict] = {}
+    pit_discoveries, pit_progressions = [], []
+    resolved_pits: list[str] = []
+    world_rules: list[str] = []
+    art_style = ""
+
+    for chunk in chunks:
+        events.extend(chunk.get("events") or [])
+        state_changes.extend(chunk.get("state_changes") or [])
+        page_dialogues.extend(chunk.get("page_dialogues") or [])
+        pit_discoveries.extend(chunk.get("pit_discoveries") or [])
+        pit_progressions.extend(chunk.get("pit_progressions") or [])
+        for pid in chunk.get("resolved_pits") or []:
+            if pid not in resolved_pits:
+                resolved_pits.append(pid)
+        for rule in chunk.get("world_rules_discovered") or []:
+            if rule and rule not in world_rules:
+                world_rules.append(rule)
+        if chunk.get("art_style_notes") and len(chunk["art_style_notes"]) > len(art_style):
+            art_style = chunk["art_style_notes"]
+
+        for char in chunk.get("characters") or []:
+            key = char.get("asset_id") or generation_service._normalize_name(char.get("name", ""))
+            if not key:
+                continue
+            prev = characters_by_key.get(key)
+            if prev is None:
+                characters_by_key[key] = dict(char)
+            else:
+                if not prev.get("asset_id") and char.get("asset_id"):
+                    prev["asset_id"] = char["asset_id"]
+                if char.get("appearance") and len(char["appearance"]) > len(prev.get("appearance") or ""):
+                    prev["appearance"] = char["appearance"]
+                if char.get("speech_style") and not prev.get("speech_style"):
+                    prev["speech_style"] = char["speech_style"]
+                if char.get("bbox") and not prev.get("bbox"):
+                    prev["bbox"] = char["bbox"]
+                    prev["source_page"] = char.get("source_page")
+                prev["aliases"] = list(dict.fromkeys([*(prev.get("aliases") or []), *(char.get("aliases") or [])]))
+
+        for sight in chunk.get("asset_sightings") or []:
+            aid = sight.get("asset_id") or sight.get("name", "")
+            if aid:
+                asset_sightings_by_id[aid] = sight
+
+        for na in chunk.get("new_assets") or []:
+            nkey = f"{na.get('asset_type', 'item')}:{generation_service._normalize_name(na.get('name', ''))}"
+            if nkey not in new_assets_by_key:
+                new_assets_by_key[nkey] = dict(na)
+            else:
+                existing = new_assets_by_key[nkey]
+                if len(na.get("description") or "") > len(existing.get("description") or ""):
+                    existing["description"] = na["description"]
+                existing["visual_tags"] = list(
+                    dict.fromkeys([*(existing.get("visual_tags") or []), *(na.get("visual_tags") or [])])
+                )
+                if na.get("bbox") and not existing.get("bbox"):
+                    existing["bbox"] = na["bbox"]
+                    existing["source_page"] = na.get("source_page")
+
+    # Last chunk holds the latest main_plot progression and exact ending_state
+    last_mp = dict(chunks[-1].get("main_plot") or {})
+    first_mp = dict(chunks[0].get("main_plot") or {})
+    for field in ("core_conflict", "current_arc", "protagonist_goal"):
+        if not last_mp.get(field) and first_mp.get(field):
+            last_mp[field] = first_mp[field]
+
+    return {
+        "summary": merged_summary,
+        "main_plot": last_mp,
+        "ending_state": chunks[-1].get("ending_state") or {},
+        "art_style_notes": art_style,
+        "world_rules_discovered": world_rules,
+        "events": events,
+        "state_changes": state_changes,
+        "characters": list(characters_by_key.values()),
+        "asset_sightings": list(asset_sightings_by_id.values()),
+        "new_assets": list(new_assets_by_key.values()),
+        "pit_discoveries": pit_discoveries,
+        "pit_progressions": pit_progressions,
+        "resolved_pits": resolved_pits,
+        "page_dialogues": page_dialogues,
+    }
+
+
+def _crop_bbox_bytes(page_bytes: bytes, bbox: list | None) -> bytes | None:
+    """Crop [ymin, xmin, ymax, xmax] (0..1000 or 0..1 normalized) from page_bytes with slight margin."""
+    if not bbox or len(bbox) != 4:
+        return None
+    try:
+        vals = [float(v) for v in bbox]
+    except (TypeError, ValueError):
+        return None
+
+    scale = 1.0 if max(vals) <= 1.05 else 1000.0
+    ymin, xmin, ymax, xmax = [v / scale for v in vals]
+    if xmax <= xmin or ymax <= ymin:
+        return None
+    # Reject implausibly tiny or full-page boxes
+    bw, bh = xmax - xmin, ymax - ymin
+    if bw < 0.04 or bh < 0.04:
+        return None
+
+    try:
+        img = Image.open(BytesIO(page_bytes)).convert("RGB")
+        w, h = img.size
+        pad_x = bw * 0.08
+        pad_y = bh * 0.08
+        x0 = max(0, int((xmin - pad_x) * w))
+        y0 = max(0, int((ymin - pad_y) * h))
+        x1 = min(w, int((xmax + pad_x) * w))
+        y1 = min(h, int((ymax + pad_y) * h))
+        if (x1 - x0) < 48 or (y1 - y0) < 48:
+            return None
+        cropped = img.crop((x0, y0, x1, y1))
+        if max(cropped.size) > 768:
+            r = 768 / max(cropped.size)
+            cropped = cropped.resize((round(cropped.width * r), round(cropped.height * r)), Image.Resampling.LANCZOS)
+        buf = BytesIO()
+        cropped.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        logger.debug("Auto-crop failed for bbox %s", bbox, exc_info=True)
+        return None
+
+
+async def _auto_crop_asset_thumbnails(
+    db: AsyncSession,
+    episode_id: str,
+    discovered_pairs: list[tuple[Asset, dict]],
+    character_sightings: list[dict],
+    matched_chars_by_name: dict[str, Asset],
+    raw_pages: dict[int, bytes],
+) -> int:
+    """Automatically crop and attach visual reference thumbnails for assets that have no images yet."""
+    if not raw_pages:
+        return 0
+
+    candidates: list[tuple[Asset, int | None, list | None]] = []
+    seen_ids: set[str] = set()
+
+    for asset, meta in discovered_pairs:
+        if asset.id not in seen_ids:
+            seen_ids.add(asset.id)
+            candidates.append((asset, meta.get("source_page"), meta.get("bbox")))
+
+    for cs in character_sightings:
+        norm = generation_service._normalize_name(cs.get("name", ""))
+        asset = matched_chars_by_name.get(norm)
+        if asset and asset.id not in seen_ids and cs.get("bbox"):
+            seen_ids.add(asset.id)
+            candidates.append((asset, cs.get("source_page"), cs.get("bbox")))
+
+    created = 0
+    for asset, source_page, bbox in candidates:
+        if not source_page or not bbox:
+            continue
+        page_bytes = raw_pages.get(int(source_page))
+        if not page_bytes:
+            continue
+        existing_count = (
+            await db.execute(select(func.count()).select_from(AssetImage).where(AssetImage.asset_id == asset.id))
+        ).scalar() or 0
+        if existing_count > 0:
+            continue
+
+        cropped = _crop_bbox_bytes(page_bytes, bbox)
+        if not cropped:
+            continue
+
+        object_key = storage_service.generate_object_key(f"assets/{asset.id}", "auto_ref.png")
+        storage_service.upload_file(settings.MINIO_BUCKET, object_key, cropped, content_type="image/png")
+        db.add(
+            AssetImage(
+                id=str(uuid.uuid4()),
+                asset_id=asset.id,
+                kind="thumbnail",
+                image_path=object_key,
+                meta={"auto_cropped": True, "episode_id": episode_id, "page_number": int(source_page)},
+            )
+        )
+        created += 1
+
+    if created:
+        await db.commit()
+    return created
+
+
+async def _ensure_project_style_asset(
+    db: AsyncSession,
+    project_id: str,
+    episode_id: str,
+    art_style_notes: str,
+    raw_pages: dict[int, bytes],
+) -> None:
+    """Maintain a project-level style asset with art style notes and 1 representative manga page."""
+    if not art_style_notes.strip() and not raw_pages:
+        return
+    existing = (
+        await db.execute(select(Asset).where(Asset.project_id == project_id, Asset.type == "style").limit(1))
+    ).scalar_one_or_none()
+
+    if existing is None:
+        existing = Asset(
+            id=str(uuid.uuid4()),
+            project_id=project_id,
+            type="style",
+            name="原作画风基准",
+            description=art_style_notes.strip() or "Original manga visual style reference",
+            tags={"visual_tags": [t.strip() for t in art_style_notes.split(",") if t.strip()][:8]},
+            episode_ids={episode_id: True},
+        )
+        db.add(existing)
+        await db.flush()
+    else:
+        if art_style_notes.strip() and len(art_style_notes.strip()) > len(existing.description or ""):
+            existing.description = art_style_notes.strip()
+        existing.episode_ids = {**(existing.episode_ids or {}), episode_id: True}
+
+    img_count = (
+        await db.execute(select(func.count()).select_from(AssetImage).where(AssetImage.asset_id == existing.id))
+    ).scalar() or 0
+    if img_count == 0 and raw_pages:
+        first_page = raw_pages[sorted(raw_pages.keys())[0]]
+        scaled, mime = _downscale_with_mime(first_page, "image/jpeg")
+        ext = "png" if "png" in mime else "jpg"
+        object_key = storage_service.generate_object_key(f"assets/{existing.id}", f"style_sample.{ext}")
+        storage_service.upload_file(settings.MINIO_BUCKET, object_key, scaled, content_type=mime)
+        db.add(
+            AssetImage(
+                id=str(uuid.uuid4()),
+                asset_id=existing.id,
+                kind="reference",
+                image_path=object_key,
+                meta={"auto_style_sample": True, "episode_id": episode_id},
+            )
+        )
+    await db.commit()
+
+
+async def _update_project_story_bible(
+    db: AsyncSession,
+    project: Project | None,
+    episode_label: str,
+    understanding_dict: dict,
+) -> None:
+    """Persist main plotline, current arc, art style, and worldbuilding rules into project.canon_rules.story_bible."""
+    if not project:
+        return
+    canon = dict(project.canon_rules or {})
+    bible = dict(canon.get("story_bible") or {})
+    prev_mp = dict(bible.get("main_plot") or {})
+    new_mp = dict(understanding_dict.get("main_plot") or {})
+
+    merged_mp = {
+        "core_conflict": new_mp.get("core_conflict") or prev_mp.get("core_conflict") or "",
+        "current_arc": new_mp.get("current_arc") or prev_mp.get("current_arc") or "",
+        "protagonist_goal": new_mp.get("protagonist_goal") or prev_mp.get("protagonist_goal") or "",
+        "arc_progress": new_mp.get("arc_progress") or prev_mp.get("arc_progress") or "",
+        "next_hook": new_mp.get("next_hook") or prev_mp.get("next_hook") or "",
+    }
+    bible["main_plot"] = merged_mp
+
+    art_notes = (understanding_dict.get("art_style_notes") or "").strip()
+    if art_notes:
+        bible["art_style"] = art_notes
+
+    existing_rules = [str(r) for r in (bible.get("discovered_rules") or []) if str(r).strip()]
+    for rule in understanding_dict.get("world_rules_discovered") or []:
+        rule_str = str(rule).strip()
+        if rule_str and rule_str not in existing_rules:
+            existing_rules.append(rule_str)
+    bible["discovered_rules"] = existing_rules[-40:]
+    bible["last_updated_episode"] = str(episode_label)
+
+    canon["story_bible"] = bible
+    project.canon_rules = canon
+    await db.commit()
 
 
 async def run_multimodal_understanding(
@@ -105,121 +429,263 @@ async def run_multimodal_understanding(
     page_refs: list[tuple[int, str]],
     fallback_text: str = "",
     target_status: str | None = "understood",
+    authoritative_storyboard: dict | None = None,
 ) -> dict:
     """Understand one episode from its page images (multimodal) and write back
-    memories, assets, and pit lifecycle changes.
-
-    page_refs: (page_number, minio object key) in reading order.
-    When no images are available, falls back to text-only understanding.
+    memories, story bible (main plot), character/item/location assets, auto-cropped
+    visual thumbnails, and pit lifecycle changes.
     """
-    project = (await db.execute(select(Project).where(Project.id == episode.project_id))).scalar_one_or_none()
+    project = (await db.execute(select(Project).where(Project.id == episode.project_id).limit(1))).scalar_one_or_none()
 
-    known_assets = list(
-        (await db.execute(select(Asset).where(Asset.project_id == episode.project_id))).scalars().all()
-    )
+    known_assets = list((await db.execute(select(Asset).where(Asset.project_id == episode.project_id))).scalars().all())
     known_characters = [
-        {"asset_id": a.id, "name": a.name, "type": a.type, "description": a.description or ""}
+        {
+            "asset_id": a.id,
+            "name": a.name,
+            "type": a.type,
+            "aliases": (a.tags or {}).get("aliases", []),
+            "description": (a.description or "")[:300],
+        }
         for a in known_assets
         if a.type == "character"
+    ]
+    known_other_assets = [
+        {
+            "asset_id": a.id,
+            "name": a.name,
+            "type": a.type,
+            "description": (a.description or "")[:240],
+        }
+        for a in known_assets
+        if a.type in ("item", "location", "outfit")
     ]
 
     open_pits = list(
         (
             await db.execute(
-                select(Pit).where(Pit.project_id == episode.project_id, Pit.status == "open")
+                select(Pit)
+                .where(Pit.project_id == episode.project_id, Pit.status == "open")
+                .order_by(Pit.priority.desc())
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
-    open_pit_refs = [{"id": pit.id, "description": pit.description or pit.title} for pit in open_pits]
+    open_pit_refs = [
+        {
+            "id": pit.id,
+            "description": pit.description or pit.title,
+            "priority": "high" if pit.priority >= 8 else ("medium" if pit.priority >= 4 else "low"),
+            "trigger_hint": pit.trigger_hint,
+        }
+        for pit in open_pits
+    ]
 
-    previous_summary = ""
-    if project and project.long_summary:
-        previous_summary = project.long_summary[-2000:]
+    # Build previous context strictly from earlier episodes on this branch when available
+    previous_summary = await memory_service.get_branch_history_before(
+        db,
+        episode.project_id,
+        episode.branch_id,
+        episode.number,
+        fallback_long_summary=project.long_summary if project else "",
+    )
+    story_bible = ((project.canon_rules or {}).get("story_bible") or {}) if project else {}
+    current_main_plot = story_bible.get("main_plot") or {}
 
-    # Visual identity anchors: one reference sheet per known character (cap),
-    # most frequently seen characters first — so recognition works by FACE,
-    # not by name guessing (prevents mistaking a passer-by for the protagonist).
     reference_blocks = await _character_reference_blocks(db, known_assets)
 
+    raw_pages: dict[int, bytes] = {}
     page_blocks: list[tuple[str, str]] = []
-    for page_number, object_key in page_refs:
+    # When authoritative_storyboard is supplied (writeback of generated episode), cap vision pages to 3
+    # to keep writeback fast while still allowing visual inspection & thumbnail cropping.
+    refs_to_load = page_refs[:3] if authoritative_storyboard else page_refs
+    for page_number, object_key in refs_to_load:
         data = storage_service.get_object_bytes(settings.MINIO_BUCKET, object_key)
         if data is None:
             logger.warning("Page image missing in object storage: %s (page %s)", object_key, page_number)
             continue
-        page_blocks.append((f"第 {page_number} 页", image_to_data_url(data, object_key)))
+        raw_pages[int(page_number)] = data
+        page_blocks.extend(_prepare_page_blocks(page_number, data, object_key))
 
-    user_prompt = Template(SUMMARIZE_USER_PROMPT).render(
-        episode_number=episode.number,
-        episode_title=episode.title or "",
-        previous_summary=previous_summary,
-        known_characters=known_characters,
-        has_reference_sheets=bool(reference_blocks),
-        open_pits=open_pit_refs,
-        pages=page_blocks,
-        ocr_text="",
-        raw_text=fallback_text if not page_blocks else "",
-    )
-
-    content: list[dict] = [{"type": "text", "text": user_prompt}]
-    for label, url in reference_blocks:
-        content.append({"type": "text", "text": label})
-        content.append({"type": "image_url", "image_url": {"url": url}})
-    for label, url in page_blocks:
-        content.append({"type": "text", "text": label})
-        content.append({"type": "image_url", "image_url": {"url": url}})
     if not page_blocks and not fallback_text:
         raise ValueError("Episode has no page images and no text content to understand")
-    logger.info(
-        "Understanding episode %s with %d page images and %d character reference sheets",
-        episode.id, len(page_blocks), len(reference_blocks),
-    )
 
     client = get_llm_client()
-    understanding = await client.chat.completions.create(
-        model=settings.OPENAI_MODEL,
-        messages=[
-            {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT},
-            {"role": "user", "content": content},
-        ],
-        response_model=EpisodeUnderstanding,
-        max_retries=2,
-    )
-    understanding_dict = understanding.model_dump()
 
-    # 1. Persist memories (understanding + OCR transcription)
-    await save_understanding_memories(db, episode.id, understanding_dict)
+    # Windowed multimodal analysis when a chapter has many pages (> _MAX_PAGES_PER_CHUNK)
+    if len(page_blocks) <= _MAX_PAGES_PER_CHUNK:
+        windows = [page_blocks]
+    else:
+        windows = [page_blocks[i : i + _CHUNK_SIZE] for i in range(0, len(page_blocks), _CHUNK_SIZE)]
 
-    # 2. Character recognition: link sightings to assets
-    await generation_service.record_character_sightings(
-        db, episode.project_id, episode.id, understanding_dict.get("characters", [])
-    )
+    chunk_results: list[dict] = []
+    intra_context_lines: list[str] = []
 
-    # 3. New assets (embedding-free name matching)
+    for idx, window_blocks in enumerate(windows):
+        chunk_info = f"Part {idx + 1}/{len(windows)}" if len(windows) > 1 else ""
+        user_prompt = Template(SUMMARIZE_USER_PROMPT).render(
+            episode_number=episode.label or episode.number,
+            episode_title=episode.title or "",
+            chunk_info=chunk_info,
+            main_plot=current_main_plot,
+            previous_summary=previous_summary,
+            intra_episode_context="\n".join(intra_context_lines) if intra_context_lines else "",
+            known_characters=known_characters,
+            known_other_assets=known_other_assets,
+            has_reference_sheets=bool(reference_blocks),
+            open_pits=open_pit_refs,
+            pages=window_blocks,
+            ocr_text="",
+            raw_text=fallback_text if (authoritative_storyboard or not window_blocks) else "",
+        )
+
+        content: list[dict] = [{"type": "text", "text": user_prompt}]
+        for label, url in reference_blocks:
+            content.append({"type": "text", "text": label})
+            content.append({"type": "image_url", "image_url": {"url": url}})
+        for label, url in window_blocks:
+            content.append({"type": "text", "text": label})
+            content.append({"type": "image_url", "image_url": {"url": url}})
+
+        logger.info(
+            "Understanding episode %s (%s) with %d image blocks and %d character refs",
+            episode.id,
+            chunk_info or "full",
+            len(window_blocks),
+            len(reference_blocks),
+        )
+
+        chunk_model = await client.chat.completions.create(
+            model=settings.OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT},
+                {"role": "user", "content": content},
+            ],
+            response_model=EpisodeUnderstanding,
+            max_retries=2,
+        )
+        chunk_dict = chunk_model.model_dump()
+        chunk_results.append(chunk_dict)
+        if len(windows) > 1 and chunk_dict.get("summary"):
+            intra_context_lines.append(f"- Segment {idx + 1}: {chunk_dict['summary']}")
+
+    understanding_dict = _merge_chunk_understandings(chunk_results)
+
+    # Backfill exact dialogue from authoritative_storyboard when writeback didn't need to re-OCR every page
+    if authoritative_storyboard and not understanding_dict.get("page_dialogues"):
+        sb_pages = []
+        for pg in authoritative_storyboard.get("pages") or []:
+            lines = []
+            for pan in pg.get("panels") or []:
+                for dlg in pan.get("dialogue") or []:
+                    if dlg.get("text"):
+                        lines.append(
+                            {
+                                "speaker": dlg.get("speaker", ""),
+                                "text": dlg.get("text", ""),
+                                "line_type": dlg.get("type", "speech"),
+                            }
+                        )
+            if lines:
+                sb_pages.append({"page_number": pg.get("page_number", 1), "lines": lines})
+        understanding_dict["page_dialogues"] = sb_pages
+
+    # Ensure any unrecognized character in characters[] is also registered in new_assets[]
+    known_char_ids = {c["asset_id"] for c in known_characters}
+    synthesized_new_assets = list(understanding_dict.get("new_assets") or [])
+    existing_new_names = {
+        generation_service._normalize_name(na.get("name", ""))
+        for na in synthesized_new_assets
+        if na.get("asset_type") == "character"
+    }
+    for c in understanding_dict.get("characters") or []:
+        cname = (c.get("name") or "").strip()
+        cid = c.get("asset_id")
+        if not cname or (cid and cid in known_char_ids):
+            continue
+        norm_c = generation_service._normalize_name(cname)
+        if norm_c and norm_c not in existing_new_names:
+            synthesized_new_assets.append(
+                {
+                    "name": cname,
+                    "asset_type": "character",
+                    "description": c.get("appearance") or f"{cname} ({c.get('role') or 'character'})",
+                    "visual_tags": [],
+                    "aliases": c.get("aliases") or [],
+                    "speech_style": c.get("speech_style"),
+                    "role": c.get("role"),
+                    "source_page": c.get("source_page"),
+                    "bbox": c.get("bbox"),
+                }
+            )
+            existing_new_names.add(norm_c)
+    understanding_dict["new_assets"] = synthesized_new_assets
+
+    # 1. Discover/merge new assets first so character sightings can link to newly created assets too
+    discovered_pairs: list[tuple[Asset, dict]] = []
     if understanding_dict.get("new_assets"):
-        await generation_service.auto_discover_assets(
+        discovered_pairs = await generation_service.auto_discover_assets(
             db, episode.project_id, episode.id, understanding_dict["new_assets"]
         )
 
-    # 4. Pit lifecycle: create new pits, resolve addressed ones
+    # 2. Record character & item/location sightings + backfill asset_id onto understanding_dict.characters
+    matched_chars = await generation_service.record_character_sightings(
+        db, episode.project_id, episode.id, understanding_dict.get("characters", [])
+    )
+    for c in understanding_dict.get("characters") or []:
+        if not c.get("asset_id"):
+            norm = generation_service._normalize_name(c.get("name", ""))
+            if norm in matched_chars:
+                c["asset_id"] = matched_chars[norm].id
+
+    if understanding_dict.get("asset_sightings"):
+        await generation_service.record_asset_sightings(
+            db, episode.project_id, episode.id, understanding_dict["asset_sightings"]
+        )
+
+    # 3. Auto-crop visual reference thumbnails for newly seen characters/items/locations + style guide
+    await _auto_crop_asset_thumbnails(
+        db,
+        episode.id,
+        discovered_pairs,
+        understanding_dict.get("characters", []),
+        matched_chars,
+        raw_pages,
+    )
+    await _ensure_project_style_asset(
+        db,
+        episode.project_id,
+        episode.id,
+        understanding_dict.get("art_style_notes", ""),
+        raw_pages,
+    )
+
+    # 4. Persist episode memories (summary + ocr_dump, replacing prior understanding memories)
+    await save_understanding_memories(db, episode.id, understanding_dict)
+
+    # 5. Pit lifecycle: create new pits, record clue progressions, resolve addressed ones
+    ep_label = episode.label or str(episode.number)
     if understanding_dict.get("pit_discoveries"):
         await generation_service.auto_discover_pits(
             db, episode.project_id, episode.id, understanding_dict["pit_discoveries"]
         )
+    if understanding_dict.get("pit_progressions"):
+        await generation_service.advance_pits(db, episode.project_id, ep_label, understanding_dict["pit_progressions"])
     if understanding_dict.get("resolved_pits"):
-        await generation_service.resolve_pits(
-            db, episode.project_id, episode.id, understanding_dict["resolved_pits"]
-        )
+        await generation_service.resolve_pits(db, episode.project_id, episode.id, understanding_dict["resolved_pits"])
 
-    # 5. Vector memory (no-op when no embedding model is configured)
+    # 6. Update Story Bible (main plotline, current arc, world rules, art style)
+    await _update_project_story_bible(db, project, ep_label, understanding_dict)
+
+    # 7. Vector memory (no-op when no embedding model is configured)
     await memory_service.vectorize_and_store_episode_memory(
         db, episode.project_id, episode.id, episode.number, understanding_dict
     )
 
-    # 6. Rolling long summary (append + LLM compression when it outgrows budget)
+    # 8. Rolling long summary (idempotent per episode + LLM compression when exceeding budget)
     summary_text = understanding_dict.get("summary", "")
     if summary_text and project:
-        await memory_service.append_episode_summary(db, project.id, episode.number, summary_text)
+        await memory_service.append_episode_summary(db, project.id, ep_label, summary_text)
 
     if target_status:
         await generation_service.update_episode_status(db, episode.id, target_status)
@@ -227,16 +693,17 @@ async def run_multimodal_understanding(
     return understanding_dict
 
 
-async def save_understanding_memories(db: AsyncSession, episode_id: str, understanding: dict) -> list[EpisodeMemory]:
-    """Store the understanding as episode memories.
+async def save_understanding_memories(db: AsyncSession, episode_id: str, understanding: dict) -> list[str]:
+    """Store the understanding as episode memories (upserting summary and ocr_dump)."""
+    await db.execute(
+        delete(EpisodeMemory).where(
+            EpisodeMemory.episode_id == episode_id,
+            EpisodeMemory.type.in_(["summary", "ocr_dump"]),
+        )
+    )
 
-    One consolidated memory (type="summary") holds the full dict — the recent-window
-    reader expects content.summary / content.state_changes — plus an ocr_dump memory
-    with the per-page transcription.
-    """
-    memories = []
-    db.add_all([EpisodeMemory(episode_id=episode_id, type="summary", content=understanding)])
-    memories.append("summary")
+    memories = ["summary"]
+    db.add(EpisodeMemory(id=str(uuid.uuid4()), episode_id=episode_id, type="summary", content=understanding))
 
     page_dialogues = understanding.get("page_dialogues", [])
     if page_dialogues:
@@ -244,10 +711,15 @@ async def save_understanding_memories(db: AsyncSession, episode_id: str, underst
         for page in page_dialogues:
             for line in page.get("lines", []):
                 speaker = line.get("speaker", "")
-                flat_lines.append(f"p{page.get('page_number')}: {speaker}: {line.get('text', '')}" if speaker
-                                  else f"p{page.get('page_number')}: {line.get('text', '')}")
+                text = line.get("text", "")
+                flat_lines.append(
+                    f"p{page.get('page_number')}: {speaker}: {text}"
+                    if speaker
+                    else f"p{page.get('page_number')}: {text}"
+                )
         db.add(
             EpisodeMemory(
+                id=str(uuid.uuid4()),
                 episode_id=episode_id,
                 type="ocr_dump",
                 content={"text": "\n".join(flat_lines), "pages": page_dialogues},

@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 """End-to-end smoke test: multimodal understanding, character/pit tracking,
 consistency-checked script gen, mock render, layout, writeback.
 
@@ -124,16 +125,14 @@ class Shim:
 async def main():
     from decimal import Decimal
 
-    from sqlalchemy import select
-
     from app.config import settings
-    from app.database import async_session
+    from app.database import worker_session as async_session
+    from app.models.asset import Asset
     from app.models.branch import Branch
     from app.models.episode import Episode
     from app.models.episode_memory import EpisodeMemory
     from app.models.episode_page import EpisodePage
     from app.models.generation_run import GenerationRun
-    from app.models.asset import Asset
     from app.models.pit import Pit
     from app.schemas.episode import EpisodeImport
     from app.schemas.project import ProjectCreate
@@ -144,15 +143,16 @@ async def main():
         project_service,
         storage_service,
     )
+    from sqlalchemy import select
 
     async with async_session() as db:
         project = await project_service.create_project(
             db,
             ProjectCreate(title="冒烟测试·星之匣", description="e2e smoke", language="zh"),
         )
-        branch = Branch(project_id=project.id, name="main", is_default=True)
-        db.add(branch)
-        await db.commit()
+        branch = (
+            await db.execute(select(Branch).where(Branch.project_id == project.id, Branch.is_default.is_(True)).limit(1))
+        ).scalar_one()
         ep1 = await episode_service.create_episode(
             db, project.id, EpisodeImport(branch_id=branch.id, number=Decimal("1"), title="阁楼里的星之匣")
         )
@@ -247,14 +247,14 @@ async def main():
         layout_run = await generation_service.create_generation_run(db, episode_id=ep3.id, stage="layout")
         script_id, render_id, layout_id = str(script_run.id), str(render_run.id), str(layout_run.id)
 
-    from workers.tasks.script_gen import _generate_script
-    from workers.tasks.render import _render_episode
     from workers.tasks.layout import _layout_episode
+    from workers.tasks.render import _render_episode
+    from workers.tasks.script_gen import _generate_script
     from workers.tasks.writeback import _writeback_episode
 
     await _generate_script(shim, script_id, ep3.id, branch.id, 2.0, "main", None)
     await _render_episode(shim, render_id, ep3.id, "mock", None, "1024x1024")
-    await _layout_episode(shim, layout_id, ep3.id, None)
+    await _layout_episode(shim, layout_id, ep3.id, None, trigger_writeback=False)
     await _writeback_episode(shim, ep3.id, project.id)
 
     async with async_session() as db:

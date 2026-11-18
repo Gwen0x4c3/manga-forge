@@ -31,5 +31,5 @@ install:        ## Install all dependencies (uv + npm)
 	cd apps/web && npm install
 
 lint:           ## Run linters (ruff + tsc)
-	$(VENV)ruff check apps/api/app/ workers/
+	$(VENV)ruff check --config apps/api/pyproject.toml apps/api/app/ workers/
 	cd apps/web && npx tsc --noEmit

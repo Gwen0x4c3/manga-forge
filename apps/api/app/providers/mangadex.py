@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
 import logging
 import re
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -426,7 +426,7 @@ async def fetch_chapter_candidates(
         inferred_groups = dedupe_preserve_order(seed_group_ids)
         resolved_groups = explicit_groups or inferred_groups
         logger.info(
-            "MangaDex discover seed groups manga=%s seed_chapter_count=%s inferred_group_count=%s explicit_group_count=%s resolved_group_count=%s",
+            "MangaDex discover seed groups manga=%s seed=%s inferred=%s explicit=%s resolved=%s",
             manga_id,
             len(seed_chapter_ids),
             len(inferred_groups),
@@ -434,7 +434,7 @@ async def fetch_chapter_candidates(
             len(resolved_groups),
         )
         trace_logger.info(
-            "discover seed groups manga=%s seed_chapter_ids=%s inferred_groups=%s explicit_groups=%s resolved_groups=%s",
+            "discover seed groups manga=%s seed_ids=%s inferred=%s explicit=%s resolved=%s",
             manga_id,
             summarize_values_for_log(seed_chapter_ids),
             summarize_values_for_log(inferred_groups),

@@ -31,7 +31,9 @@ class ImportJobItem(Base):
     page_count: Mapped[int | None] = mapped_column(nullable=True)
     selection_status: Mapped[str] = mapped_column(String(30), nullable=False, default="selected")
     import_status: Mapped[str] = mapped_column(String(30), nullable=False, default="pending")
-    episode_id: Mapped[str | None] = mapped_column(CHAR(36), ForeignKey("episodes.id", ondelete="SET NULL"), nullable=True)
+    episode_id: Mapped[str | None] = mapped_column(
+        CHAR(36), ForeignKey("episodes.id", ondelete="SET NULL"), nullable=True
+    )
     external_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     progress: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     metadata_json: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)

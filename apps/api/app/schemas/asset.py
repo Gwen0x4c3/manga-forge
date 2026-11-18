@@ -30,6 +30,8 @@ class AssetResponse(BaseModel):
     parent_asset_id: str | None
     embedding: list | None = None
     episode_ids: dict | None = None
+    preview_image_path: str | None = None
+    image_count: int = 0
     created_at: datetime
     updated_at: datetime
 

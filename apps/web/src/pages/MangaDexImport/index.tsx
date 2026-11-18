@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
     Banner,
@@ -40,8 +40,8 @@ export default function MangaDexImportPage() {
     const [autoUnderstand, setAutoUnderstand] = useState(false)
     const [onlyMissing, setOnlyMissing] = useState(true)
     const [useDataSaver, setUseDataSaver] = useState(true)
-    const [activeJob, setActiveJob] = useState<ImportJob | null>(null)
-    const [selectedIds, setSelectedIds] = useState<string[]>([])
+    const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
+    const [selectedIdsOverride, setSelectedIdsOverride] = useState<string[] | null>(null)
 
     const { data: branches } = useQuery({
         queryKey: ['branches', projectId],
@@ -53,8 +53,24 @@ export default function MangaDexImportPage() {
         queryKey: ['import-jobs', projectId],
         queryFn: () => importService.listJobs(projectId!),
         enabled: !!projectId,
-        refetchInterval: activeJob?.status === 'running' || activeJob?.status === 'queued' ? 3000 : false,
+        refetchInterval: (query) => {
+            const list = query.state.data?.items || []
+            return list.some((j) => j.status === 'running' || j.status === 'queued') ? 3000 : false
+        },
     })
+
+    const activeJob: ImportJob | null = useMemo(() => {
+        const list = jobsData?.items || []
+        if (list.length === 0) return null
+        if (selectedJobId) {
+            return list.find((j) => j.id === selectedJobId) || list[0]
+        }
+        return list[0]
+    }, [jobsData, selectedJobId])
+    const setActiveJob = (job: ImportJob | null) => {
+        setSelectedJobId(job?.id || null)
+        setSelectedIdsOverride(null)
+    }
 
     const { data: itemsData, isLoading: itemsLoading } = useQuery({
         queryKey: ['import-items', projectId, activeJob?.id],
@@ -62,6 +78,19 @@ export default function MangaDexImportPage() {
         enabled: !!projectId && !!activeJob?.id,
         refetchInterval: activeJob?.status === 'running' || activeJob?.status === 'queued' ? 3000 : false,
     })
+
+    const defaultSelectedIds = useMemo(
+        () => (itemsData || []).filter((item) => item.selection_status === 'selected').map((item) => item.id),
+        [itemsData],
+    )
+    const selectedIds = selectedIdsOverride ?? defaultSelectedIds
+    const setSelectedIds = (updater: string[] | ((prev: string[]) => string[])) => {
+        if (typeof updater === 'function') {
+            setSelectedIdsOverride(updater(selectedIds))
+        } else {
+            setSelectedIdsOverride(updater)
+        }
+    }
 
     const defaultBranch = useMemo(
         () => branches?.find((branch: Branch) => branch.is_default) || branches?.[0],
@@ -135,27 +164,6 @@ export default function MangaDexImportPage() {
     })
 
     const rows = itemsData || []
-
-    useEffect(() => {
-        if (!jobsData?.items || jobsData.items.length === 0) {
-            return
-        }
-        if (!activeJob) {
-            setActiveJob(jobsData.items[0])
-            return
-        }
-        const refreshed = jobsData.items.find((job) => job.id === activeJob.id)
-        if (refreshed) {
-            setActiveJob(refreshed)
-        }
-    }, [jobsData, activeJob])
-
-    useEffect(() => {
-        if (!itemsData) {
-            return
-        }
-        setSelectedIds(itemsData.filter((item) => item.selection_status === 'selected').map((item) => item.id))
-    }, [itemsData])
 
     return (
         <div className="space-y-6">

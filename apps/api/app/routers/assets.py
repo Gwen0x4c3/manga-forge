@@ -65,7 +65,9 @@ async def cluster_assets(
     similarity_threshold: float = Query(0.85, ge=0.0, le=1.0),
     db: AsyncSession = Depends(get_db),
 ):
-    return await asset_service.cluster_assets(db, project_id, asset_type=type, similarity_threshold=similarity_threshold)
+    return await asset_service.cluster_assets(
+        db, project_id, asset_type=type, similarity_threshold=similarity_threshold
+    )
 
 
 @router.post("/{project_id}/assets/merge", response_model=AssetResponse, status_code=201)

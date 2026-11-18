@@ -5,7 +5,7 @@ import logging
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.config import settings
 from app.core.image_backend import get_image_backend
@@ -14,6 +14,7 @@ from app.models.asset import Asset
 from app.models.asset_image import AssetImage
 from app.models.generated_image import GeneratedImage
 from app.models.pit import Pit
+from app.models.project import Project
 from app.services import memory_service, storage_service
 
 if TYPE_CHECKING:
@@ -25,28 +26,27 @@ logger = logging.getLogger(__name__)
 
 MAX_AGENT_STEPS = 40
 MAX_REFERENCES_PER_PANEL = 8
+_REF_KIND_PRIORITY = ("reference", "turnaround", "thumbnail", "lora_dataset")
 
-RENDER_AGENT_SYSTEM_PROMPT = """You are the rendering agent of a manga generation pipeline. \
-You turn an approved storyboard into panel images.
+RENDER_AGENT_SYSTEM_PROMPT = """You are the rendering director agent of a manga continuation pipeline. \
+You turn an approved storyboard into visually consistent manga panel illustrations.
 
 Workflow for every episode:
-1. RESEARCH FIRST — before generating anything, understand the current story state:
-   - call search_story_memories with the episode synopsis to recall relevant past events
-   - call list_open_pits to know which foreshadowing must stay consistent
-   - call search_assets for each character/location/item that appears in the panels
-   - call get_asset_references for the assets you found to see which ones have \
-reference images (character sheets, turnarounds, style refs)
-2. THEN GENERATE — call generate_panel exactly once for every panel in the storyboard, \
-in order. For panels containing established characters, pass their asset ids in \
-reference_asset_ids so the image model keeps faces/outfits consistent. Base each \
-prompt on the storyboard panel prompt, enriched with the asset descriptions you found \
-(appearance, outfit, visual tags) — write prompts in English, keep them specific.
+1. RESEARCH FIRST — before generating anything, inspect story and visual assets:
+   - call search_story_memories with the episode synopsis to recall key continuity details
+   - call list_open_pits to know which foreshadowing details must stay visually accurate
+   - call search_assets for every character, location, key item, and style appearing in the panels
+   - call get_asset_references for matched assets to check available reference sheets / thumbnails
+2. THEN GENERATE — call generate_panel once for every panel in the storyboard, in order:
+   - Pass relevant character/item/location/style asset IDs in `reference_asset_ids` to anchor visuals.
+   - Build a rich English `prompt` combining the storyboard's base `prompt`, exact character appearance/outfit \
+from assets, key props/locations, camera angle, lighting, and the series' manga art style.
+   - Keep raw artwork free of speech bubbles or text (`negative_prompt`: "speech bubble, text, watermark, blurry").
 
 Rules:
 - Every panel_id must be generated exactly once. Never invent panel ids.
-- Prefer references over long descriptions when a reference image exists.
-- Do not narrate progress; act through tools.
-- When every panel is generated, reply with a one-line summary and stop."""
+- Prefer attaching reference_asset_ids whenever an asset exists.
+- Act directly through tools without verbose commentary; finish with a one-line summary once all panels are rendered."""
 
 TOOL_DEFINITIONS = [
     {
@@ -55,13 +55,19 @@ TOOL_DEFINITIONS = [
             "name": "search_assets",
             "description": (
                 "Search project assets (characters, outfits, locations, items, styles) by keyword. "
-                "Returns id, name, type, description and visual tags."
+                "Returns asset_id, name, type, description and visual tags."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Keyword to match asset name/description"},
-                    "asset_type": {"type": "string", "description": "Optional type filter"},
+                    "query": {
+                        "type": "string",
+                        "description": "Keyword to match asset name/description (empty returns top assets)",
+                    },
+                    "asset_type": {
+                        "type": "string",
+                        "description": "Optional type filter: character|outfit|location|item|style",
+                    },
                 },
                 "required": ["query"],
             },
@@ -71,7 +77,10 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "get_asset_references",
-            "description": "List reference images (character sheets, turnarounds, style refs) attached to an asset.",
+            "description": (
+                "List reference images (character sheets, turnarounds, thumbnails, style refs) "
+                "attached to an asset."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -85,7 +94,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "search_story_memories",
-            "description": "Keyword search over past episode summaries and events for story continuity.",
+            "description": "Semantic/keyword search over past episode summaries and events for visual continuity.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -99,7 +108,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "list_open_pits",
-            "description": "List unresolved foreshadowing (pits) that must stay consistent in new panels.",
+            "description": "List unresolved foreshadowing (pits) that must stay visually consistent in new panels.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -109,18 +118,24 @@ TOOL_DEFINITIONS = [
             "name": "generate_panel",
             "description": (
                 "Generate one storyboard panel image. Attaches reference images of the given "
-                "assets and character/context info to keep visuals consistent, then saves the result."
+                "assets and character/style context to keep visuals consistent, then saves the result."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "panel_id": {"type": "string", "description": "Panel id from the storyboard, e.g. '2-1'"},
-                    "prompt": {"type": "string", "description": "Final image prompt (English), asset-enriched"},
-                    "negative_prompt": {"type": "string", "description": "Optional things to avoid"},
+                    "panel_id": {"type": "string", "description": "Panel id from the storyboard, e.g. '1-1'"},
+                    "prompt": {
+                        "type": "string",
+                        "description": "Final English image prompt enriched with asset visuals & manga style",
+                    },
+                    "negative_prompt": {"type": "string", "description": "Things to avoid (e.g. speech bubbles, text)"},
                     "reference_asset_ids": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Asset ids whose reference images/descriptions should anchor this panel",
+                        "description": (
+                            "Asset ids (characters, items, locations, style) whose reference images "
+                            "and descriptions anchor this panel"
+                        ),
                     },
                 },
                 "required": ["panel_id", "prompt"],
@@ -149,25 +164,36 @@ class RenderAgent:
         self.image_backend_name = image_backend_name
         self.image_model = image_model
         self.image_size = image_size
-        w, h = image_size.split("x")
+        w, h = (image_size or "1024x1024").split("x")
         self.size = (int(w), int(h))
         self.rendered: dict[str, str] = {}
         self.trace: list[dict] = []
+        self.art_style: str = ""
+        self.style_asset_id: str | None = None
+        self.backend = get_image_backend(backend_name=image_backend_name, model=image_model)
 
-        original_backend = settings.IMAGE_BACKEND
-        original_model = settings.IMAGE_MODEL
-        if image_backend_name:
-            settings.IMAGE_BACKEND = image_backend_name
-        if image_model:
-            settings.IMAGE_MODEL = image_model
-        self._restore = (original_backend, original_model)
-        self.backend = get_image_backend()
+    async def _load_style_context(self) -> None:
+        project = (
+            await self.db.execute(select(Project).where(Project.id == self.episode.project_id).limit(1))
+        ).scalar_one_or_none()
+        if project and project.canon_rules:
+            self.art_style = ((project.canon_rules or {}).get("story_bible") or {}).get("art_style", "")
+        style_asset = (
+            await self.db.execute(
+                select(Asset).where(Asset.project_id == self.episode.project_id, Asset.type == "style").limit(1)
+            )
+        ).scalar_one_or_none()
+        if style_asset:
+            self.style_asset_id = style_asset.id
+            if not self.art_style and style_asset.description:
+                self.art_style = style_asset.description
 
     async def run(self, storyboard: dict) -> dict:
         panels = [p for page in storyboard.get("pages", []) for p in page.get("panels", [])]
         if not panels:
             raise ValueError("Storyboard has no panels")
 
+        await self._load_style_context()
         brief = self._build_brief(storyboard, panels)
         client = get_raw_openai_client()
         messages: list[dict] = [
@@ -177,70 +203,62 @@ class RenderAgent:
 
         fallback: list[str] = []
         try:
-            try:
-                for step in range(MAX_AGENT_STEPS):
-                    response = await client.chat.completions.create(
-                        model=settings.OPENAI_MODEL,
-                        messages=messages,
-                        tools=TOOL_DEFINITIONS,
-                    )
-                    message = response.choices[0].message
-                    tool_calls = getattr(message, "tool_calls", None) or []
+            for step in range(MAX_AGENT_STEPS):
+                response = await client.chat.completions.create(
+                    model=settings.OPENAI_MODEL,
+                    messages=messages,
+                    tools=TOOL_DEFINITIONS,
+                )
+                message = response.choices[0].message
+                tool_calls = getattr(message, "tool_calls", None) or []
 
-                    if not tool_calls:
-                        break  # agent is done
+                if not tool_calls:
+                    break
 
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": message.content or "",
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments,
+                                },
+                            }
+                            for tc in tool_calls
+                        ],
+                    }
+                )
+                for tc in tool_calls:
+                    result = await self._execute(tc.function.name, tc.function.arguments)
+                    self.trace.append({"tool": tc.function.name, "args": tc.function.arguments[:200]})
                     messages.append(
                         {
-                            "role": "assistant",
-                            "content": message.content or "",
-                            "tool_calls": [
-                                {
-                                    "id": tc.id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": tc.function.name,
-                                        "arguments": tc.function.arguments,
-                                    },
-                                }
-                                for tc in tool_calls
-                            ],
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": json.dumps(result, ensure_ascii=False, default=str)[:4000],
                         }
                     )
-                    for tc in tool_calls:
-                        result = await self._execute(tc.function.name, tc.function.arguments)
-                        self.trace.append({"tool": tc.function.name, "args": tc.function.arguments[:200]})
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tc.id,
-                                "content": json.dumps(result, ensure_ascii=False, default=str)[:4000],
-                            }
-                        )
 
-                    if len(self.rendered) >= len(panels) and step >= 2:
-                        # everything generated; one more round lets the agent wrap up
-                        response = await client.chat.completions.create(
-                            model=settings.OPENAI_MODEL, messages=messages
-                        )
-                        break
-            except Exception:
-                # Agent LLM failure must not fail the render: fall back to
-                # mechanical rendering of whatever is missing.
-                logger.warning("Render agent loop failed, using mechanical fallback", exc_info=True)
+                if len(self.rendered) >= len(panels) and step >= 1:
+                    break
+        except Exception:
+            logger.warning("Render agent loop failed, using mechanical fallback", exc_info=True)
 
-            missing = [p for p in panels if p.get("panel_id") not in self.rendered]
-            for panel in missing:
-                ok = await self._generate_panel(
-                    panel_id=panel.get("panel_id", ""),
-                    prompt=self._mechanical_prompt(panel),
-                    reference_asset_ids=await self._auto_assets(panel),
-                    mechanical=True,
-                )
-                if ok:
-                    fallback.append(panel.get("panel_id"))
-        finally:
-            settings.IMAGE_BACKEND, settings.IMAGE_MODEL = self._restore
+        missing = [p for p in panels if p.get("panel_id") not in self.rendered]
+        for panel in missing:
+            ok = await self._generate_panel(
+                panel_id=panel.get("panel_id", ""),
+                prompt=self._mechanical_prompt(panel),
+                negative_prompt=panel.get("negative_prompt"),
+                reference_asset_ids=await self._auto_assets(panel),
+                mechanical=True,
+            )
+            if ok:
+                fallback.append(panel.get("panel_id"))
 
         return {
             "rendered": self.rendered,
@@ -250,29 +268,33 @@ class RenderAgent:
             "trace": self.trace,
         }
 
-    # ---- brief ----
-
     def _build_brief(self, storyboard: dict, panels: list[dict]) -> str:
         lines = [
-            "Generate all panel images for this episode.",
+            "Generate all panel images for this manga episode.",
             f"Title: {storyboard.get('title', '')}",
             f"Synopsis: {storyboard.get('synopsis', '')}",
+            f"Series Art Style: {self.art_style or 'Manga style, consistent character designs and ink linework'}",
             "",
-            "Panels:",
+            "Panels to render (in order):",
         ]
         for p in panels:
             chars = ", ".join(
-                c.get("name", "") + (f" ({c.get('outfit', '')})" if c.get("outfit") else "")
+                c.get("name", "")
+                + (f" [outfit: {c.get('outfit')}]" if c.get("outfit") else "")
+                + (f" [emotion: {c.get('emotion')}]" if c.get("emotion") else "")
+                + (f" [pose: {c.get('posture')}]" if c.get("posture") else "")
                 for c in p.get("characters", [])
             )
+            items = ", ".join(str(it) for it in (p.get("items") or []))
+            loc = p.get("location") or ""
             dialogue = " / ".join(d.get("text", "") for d in p.get("dialogue", [])[:3])
+            base_prompt = p.get("prompt", "")
             lines.append(
-                f"- {p.get('panel_id')}: scene={p.get('scene', '')}; characters=[{chars}]; "
-                f"camera={p.get('camera', '')}; mood={p.get('mood', '')}; dialogue: {dialogue}"
+                f"- {p.get('panel_id')}: base_prompt={base_prompt!r}; scene={p.get('scene', '')}; "
+                f"location={loc}; items=[{items}]; characters=[{chars}]; "
+                f"camera={p.get('camera', '')}; mood={p.get('mood', '')}; dialogue_context: {dialogue}"
             )
         return "\n".join(lines)
-
-    # ---- tool execution ----
 
     async def _execute(self, name: str, arguments: str) -> Any:
         try:
@@ -297,39 +319,42 @@ class RenderAgent:
             return {"error": str(exc)[:300]}
 
     async def _tool_search_assets(self, query: str, asset_type: str | None) -> list[dict]:
-        q = f"%{query.strip()}%"
         stmt = select(Asset).where(Asset.project_id == self.episode.project_id)
-        conds = (Asset.name.like(q) | Asset.description.like(q))
+        if query.strip():
+            q = f"%{query.strip()}%"
+            stmt = stmt.where(Asset.name.like(q) | Asset.description.like(q))
         if asset_type:
-            stmt = stmt.where(conds, Asset.type == asset_type)
-        else:
-            stmt = stmt.where(conds)
-        rows = (await self.db.execute(stmt.limit(20))).scalars().all()
+            stmt = stmt.where(Asset.type == asset_type)
+        rows = (await self.db.execute(stmt.limit(25))).scalars().all()
         return [
             {
                 "asset_id": a.id,
                 "name": a.name,
                 "type": a.type,
-                "description": (a.description or "")[:300],
+                "aliases": (a.tags or {}).get("aliases", []),
+                "description": (a.description or "")[:320],
                 "visual_tags": (a.tags or {}).get("visual_tags", []),
             }
             for a in rows
         ]
+
     async def _tool_asset_references(self, asset_id: str) -> dict:
         rows = (
-            await self.db.execute(
-                select(AssetImage).where(AssetImage.asset_id == asset_id).limit(20)
-            )
-        ).scalars().all()
+            (await self.db.execute(select(AssetImage).where(AssetImage.asset_id == asset_id).limit(20))).scalars().all()
+        )
         return {
             "asset_id": asset_id,
-            "references": [
-                {"image_id": r.id, "kind": r.kind, "object_key": r.image_path} for r in rows
-            ],
+            "references": [{"image_id": r.id, "kind": r.kind, "object_key": r.image_path} for r in rows],
         }
 
     async def _tool_search_memories(self, query: str) -> list[dict]:
-        results = await memory_service.search_rag(self.db, self.episode.project_id, query, top_k=5)
+        results = await memory_service.search_rag(
+            self.db,
+            self.episode.project_id,
+            query,
+            top_k=5,
+            max_episode_number=self.episode.number,
+        )
         return [
             {
                 "episode_number": r["payload"].get("episode_number"),
@@ -341,10 +366,14 @@ class RenderAgent:
 
     async def _tool_open_pits(self) -> list[dict]:
         rows = (
-            await self.db.execute(
-                select(Pit).where(Pit.project_id == self.episode.project_id, Pit.status == "open").limit(30)
+            (
+                await self.db.execute(
+                    select(Pit).where(Pit.project_id == self.episode.project_id, Pit.status == "open").limit(30)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [{"description": p.description or p.title, "trigger_hint": p.trigger_hint} for p in rows]
 
     async def _tool_generate_panel(self, args: dict) -> dict:
@@ -359,8 +388,6 @@ class RenderAgent:
         )
         return {"status": "ok", "image_path": self.rendered.get(panel_id)} if ok else {"status": "failed"}
 
-    # ---- generation ----
-
     async def _generate_panel(
         self,
         panel_id: str,
@@ -372,51 +399,77 @@ class RenderAgent:
         if not prompt.strip() or not panel_id:
             return False
 
+        effective_ids = list(dict.fromkeys(reference_asset_ids or []))
+        if self.style_asset_id and self.style_asset_id not in effective_ids:
+            effective_ids.append(self.style_asset_id)
+
         reference_images: list[tuple[bytes, str]] = []
         context: dict = {
             "episode_number": self.episode.number,
             "panel_id": panel_id,
             "characters": [],
+            "locations": [],
+            "items": [],
+            "art_style": self.art_style,
             "style_tags": [],
         }
-        ref_names = []
+        ref_names: list[str] = []
 
-        if reference_asset_ids:
-            assets = (
-                await self.db.execute(
-                    select(Asset).where(
-                        Asset.project_id == self.episode.project_id,
-                        Asset.id.in_(reference_asset_ids),
+        if effective_ids:
+            assets_rows = (
+                (
+                    await self.db.execute(
+                        select(Asset).where(
+                            Asset.project_id == self.episode.project_id,
+                            Asset.id.in_(effective_ids),
+                        )
                     )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
+            by_id = {a.id: a for a in assets_rows}
+            assets = [by_id[aid] for aid in effective_ids if aid in by_id]
         else:
             assets = []
+
         for asset in assets:
-            ref_names.append(asset.name)
+            if asset.type != "style":
+                ref_names.append(asset.name)
             if asset.type == "character":
-                context["characters"].append(
-                    {"name": asset.name, "appearance": (asset.description or "")[:200]}
-                )
+                context["characters"].append({"name": asset.name, "appearance": (asset.description or "")[:240]})
+            elif asset.type == "location":
+                context["locations"].append({"name": asset.name, "description": (asset.description or "")[:200]})
+            elif asset.type in ("item", "outfit"):
+                context["items"].append({"name": asset.name, "description": (asset.description or "")[:200]})
             elif asset.type == "style":
                 context["style_tags"].extend((asset.tags or {}).get("visual_tags", []))
 
-            images = (
-                await self.db.execute(
-                    select(AssetImage).where(AssetImage.asset_id == asset.id).limit(3)
-                )
-            ).scalars().all()
-            for img in images:
-                data = storage_service.get_object_bytes(settings.MINIO_BUCKET, img.image_path)
-                if data:
-                    mime = "image/png" if img.image_path.lower().endswith(".png") else "image/jpeg"
-                    reference_images.append((data, mime))
+            images = list(
+                (await self.db.execute(select(AssetImage).where(AssetImage.asset_id == asset.id).limit(6)))
+                .scalars()
+                .all()
+            )
+            images.sort(key=lambda img: _REF_KIND_PRIORITY.index(img.kind) if img.kind in _REF_KIND_PRIORITY else 99)
+            max_per_asset = 1 if asset.type == "style" else 2
+            for img in images[:max_per_asset]:
                 if len(reference_images) >= MAX_REFERENCES_PER_PANEL:
                     break
+                data = storage_service.get_object_bytes(settings.MINIO_BUCKET, img.image_path)
+                if data:
+                    lower_p = img.image_path.lower()
+                    mime = (
+                        "image/png"
+                        if lower_p.endswith(".png")
+                        else ("image/webp" if lower_p.endswith(".webp") else "image/jpeg")
+                    )
+                    reference_images.append((data, mime))
+
+        neg = negative_prompt or "speech bubble, text, dialogue balloon, watermark, signature, blurry"
 
         result = await self.backend.generate(
             prompt=prompt,
-            negative_prompt=negative_prompt,
+            negative_prompt=neg,
             size=self.size,
             reference_images=reference_images or None,
             context=context,
@@ -426,6 +479,12 @@ class RenderAgent:
         object_key = storage_service.generate_object_key(f"generated/{self.episode.id}", f"{panel_id}.png")
         storage_service.upload_file(settings.MINIO_BUCKET, object_key, result.image_data, content_type="image/png")
 
+        await self.db.execute(
+            delete(GeneratedImage).where(
+                GeneratedImage.episode_id == self.episode.id,
+                GeneratedImage.panel_id == panel_id,
+            )
+        )
         gen_image = GeneratedImage(
             id=str(uuid.uuid4()),
             generation_run_id=self.run_id,
@@ -445,27 +504,34 @@ class RenderAgent:
         self.rendered[panel_id] = object_key
         return True
 
-    # ---- mechanical fallback helpers ----
-
     def _mechanical_prompt(self, panel: dict) -> str:
         parts = [panel.get("prompt", "") or panel.get("scene", "")]
+        if panel.get("camera"):
+            parts.append(f"{panel['camera']} shot")
+        if panel.get("location"):
+            parts.append(f"setting: {panel['location']}")
         for c in panel.get("characters", []):
-            desc = c.get("outfit") or c.get("appearance") or ""
-            parts.append(f"{c.get('name', '')}: {desc}" if desc else c.get("name", ""))
+            desc = ", ".join(x for x in (c.get("outfit"), c.get("emotion"), c.get("posture")) if x)
+            parts.append(f"{c.get('name', '')} ({desc})" if desc else c.get("name", ""))
+        for it in panel.get("items", []) or []:
+            parts.append(f"key prop: {it}")
+        if self.art_style:
+            parts.append(self.art_style)
         return ", ".join(p for p in parts if p)
 
     async def _auto_assets(self, panel: dict) -> list[str]:
-        names = [c.get("name", "") for c in panel.get("characters", []) if c.get("name")]
-        if not names:
-            return []
-        assets = (
-            await self.db.execute(
-                select(Asset).where(Asset.project_id == self.episode.project_id, Asset.type == "character")
-            )
-        ).scalars().all()
-        from app.services.generation_service import _names_match
+        probe_names: list[str] = [c.get("name", "") for c in panel.get("characters", []) if c.get("name")]
+        if panel.get("location"):
+            probe_names.append(str(panel["location"]))
+        probe_names.extend(str(it) for it in (panel.get("items") or []) if it)
 
-        return [a.id for a in assets if any(_names_match(a.name, n) for n in names)]
+        assets = (
+            (await self.db.execute(select(Asset).where(Asset.project_id == self.episode.project_id))).scalars().all()
+        )
+        from app.services.generation_service import _asset_matches_name
+
+        matched = [a.id for a in assets if a.type == "style" or any(_asset_matches_name(a, n) for n in probe_names)]
+        return matched
 
 
 async def run_render_agent(

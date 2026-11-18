@@ -1,12 +1,17 @@
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_db
 from app.services import memory_service
 
 router = APIRouter()
+
+
+class SummaryUpdatePayload(BaseModel):
+    long_summary: str
 
 
 @router.get("/{project_id}/memory/canon")
@@ -18,7 +23,11 @@ async def get_canon_rules(project_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/{project_id}/memory/canon")
-async def update_canon_rules(project_id: str, canon_rules: dict, db: AsyncSession = Depends(get_db)):
+async def update_canon_rules(
+    project_id: str,
+    canon_rules: dict = Body(...),
+    db: AsyncSession = Depends(get_db),
+):
     result = await memory_service.update_canon_rules(db, project_id, canon_rules)
     if result is None:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -28,6 +37,18 @@ async def update_canon_rules(project_id: str, canon_rules: dict, db: AsyncSessio
 @router.get("/{project_id}/memory/summary")
 async def get_long_summary(project_id: str, db: AsyncSession = Depends(get_db)):
     summary = await memory_service.get_long_summary(db, project_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return {"long_summary": summary}
+
+
+@router.put("/{project_id}/memory/summary")
+async def update_long_summary(
+    project_id: str,
+    payload: SummaryUpdatePayload,
+    db: AsyncSession = Depends(get_db),
+):
+    summary = await memory_service.update_long_summary(db, project_id, payload.long_summary)
     if summary is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return {"long_summary": summary}
@@ -47,7 +68,7 @@ async def get_recent_window(
 @router.post("/{project_id}/memory/search")
 async def search_rag(
     project_id: str,
-    query: str,
+    query: str = Query(...),
     top_k: int = Query(5, ge=1, le=20),
     db: AsyncSession = Depends(get_db),
 ):
@@ -62,7 +83,5 @@ async def get_generation_context(
     base_episode_number: Decimal = Query(...),
     db: AsyncSession = Depends(get_db),
 ):
-    context = await memory_service.build_context_for_generation(
-        db, project_id, branch_id, base_episode_number
-    )
+    context = await memory_service.build_context_for_generation(db, project_id, branch_id, base_episode_number)
     return context

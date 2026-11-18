@@ -10,6 +10,9 @@ from app.models.asset import Asset
 from app.models.branch import Branch
 from app.models.episode import Episode
 from app.models.episode_memory import EpisodeMemory
+from app.models.episode_page import EpisodePage
+from app.models.generated_image import GeneratedImage
+from app.models.generation_run import GenerationRun
 from app.models.pit import Pit
 from app.models.project import Project
 from app.schemas.branch import (
@@ -26,8 +29,12 @@ from app.schemas.branch import (
 
 
 async def list_branches(db: AsyncSession, project_id: str) -> list[Branch]:
-    result = await db.execute(select(Branch).where(Branch.project_id == project_id))
-    return result.scalars().all()
+    result = await db.execute(
+        select(Branch)
+        .where(Branch.project_id == project_id)
+        .order_by(Branch.is_default.desc(), Branch.created_at.asc())
+    )
+    return list(result.scalars().all())
 
 
 async def create_branch(db: AsyncSession, project_id: str, data: BranchCreate) -> Branch:
@@ -39,32 +46,33 @@ async def create_branch(db: AsyncSession, project_id: str, data: BranchCreate) -
 
 
 async def get_branch(db: AsyncSession, branch_id: str) -> Branch | None:
-    result = await db.execute(select(Branch).where(Branch.id == branch_id))
+    result = await db.execute(select(Branch).where(Branch.id == branch_id).limit(1))
     return result.scalar_one_or_none()
 
 
 async def delete_branch(db: AsyncSession, branch: Branch) -> None:
+    from app.services import episode_service
+
+    eps = (await db.execute(select(Episode).where(Episode.branch_id == branch.id))).scalars().all()
+    for ep in eps:
+        await episode_service.delete_episode(db, ep)
     await db.delete(branch)
     await db.commit()
 
 
 async def get_branch_episode_count(db: AsyncSession, branch_id: str) -> int:
-    result = await db.execute(
-        select(func.count()).select_from(Episode).where(Episode.branch_id == branch_id)
-    )
+    result = await db.execute(select(func.count()).select_from(Episode).where(Episode.branch_id == branch_id))
     return result.scalar() or 0
 
 
 async def get_branch_latest_episode_number(db: AsyncSession, branch_id: str) -> Decimal | None:
-    result = await db.execute(
-        select(func.max(Episode.number)).where(Episode.branch_id == branch_id)
-    )
+    result = await db.execute(select(func.max(Episode.number)).where(Episode.branch_id == branch_id))
     return result.scalar()
 
 
 async def fork_from_episode(db: AsyncSession, project_id: str, data: ForkRequest) -> Branch:
     episode_result = await db.execute(
-        select(Episode).where(Episode.id == data.episode_id, Episode.project_id == project_id)
+        select(Episode).where(Episode.id == data.episode_id, Episode.project_id == project_id).limit(1)
     )
     episode = episode_result.scalar_one_or_none()
     if not episode:
@@ -81,13 +89,22 @@ async def fork_from_episode(db: AsyncSession, project_id: str, data: ForkRequest
     db.add(branch)
     await db.flush()
 
-    source_episodes_result = await db.execute(
-        select(Episode).where(
-            Episode.branch_id == episode.branch_id,
-            Episode.number <= episode.number,
-        ).order_by(Episode.number.asc())
+    source_episodes = list(
+        (
+            await db.execute(
+                select(Episode)
+                .where(
+                    Episode.branch_id == episode.branch_id,
+                    Episode.number <= episode.number,
+                )
+                .order_by(Episode.number.asc())
+            )
+        )
+        .scalars()
+        .all()
     )
-    source_episodes = source_episodes_result.scalars().all()
+
+    ep_id_map: dict[str, str] = {}
 
     for src_ep in source_episodes:
         new_ep = Episode(
@@ -99,22 +116,91 @@ async def fork_from_episode(db: AsyncSession, project_id: str, data: ForkRequest
             source=src_ep.source,
             status=src_ep.status,
             category=src_ep.category,
-            parent_episode_id=src_ep.parent_episode_id,
+            parent_episode_id=src_ep.id,
         )
         db.add(new_ep)
         await db.flush()
+        ep_id_map[src_ep.id] = new_ep.id
 
-        mem_result = await db.execute(
-            select(EpisodeMemory).where(EpisodeMemory.episode_id == src_ep.id)
-        )
-        memories = mem_result.scalars().all()
-        for mem in memories:
-            new_mem = EpisodeMemory(
-                episode_id=new_ep.id,
-                type=mem.type,
-                content=mem.content,
+        # Copy pages
+        pages = (
+            (
+                await db.execute(
+                    select(EpisodePage).where(EpisodePage.episode_id == src_ep.id).order_by(EpisodePage.page_index)
+                )
             )
-            db.add(new_mem)
+            .scalars()
+            .all()
+        )
+        for pg in pages:
+            db.add(
+                EpisodePage(
+                    episode_id=new_ep.id,
+                    page_index=pg.page_index,
+                    image_path=pg.image_path,
+                    width=pg.width,
+                    height=pg.height,
+                )
+            )
+
+        # Copy memories
+        memories = (
+            (
+                await db.execute(
+                    select(EpisodeMemory)
+                    .where(EpisodeMemory.episode_id == src_ep.id)
+                    .order_by(EpisodeMemory.created_at.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for mem in memories:
+            db.add(
+                EpisodeMemory(
+                    episode_id=new_ep.id,
+                    type=mem.type,
+                    content=mem.content,
+                )
+            )
+
+        # Copy generated images under a synthetic fork snapshot run if any exist
+        gen_imgs = (
+            (await db.execute(select(GeneratedImage).where(GeneratedImage.episode_id == src_ep.id))).scalars().all()
+        )
+        if gen_imgs:
+            fork_run = GenerationRun(
+                id=str(uuid.uuid4()),
+                episode_id=new_ep.id,
+                stage="render",
+                status="succeeded",
+                commit_message=f"Forked from episode {src_ep.id}",
+            )
+            db.add(fork_run)
+            await db.flush()
+            for gi in gen_imgs:
+                db.add(
+                    GeneratedImage(
+                        id=str(uuid.uuid4()),
+                        generation_run_id=fork_run.id,
+                        episode_id=new_ep.id,
+                        panel_id=gi.panel_id,
+                        image_path=gi.image_path,
+                        meta=gi.meta,
+                    )
+                )
+
+    # Update Asset.episode_ids so branch-level asset tracking reflects forked episodes
+    assets = (await db.execute(select(Asset).where(Asset.project_id == project_id))).scalars().all()
+    for asset in assets:
+        ep_ids = dict(asset.episode_ids or {})
+        changed = False
+        for old_id, new_id in ep_id_map.items():
+            if old_id in ep_ids and new_id not in ep_ids:
+                ep_ids[new_id] = True
+                changed = True
+        if changed:
+            asset.episode_ids = ep_ids
 
     await db.commit()
     await db.refresh(branch)
@@ -162,14 +248,11 @@ async def _diff_episodes(
         source_query = source_query.where(Episode.number == episode_number)
         target_query = target_query.where(Episode.number == episode_number)
 
-    source_result = await db.execute(source_query.order_by(Episode.number.asc()))
-    target_result = await db.execute(target_query.order_by(Episode.number.asc()))
-    source_episodes = source_result.scalars().all()
-    target_episodes = target_result.scalars().all()
+    source_episodes = (await db.execute(source_query.order_by(Episode.number.asc()))).scalars().all()
+    target_episodes = (await db.execute(target_query.order_by(Episode.number.asc()))).scalars().all()
 
     target_map: dict[Decimal, Episode] = {ep.number: ep for ep in target_episodes}
     source_map: dict[Decimal, Episode] = {ep.number: ep for ep in source_episodes}
-
     all_numbers = sorted(set(list(source_map.keys()) + list(target_map.keys())))
 
     diffs: list[EpisodeDiffItem] = []
@@ -180,35 +263,41 @@ async def _diff_episodes(
         src_summary = None
         tgt_summary = None
         if src_ep:
-            mem_result = await db.execute(
-                select(EpisodeMemory).where(
-                    EpisodeMemory.episode_id == src_ep.id,
-                    EpisodeMemory.type == "summary",
+            mem = (
+                await db.execute(
+                    select(EpisodeMemory)
+                    .where(EpisodeMemory.episode_id == src_ep.id, EpisodeMemory.type == "summary")
+                    .order_by(EpisodeMemory.created_at.desc())
+                    .limit(1)
                 )
-            )
-            mem = mem_result.scalar_one_or_none()
+            ).scalar_one_or_none()
             src_summary = mem.content.get("summary") if mem and isinstance(mem.content, dict) else None
 
         if tgt_ep:
-            mem_result = await db.execute(
-                select(EpisodeMemory).where(
-                    EpisodeMemory.episode_id == tgt_ep.id,
-                    EpisodeMemory.type == "summary",
+            mem = (
+                await db.execute(
+                    select(EpisodeMemory)
+                    .where(EpisodeMemory.episode_id == tgt_ep.id, EpisodeMemory.type == "summary")
+                    .order_by(EpisodeMemory.created_at.desc())
+                    .limit(1)
                 )
-            )
-            mem = mem_result.scalar_one_or_none()
+            ).scalar_one_or_none()
             tgt_summary = mem.content.get("summary") if mem and isinstance(mem.content, dict) else None
 
-        diffs.append(EpisodeDiffItem(
-            number=num,
-            label=src_ep.label if src_ep else (tgt_ep.label if tgt_ep else ""),
-            source_status=src_ep.status if src_ep else None,
-            target_status=tgt_ep.status if tgt_ep else None,
-            title_source=src_ep.title if src_ep else None,
-            title_target=tgt_ep.title if tgt_ep else None,
-            summary_source=src_summary,
-            summary_target=tgt_summary,
-        ))
+        diffs.append(
+            EpisodeDiffItem(
+                number=num,
+                label=src_ep.label if src_ep else (tgt_ep.label if tgt_ep else ""),
+                source_episode_id=src_ep.id if src_ep else None,
+                target_episode_id=tgt_ep.id if tgt_ep else None,
+                source_status=src_ep.status if src_ep else None,
+                target_status=tgt_ep.status if tgt_ep else None,
+                title_source=src_ep.title if src_ep else None,
+                title_target=tgt_ep.title if tgt_ep else None,
+                summary_source=src_summary,
+                summary_target=tgt_summary,
+            )
+        )
 
     return diffs
 
@@ -219,46 +308,31 @@ async def _diff_assets(
     source_branch_id: str,
     target_branch_id: str,
 ) -> list[AssetDiffItem]:
-    source_ep_result = await db.execute(
-        select(Episode.id).where(Episode.branch_id == source_branch_id)
-    )
-    target_ep_result = await db.execute(
-        select(Episode.id).where(Episode.branch_id == target_branch_id)
-    )
-    source_ep_ids = [row[0] for row in source_ep_result.all()]
-    target_ep_ids = [row[0] for row in target_ep_result.all()]
+    source_ep_ids = {
+        row[0] for row in (await db.execute(select(Episode.id).where(Episode.branch_id == source_branch_id))).all()
+    }
+    target_ep_ids = {
+        row[0] for row in (await db.execute(select(Episode.id).where(Episode.branch_id == target_branch_id))).all()
+    }
 
-    source_pit_ids: set[str] = set()
-    if source_ep_ids:
-        source_pit_result = await db.execute(
-            select(Pit.id).where(Pit.introduced_episode_id.in_(source_ep_ids))
-        )
-        source_pit_ids = {row[0] for row in source_pit_result.all()}
-
-    target_pit_ids: set[str] = set()
-    if target_ep_ids:
-        target_pit_result = await db.execute(
-            select(Pit.id).where(Pit.introduced_episode_id.in_(target_ep_ids))
-        )
-        target_pit_ids = {row[0] for row in target_pit_result.all()}
-
-    all_assets_result = await db.execute(
-        select(Asset).where(Asset.project_id == project_id)
-    )
-    all_assets = all_assets_result.scalars().all()
+    all_assets = (await db.execute(select(Asset).where(Asset.project_id == project_id))).scalars().all()
 
     diffs: list[AssetDiffItem] = []
     for asset in all_assets:
-        in_source = asset.id in source_pit_ids
-        in_target = asset.id in target_pit_ids
-        diffs.append(AssetDiffItem(
-            name=asset.name,
-            asset_type=asset.type,
-            in_source=in_source,
-            in_target=in_target,
-            description_source=asset.description if in_source else None,
-            description_target=asset.description if in_target else None,
-        ))
+        ep_keys = set((asset.episode_ids or {}).keys())
+        in_source = bool(ep_keys & source_ep_ids)
+        in_target = bool(ep_keys & target_ep_ids)
+        diffs.append(
+            AssetDiffItem(
+                asset_id=asset.id,
+                name=asset.name,
+                asset_type=asset.type,
+                in_source=in_source,
+                in_target=in_target,
+                description_source=asset.description if in_source else None,
+                description_target=asset.description if in_target else None,
+            )
+        )
 
     return diffs
 
@@ -269,57 +343,77 @@ async def _diff_pits(
     source_branch_id: str,
     target_branch_id: str,
 ) -> list[PitDiffItem]:
-    source_ep_result = await db.execute(
-        select(Episode.id).where(Episode.branch_id == source_branch_id)
-    )
-    target_ep_result = await db.execute(
-        select(Episode.id).where(Episode.branch_id == target_branch_id)
-    )
-    source_ep_ids = [row[0] for row in source_ep_result.all()]
-    target_ep_ids = [row[0] for row in target_ep_result.all()]
+    source_ep_ids = [
+        row[0] for row in (await db.execute(select(Episode.id).where(Episode.branch_id == source_branch_id))).all()
+    ]
+    target_ep_ids = [
+        row[0] for row in (await db.execute(select(Episode.id).where(Episode.branch_id == target_branch_id))).all()
+    ]
 
     source_pits: list[Pit] = []
     if source_ep_ids:
-        source_pits_result = await db.execute(
-            select(Pit).where(
-                Pit.project_id == project_id,
-                Pit.introduced_episode_id.in_(source_ep_ids),
+        source_pits = list(
+            (
+                await db.execute(
+                    select(Pit).where(
+                        Pit.project_id == project_id,
+                        Pit.introduced_episode_id.in_(source_ep_ids),
+                    )
+                )
             )
+            .scalars()
+            .all()
         )
-        source_pits = source_pits_result.scalars().all()
 
     target_pits: list[Pit] = []
     if target_ep_ids:
-        target_pits_result = await db.execute(
-            select(Pit).where(
-                Pit.project_id == project_id,
-                Pit.introduced_episode_id.in_(target_ep_ids),
+        target_pits = list(
+            (
+                await db.execute(
+                    select(Pit).where(
+                        Pit.project_id == project_id,
+                        Pit.introduced_episode_id.in_(target_ep_ids),
+                    )
+                )
             )
+            .scalars()
+            .all()
         )
-        target_pits = target_pits_result.scalars().all()
 
     pit_map: dict[str, dict] = {}
     for pit in source_pits:
-        pit_map[pit.title] = {"status_source": pit.status, "status_target": None}
+        pit_map[pit.title] = {
+            "source_pit_id": pit.id,
+            "target_pit_id": None,
+            "status_source": pit.status,
+            "status_target": None,
+        }
     for pit in target_pits:
         if pit.title in pit_map:
+            pit_map[pit.title]["target_pit_id"] = pit.id
             pit_map[pit.title]["status_target"] = pit.status
         else:
-            pit_map[pit.title] = {"status_source": None, "status_target": pit.status}
+            pit_map[pit.title] = {
+                "source_pit_id": None,
+                "target_pit_id": pit.id,
+                "status_source": None,
+                "status_target": pit.status,
+            }
 
-    diffs: list[PitDiffItem] = []
-    for title, statuses in pit_map.items():
-        diffs.append(PitDiffItem(
+    return [
+        PitDiffItem(
+            source_pit_id=info["source_pit_id"],
+            target_pit_id=info["target_pit_id"],
             title=title,
-            status_source=statuses["status_source"],
-            status_target=statuses["status_target"],
-        ))
-
-    return diffs
+            status_source=info["status_source"],
+            status_target=info["status_target"],
+        )
+        for title, info in pit_map.items()
+    ]
 
 
 async def _diff_canon(db: AsyncSession, project_id: str) -> dict | None:
-    result = await db.execute(select(Project).where(Project.id == project_id))
+    result = await db.execute(select(Project).where(Project.id == project_id).limit(1))
     project = result.scalar_one_or_none()
     if not project or not project.canon_rules:
         return None
@@ -345,7 +439,7 @@ async def merge_branches(db: AsyncSession, project_id: str, data: MergeRequest) 
             if item.item_type == "episode":
                 await _merge_episode(db, project_id, data.target_branch_id, item.source_id, merged_items, errors)
             elif item.item_type == "asset":
-                await _merge_asset(db, project_id, item.source_id, merged_items, errors)
+                await _merge_asset(db, project_id, data.target_branch_id, item.source_id, merged_items, errors)
             elif item.item_type == "pit":
                 await _merge_pit(db, project_id, data.target_branch_id, item.source_id, merged_items, errors)
             elif item.item_type == "canon_rule":
@@ -366,40 +460,32 @@ async def _merge_episode(
     errors: list[str],
 ) -> None:
     result = await db.execute(
-        select(Episode).where(Episode.id == source_episode_id, Episode.project_id == project_id)
+        select(Episode).where(Episode.id == source_episode_id, Episode.project_id == project_id).limit(1)
     )
     source_episode = result.scalar_one_or_none()
     if not source_episode:
         errors.append(f"episode:{source_episode_id} - source episode not found")
         return
 
-    existing_result = await db.execute(
-        select(Episode).where(
-            Episode.branch_id == target_branch_id,
-            Episode.number == source_episode.number,
+    existing = (
+        await db.execute(
+            select(Episode)
+            .where(Episode.branch_id == target_branch_id, Episode.number == source_episode.number)
+            .limit(1)
         )
-    )
-    existing = existing_result.scalar_one_or_none()
+    ).scalar_one_or_none()
 
     if existing:
         existing.title = source_episode.title
         existing.status = source_episode.status
         existing.label = source_episode.label
         existing.category = source_episode.category
+        target_ep = existing
     else:
-        next_num_result = await db.execute(
-            select(func.max(Episode.number)).where(
-                Episode.project_id == project_id,
-                Episode.branch_id == target_branch_id,
-            )
-        )
-        max_num = next_num_result.scalar()
-        next_number = Decimal("1") if max_num is None else Decimal(int(max_num) + 1)
-
         new_episode = Episode(
             project_id=project_id,
             branch_id=target_branch_id,
-            number=next_number,
+            number=source_episode.number,
             label=source_episode.label,
             title=source_episode.title,
             source=source_episode.source,
@@ -409,18 +495,13 @@ async def _merge_episode(
         )
         db.add(new_episode)
         await db.flush()
+        target_ep = new_episode
 
-        mem_result = await db.execute(
-            select(EpisodeMemory).where(EpisodeMemory.episode_id == source_episode.id)
-        )
-        memories = mem_result.scalars().all()
-        for mem in memories:
-            new_mem = EpisodeMemory(
-                episode_id=new_episode.id,
-                type=mem.type,
-                content=mem.content,
-            )
-            db.add(new_mem)
+    memories = (
+        (await db.execute(select(EpisodeMemory).where(EpisodeMemory.episode_id == source_episode.id))).scalars().all()
+    )
+    for mem in memories:
+        db.add(EpisodeMemory(episode_id=target_ep.id, type=mem.type, content=mem.content))
 
     merged_items.append(source_episode_id)
 
@@ -428,17 +509,24 @@ async def _merge_episode(
 async def _merge_asset(
     db: AsyncSession,
     project_id: str,
+    target_branch_id: str,
     source_asset_id: str,
     merged_items: list[str],
     errors: list[str],
 ) -> None:
-    result = await db.execute(
-        select(Asset).where(Asset.id == source_asset_id, Asset.project_id == project_id)
-    )
-    asset = result.scalar_one_or_none()
+    asset = (
+        await db.execute(select(Asset).where(Asset.id == source_asset_id, Asset.project_id == project_id).limit(1))
+    ).scalar_one_or_none()
     if not asset:
         errors.append(f"asset:{source_asset_id} - asset not found")
         return
+    latest_target_ep = (
+        await db.execute(
+            select(Episode).where(Episode.branch_id == target_branch_id).order_by(Episode.number.desc()).limit(1)
+        )
+    ).scalar_one_or_none()
+    if latest_target_ep:
+        asset.episode_ids = {**(asset.episode_ids or {}), latest_target_ep.id: True}
     merged_items.append(source_asset_id)
 
 
@@ -450,37 +538,39 @@ async def _merge_pit(
     merged_items: list[str],
     errors: list[str],
 ) -> None:
-    result = await db.execute(
-        select(Pit).where(Pit.id == source_pit_id, Pit.project_id == project_id)
-    )
-    pit = result.scalar_one_or_none()
+    pit = (
+        await db.execute(select(Pit).where(Pit.id == source_pit_id, Pit.project_id == project_id).limit(1))
+    ).scalar_one_or_none()
     if not pit:
         errors.append(f"pit:{source_pit_id} - pit not found")
         return
 
-    source_ep_result = await db.execute(
-        select(Episode).where(Episode.id == pit.introduced_episode_id)
-    )
-    source_ep = source_ep_result.scalar_one_or_none()
+    source_ep = (
+        await db.execute(select(Episode).where(Episode.id == pit.introduced_episode_id).limit(1))
+    ).scalar_one_or_none()
 
     if source_ep:
-        target_ep_result = await db.execute(
-            select(Episode).where(
-                Episode.branch_id == target_branch_id,
-                Episode.project_id == project_id,
-                Episode.number == source_ep.number,
-            )
-        )
-        matching_ep = target_ep_result.scalar_one_or_none()
-
-        if not matching_ep:
-            first_ep_result = await db.execute(
-                select(Episode).where(
+        matching_ep = (
+            await db.execute(
+                select(Episode)
+                .where(
                     Episode.branch_id == target_branch_id,
                     Episode.project_id == project_id,
-                ).order_by(Episode.number.asc()).limit(1)
+                    Episode.number == source_ep.number,
+                )
+                .limit(1)
             )
-            matching_ep = first_ep_result.scalar_one_or_none()
+        ).scalar_one_or_none()
+
+        if not matching_ep:
+            matching_ep = (
+                await db.execute(
+                    select(Episode)
+                    .where(Episode.branch_id == target_branch_id, Episode.project_id == project_id)
+                    .order_by(Episode.number.asc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
 
         if matching_ep:
             pit.introduced_episode_id = matching_ep.id
@@ -495,8 +585,7 @@ async def _merge_canon_rule(
     merged_items: list[str],
     errors: list[str],
 ) -> None:
-    result = await db.execute(select(Project).where(Project.id == project_id))
-    project = result.scalar_one_or_none()
+    project = (await db.execute(select(Project).where(Project.id == project_id).limit(1))).scalar_one_or_none()
     if not project:
         errors.append(f"canon_rule:{source_id} - project not found")
         return

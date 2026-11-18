@@ -4,6 +4,7 @@ import asyncio
 import logging
 
 from app.logging_utils import get_mangadex_logger
+
 from workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -16,16 +17,16 @@ def run_mangadex_import(self, job_id: str, request_headers: dict[str, str] | Non
 
 
 async def _run_mangadex_import(self, job_id: str, request_headers: dict[str, str] | None = None):
-    from sqlalchemy import select
-
+    import httpx
     from app.config import settings
-    from app.database import async_session
+    from app.database import worker_session
     from app.models.import_job import ImportJob
     from app.models.import_job_item import ImportJobItem
     from app.providers.mangadex import build_page_request_headers, fetch_chapter_image_urls, summarize_request_headers
-    from app.services import generation_service, import_service
+    from app.services import import_service
+    from sqlalchemy import select
 
-    async with async_session() as db:
+    async with worker_session() as db:
         result = await db.execute(select(ImportJob).where(ImportJob.id == job_id).limit(1))
         job = result.scalar_one_or_none()
         if job is None:
@@ -57,6 +58,8 @@ async def _run_mangadex_import(self, job_id: str, request_headers: dict[str, str
             items = await import_service.get_job_items_for_execution(db, job_id, only_missing=only_missing)
             imported_count = 0
             failed_count = 0
+            imported_episode_ids: list[str] = []
+
             for item in items:
                 current_job = await import_service.get_import_job(db, job.project_id, job_id)
                 if current_job and current_job.status == "paused":
@@ -86,7 +89,6 @@ async def _run_mangadex_import(self, job_id: str, request_headers: dict[str, str
                         request_headers=request_headers,
                     )
                     page_payloads = []
-                    import httpx
 
                     async with httpx.AsyncClient() as client:
                         for idx, page_url in enumerate(image_urls, start=1):
@@ -115,13 +117,7 @@ async def _run_mangadex_import(self, job_id: str, request_headers: dict[str, str
                         page_payloads=page_payloads,
                     )
                     imported_count += 1
-                    if auto_understand:
-                        run = await generation_service.create_generation_run(
-                            db, episode_id=episode.id, stage="understand", backend="openai"
-                        )
-                        from workers.tasks.understand import summarize_episode
-
-                        summarize_episode.delay(str(run.id), episode.id)
+                    imported_episode_ids.append(episode.id)
                     logger.info(
                         "MangaDex import item done job_id=%s item_id=%s episode_id=%s page_count=%s",
                         job_id,
@@ -142,6 +138,12 @@ async def _run_mangadex_import(self, job_id: str, request_headers: dict[str, str
                     logger.exception("Import chapter failed for item=%s", item.id)
                     trace_logger.exception("import item failed job_id=%s item_id=%s", job_id, item.id)
 
+            # Trigger strictly sequential understanding across imported chapters so continuity carries forward
+            if auto_understand and imported_episode_ids:
+                from workers.tasks.understand import understand_branch_sequential
+
+                understand_branch_sequential.delay(job.project_id, job.branch_id, imported_episode_ids, False)
+
             if failed_count > 0 and imported_count > 0:
                 await import_service.complete_job_run(db, job_id, status="partial_succeeded", error=None)
             elif failed_count > 0:
@@ -150,8 +152,18 @@ async def _run_mangadex_import(self, job_id: str, request_headers: dict[str, str
                 maybe_paused = await import_service.get_import_job(db, job.project_id, job_id)
                 status = "paused" if maybe_paused and maybe_paused.status == "paused" else "succeeded"
                 await import_service.complete_job_run(db, job_id, status=status, error=None)
-            logger.info("MangaDex import worker finished job_id=%s imported=%s failed=%s", job_id, imported_count, failed_count)
-            trace_logger.info("import worker finished job_id=%s imported=%s failed=%s", job_id, imported_count, failed_count)
+            logger.info(
+                "MangaDex import worker finished job_id=%s imported=%s failed=%s",
+                job_id,
+                imported_count,
+                failed_count,
+            )
+            trace_logger.info(
+                "import worker finished job_id=%s imported=%s failed=%s",
+                job_id,
+                imported_count,
+                failed_count,
+            )
         except Exception as exc:  # noqa: BLE001
             await import_service.complete_job_run(db, job_id, status="failed", error=str(exc))
             trace_logger.exception("import worker failed job_id=%s", job_id)

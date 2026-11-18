@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
@@ -33,6 +34,19 @@ def _compose_prompt(prompt: str, negative_prompt: str | None, context: dict | No
             appearance = character.get("appearance") or character.get("outfit") or ""
             if name:
                 notes.append(f"{name}: {appearance}" if appearance else name)
+        for loc in context.get("locations", []) or []:
+            loc_name = loc.get("name", "")
+            loc_desc = loc.get("description", "")
+            if loc_name:
+                notes.append(f"location {loc_name}: {loc_desc}" if loc_desc else f"location {loc_name}")
+        for item in context.get("items", []) or []:
+            item_name = item.get("name", "")
+            item_desc = item.get("description", "")
+            if item_name:
+                notes.append(f"prop {item_name}: {item_desc}" if item_desc else f"prop {item_name}")
+        art_style = context.get("art_style")
+        if art_style:
+            notes.append(f"manga art style: {art_style}")
         style_tags = context.get("style_tags") or []
         if style_tags:
             notes.append("style: " + ", ".join(str(t) for t in style_tags))
@@ -74,13 +88,13 @@ class OpenAIImageBackend(ImageBackend):
     OpenAI Images API: /images/generations for text-to-image, /images/edits when
     reference images (character sheets etc.) are supplied."""
 
-    def __init__(self) -> None:
+    def __init__(self, model: str | None = None) -> None:
         self._client = AsyncOpenAI(
             api_key=settings.IMAGE_API_KEY or settings.OPENAI_API_KEY,
             base_url=settings.IMAGE_API_URL or settings.OPENAI_BASE_URL,
             http_client=httpx.AsyncClient(trust_env=False, timeout=600.0),
         )
-        self._model = settings.IMAGE_MODEL or "gpt-image-2"
+        self._model = model or settings.IMAGE_MODEL or "gpt-image-2"
 
     @staticmethod
     def _size_to_str(size: tuple[int, int]) -> str:
@@ -119,8 +133,16 @@ class OpenAIImageBackend(ImageBackend):
                 size=size_str,
                 n=1,
             )
-        b64 = response.data[0].b64_json
-        result_data = base64.b64decode(b64) if b64 else b""
+        item = response.data[0]
+        if getattr(item, "b64_json", None):
+            result_data = base64.b64decode(item.b64_json)
+        elif getattr(item, "url", None):
+            async with httpx.AsyncClient(trust_env=False, timeout=120.0) as dl:
+                resp = await dl.get(item.url)
+                resp.raise_for_status()
+                result_data = resp.content
+        else:
+            result_data = b""
         return ImageResult(
             image_data=result_data,
             seed=seed,
@@ -162,7 +184,6 @@ class OpenAIImageBackend(ImageBackend):
 
 # Allowed aspect ratios of the Gemini image models (Nano Banana family).
 _GEMINI_RATIOS = [(1, 1), (2, 3), (3, 2), (3, 4), (4, 3), (4, 5), (5, 4), (9, 16), (16, 9), (21, 9)]
-import math  # noqa: E402
 
 
 def _nearest_ratio(size: tuple[int, int]) -> str:
@@ -182,10 +203,10 @@ class GeminiImageBackend(ImageBackend):
 
     DEFAULT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions"
 
-    def __init__(self) -> None:
+    def __init__(self, model: str | None = None) -> None:
         self._endpoint = settings.IMAGE_API_URL or self.DEFAULT_ENDPOINT
         self._api_key = settings.IMAGE_API_KEY or settings.GEMINI_API_KEY
-        self._model = settings.IMAGE_MODEL or "gemini-3.1-flash-image"
+        self._model = model or settings.IMAGE_MODEL or "gemini-3.1-flash-image"
 
     async def generate(
         self,
@@ -246,14 +267,12 @@ class GeminiImageBackend(ImageBackend):
 
     @staticmethod
     def _extract_image(payload: dict) -> bytes:
-        # Interactions shape: steps[type=model_output].content[].{type: image, data}
         for step in payload.get("steps", []) or []:
             if step.get("type") != "model_output":
                 continue
             for part in step.get("content", []) or []:
                 if part.get("type") == "image" and part.get("data"):
                     return base64.b64decode(part["data"])
-        # Legacy generateContent shape: candidates[].content.parts[].inlineData
         for candidate in payload.get("candidates", []) or []:
             for part in (candidate.get("content", {}) or {}).get("parts", []) or []:
                 inline = part.get("inlineData") or part.get("inline_data")
@@ -268,7 +287,6 @@ class GeminiImageBackend(ImageBackend):
         prompt: str,
         **kwargs,
     ) -> ImageResult:
-        # Nano Banana edits are conversational: image + mask described in prompt.
         return await self.generate(
             prompt=f"{prompt}\n(Inpaint only the masked region; keep everything else identical.)",
             reference_images=[(image_data, "image/png"), (mask_data, "image/png")],
@@ -281,9 +299,10 @@ class CustomHttpBackend(ImageBackend):
     """Generic HTTP adapter for aggregators exposing an OpenAI-compatible
     Images API on a custom URL (IMAGE_API_URL is the full endpoint)."""
 
-    def __init__(self) -> None:
+    def __init__(self, model: str | None = None) -> None:
         self._base_url = settings.IMAGE_API_URL
         self._api_key = settings.IMAGE_API_KEY
+        self._model = model or settings.IMAGE_MODEL
 
     @staticmethod
     def _size_to_str(size: tuple[int, int]) -> str:
@@ -302,6 +321,7 @@ class CustomHttpBackend(ImageBackend):
         if not self._base_url:
             raise RuntimeError("Custom image backend requires IMAGE_API_URL")
         size_str = self._size_to_str(size)
+        model = kwargs.pop("model", None) or self._model
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -309,7 +329,7 @@ class CustomHttpBackend(ImageBackend):
         body = {
             "prompt": _compose_prompt(prompt, negative_prompt, context),
             "size": size_str,
-            "model": settings.IMAGE_MODEL,
+            "model": model,
             **kwargs,
         }
         if negative_prompt:
@@ -342,7 +362,7 @@ class CustomHttpBackend(ImageBackend):
             image_data=image_data,
             seed=seed,
             meta={
-                "model": settings.IMAGE_MODEL,
+                "model": model,
                 "size": size_str,
                 "prompt": prompt,
                 "references": len(reference_images or []),
@@ -364,7 +384,7 @@ class CustomHttpBackend(ImageBackend):
             "prompt": prompt,
             "image": base64.b64encode(image_data).decode(),
             "mask": base64.b64encode(mask_data).decode(),
-            "model": settings.IMAGE_MODEL,
+            "model": self._model,
             **kwargs,
         }
         async with httpx.AsyncClient(trust_env=False, timeout=600.0) as client:
@@ -385,7 +405,7 @@ class CustomHttpBackend(ImageBackend):
                 result_data = resp.content
         return ImageResult(
             image_data=result_data,
-            meta={"model": settings.IMAGE_MODEL, "prompt": prompt},
+            meta={"model": self._model, "prompt": prompt},
         )
 
 
@@ -400,14 +420,32 @@ class MockImageBackend(ImageBackend):
         context: dict | None = None,
         **kwargs,
     ) -> ImageResult:
-        img = Image.new("RGB", size, color=(240, 240, 245))
+        # Render a stylized manga screentone mock panel so layout previews look clean
+        img = Image.new("RGB", size, color=(248, 248, 250))
         draw = ImageDraw.Draw(img)
-        draw.rectangle([5, 5, size[0] - 5, size[1] - 5], outline=(60, 60, 70), width=3)
-        draw.text((12, 12), "MOCK PANEL", fill=(40, 40, 50))
-        for i, line in enumerate(prompt.split("\n")[:8]):
-            draw.text((12, 40 + i * 18), line[:90], fill=(80, 80, 100))
+        # Subtle manga screentone speedlines / atmosphere
+        for y in range(0, size[1], 24):
+            tone = 232 + (y % 48) // 4
+            draw.line([(0, y), (size[0], y)], fill=(tone, tone, tone + 4), width=2)
+        # Focal silhouette frame
+        cx, cy = size[0] // 2, int(size[1] * 0.56)
+        r = min(size) // 5
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(220, 224, 232), outline=(45, 50, 60), width=4)
+        draw.rectangle(
+            [cx - int(r * 1.2), cy + r, cx + int(r * 1.2), size[1] - 12],
+            fill=(65, 72, 88),
+            outline=(35, 40, 50),
+            width=4,
+        )
+
+        draw.rectangle([8, 8, size[0] - 8, size[1] - 8], outline=(30, 30, 35), width=4)
+        draw.rectangle([16, 16, min(size[0] - 16, 360), 54], fill=(25, 28, 36))
+        draw.text((26, 26), "MANGA PANEL PREVIEW (MOCK)", fill=(255, 255, 255))
+        for i, line in enumerate(prompt.split("\n")[:6]):
+            draw.text((20, 68 + i * 22), line[:78], fill=(60, 65, 80))
         if reference_images:
-            draw.text((12, size[1] - 60), f"refs attached: {len(reference_images)}", fill=(0, 120, 0))
+            draw.rectangle([16, size[1] - 54, 260, size[1] - 20], fill=(230, 248, 235), outline=(40, 130, 65), width=2)
+            draw.text((26, size[1] - 44), f"Refs attached: {len(reference_images)}", fill=(20, 100, 45))
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         return ImageResult(
@@ -439,13 +477,13 @@ class MockImageBackend(ImageBackend):
         )
 
 
-def get_image_backend() -> ImageBackend:
-    backend = settings.IMAGE_BACKEND
+def get_image_backend(backend_name: str | None = None, model: str | None = None) -> ImageBackend:
+    backend = backend_name or settings.IMAGE_BACKEND
     if backend == "openai":
-        return OpenAIImageBackend()
+        return OpenAIImageBackend(model=model)
     elif backend in ("gemini", "nano-banana"):
-        return GeminiImageBackend()
+        return GeminiImageBackend(model=model)
     elif backend == "custom":
-        return CustomHttpBackend()
+        return CustomHttpBackend(model=model)
     else:
         return MockImageBackend()

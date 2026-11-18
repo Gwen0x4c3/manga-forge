@@ -1,19 +1,24 @@
 from __future__ import annotations
 
+import io
 from decimal import Decimal
 
 from celery import Celery
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.llm import ensure_llm_configured
 from app.dependencies import get_db
+from app.models.branch import Branch
 from app.models.episode import Episode
 from app.models.episode_memory import EpisodeMemory
 from app.models.generation_run import GenerationRun
 from app.schemas.generation import (
+    BatchUnderstandRequest,
+    BatchUnderstandResponse,
     ContinueFromEpisodeRequest,
     ContinueFromEpisodeResponse,
     GeneratedImageResponse,
@@ -24,11 +29,11 @@ from app.schemas.generation import (
     RenderResponse,
     ScriptGenerateRequest,
     ScriptGenerateResponse,
+    StoryboardUpdateRequest,
     UnderstandRequest,
     UnderstandResponse,
 )
-from app.services import generation_service
-from app.services import episode_service
+from app.services import episode_service, generation_service
 
 router = APIRouter()
 celery_client = Celery(
@@ -42,14 +47,41 @@ def _dispatch_task(task_name: str, *args):
     return celery_client.send_task(task_name, args=args)
 
 
+def _serialize_run(r: GenerationRun, include_context: bool = False) -> GenerationRunResponse:
+    return GenerationRunResponse(
+        id=r.id,
+        episode_id=r.episode_id,
+        stage=r.stage,
+        status=r.status,
+        backend=r.backend,
+        model=r.model,
+        params=r.params,
+        retrieved_context=r.retrieved_context if include_context else None,
+        error=r.error,
+        commit_message=r.commit_message,
+        created_at=r.created_at.isoformat() if r.created_at else None,
+        finished_at=r.finished_at.isoformat() if r.finished_at else None,
+    )
+
+
 @router.post("/continue", response_model=ContinueFromEpisodeResponse)
 async def continue_from_episode(request: ContinueFromEpisodeRequest, db: AsyncSession = Depends(get_db)):
     ensure_llm_configured()
-    base_episode = await episode_service.find_episode(db, request.project_id, request.branch_id, request.base_episode_number)
+    base_episode = await episode_service.find_episode(
+        db, request.project_id, request.branch_id, request.base_episode_number
+    )
     if not base_episode:
         raise HTTPException(status_code=404, detail="Base episode not found")
-    new_number = Decimal(int(request.base_episode_number) + 1)
-    new_label = str(int(new_number))
+
+    candidate_number = Decimal(int(request.base_episode_number) + 1)
+    existing = await episode_service.find_episode(db, request.project_id, request.branch_id, candidate_number)
+    new_number = (
+        await episode_service.get_next_episode_number(db, request.project_id, request.branch_id)
+        if existing
+        else candidate_number
+    )
+    new_label = str(int(new_number)) if new_number == int(new_number) else str(new_number)
+
     new_episode = Episode(
         project_id=request.project_id,
         branch_id=request.branch_id,
@@ -64,8 +96,19 @@ async def continue_from_episode(request: ContinueFromEpisodeRequest, db: AsyncSe
     db.add(new_episode)
     await db.commit()
     await db.refresh(new_episode)
+
     run = await generation_service.create_generation_run(
-        db, episode_id=str(new_episode.id), stage="continue", backend="openai",
+        db,
+        episode_id=str(new_episode.id),
+        stage="continue",
+        backend="openai",
+        model=settings.OPENAI_MODEL,
+        params={
+            "tone": request.tone,
+            "base_episode_number": float(request.base_episode_number),
+            "image_backend": request.image_backend or settings.IMAGE_BACKEND,
+            "image_size": request.image_size,
+        },
     )
     try:
         task = _dispatch_task(
@@ -83,6 +126,7 @@ async def continue_from_episode(request: ContinueFromEpisodeRequest, db: AsyncSe
     except Exception as exc:
         await generation_service.update_generation_run(db, str(run.id), "failed", error=str(exc))
         raise HTTPException(status_code=500, detail=f"提交 continue 任务失败: {exc}") from exc
+
     return ContinueFromEpisodeResponse(
         episode_id=str(new_episode.id),
         episode_number=new_number,
@@ -94,14 +138,14 @@ async def continue_from_episode(request: ContinueFromEpisodeRequest, db: AsyncSe
 @router.post("/understand", response_model=UnderstandResponse)
 async def trigger_understand(request: UnderstandRequest, db: AsyncSession = Depends(get_db)):
     ensure_llm_configured()
-    result = await db.execute(select(Episode).where(Episode.id == request.episode_id))
+    result = await db.execute(select(Episode).where(Episode.id == request.episode_id).limit(1))
     episode = result.scalar_one_or_none()
     if not episode:
         raise HTTPException(status_code=404, detail="Episode not found")
     if await generation_service.has_active_run(db, episode.id, "understand"):
-        raise HTTPException(status_code=409, detail="An understand task is already running for this episode")
+        raise HTTPException(status_code=409, detail="该章节已有正在运行的剧情理解任务")
     run = await generation_service.create_generation_run(
-        db, episode_id=episode.id, stage="understand", backend="openai"
+        db, episode_id=episode.id, stage="understand", backend="openai", model=settings.OPENAI_MODEL
     )
     try:
         task = _dispatch_task("workers.tasks.understand.summarize_episode", str(run.id), episode.id)
@@ -115,20 +159,79 @@ async def trigger_understand(request: UnderstandRequest, db: AsyncSession = Depe
     )
 
 
+@router.post("/understand-batch", response_model=BatchUnderstandResponse)
+async def trigger_batch_understand(request: BatchUnderstandRequest, db: AsyncSession = Depends(get_db)):
+    """Understand all episodes in a branch strictly in ascending Episode.number order."""
+    ensure_llm_configured()
+
+    branch_id = request.branch_id
+    if not branch_id:
+        branch = (
+            await db.execute(
+                select(Branch).where(Branch.project_id == request.project_id, Branch.is_default.is_(True)).limit(1)
+            )
+        ).scalar_one_or_none()
+        if not branch:
+            branch = (
+                await db.execute(select(Branch).where(Branch.project_id == request.project_id).limit(1))
+            ).scalar_one_or_none()
+        if not branch:
+            raise HTTPException(status_code=404, detail="Branch not found")
+        branch_id = branch.id
+
+    stmt = select(Episode).where(Episode.project_id == request.project_id, Episode.branch_id == branch_id)
+    if not request.force:
+        stmt = stmt.where(Episode.status == "imported")
+    stmt = stmt.order_by(Episode.number.asc())
+    episodes = list((await db.execute(stmt)).scalars().all())
+    ep_ids = [ep.id for ep in episodes]
+
+    if not ep_ids:
+        return BatchUnderstandResponse(
+            task_id="",
+            project_id=request.project_id,
+            branch_id=branch_id,
+            episode_ids=[],
+            total=0,
+            status="empty",
+        )
+
+    try:
+        task = _dispatch_task(
+            "workers.tasks.understand.understand_branch_sequential",
+            request.project_id,
+            branch_id,
+            ep_ids,
+            request.force,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"提交批量理解任务失败: {exc}") from exc
+
+    return BatchUnderstandResponse(
+        task_id=task.id,
+        project_id=request.project_id,
+        branch_id=branch_id,
+        episode_ids=ep_ids,
+        total=len(ep_ids),
+        status="queued",
+    )
+
+
 @router.post("/script", response_model=ScriptGenerateResponse)
 async def trigger_script_generation(request: ScriptGenerateRequest, db: AsyncSession = Depends(get_db)):
     ensure_llm_configured()
-    result = await db.execute(select(Episode).where(Episode.id == request.episode_id))
+    result = await db.execute(select(Episode).where(Episode.id == request.episode_id).limit(1))
     episode = result.scalar_one_or_none()
     if not episode:
         raise HTTPException(status_code=404, detail="Episode not found")
     if await generation_service.has_active_run(db, episode.id, "script"):
-        raise HTTPException(status_code=409, detail="A script generation task is already running for this episode")
+        raise HTTPException(status_code=409, detail="该章节已有正在运行的分镜生成任务")
     run = await generation_service.create_generation_run(
         db,
         episode_id=episode.id,
         stage="script",
         backend="openai",
+        model=settings.OPENAI_MODEL,
         params={"tone": request.tone, "base_episode_number": float(request.base_episode_number)},
     )
     try:
@@ -151,62 +254,55 @@ async def trigger_script_generation(request: ScriptGenerateRequest, db: AsyncSes
     )
 
 
+@router.put("/episodes/{episode_id}/storyboard")
+async def update_episode_storyboard(
+    episode_id: str,
+    request: StoryboardUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    episode = await episode_service.get_episode(db, episode_id)
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    memory = await generation_service.save_storyboard(db, episode_id, request.storyboard)
+    title = (request.storyboard.get("title") or "").strip()
+    if title:
+        episode.title = title[:255]
+    if episode.status == "draft":
+        episode.status = "scripted"
+    await db.commit()
+    return {"id": memory.id, "episode_id": episode_id, "storyboard": memory.content}
+
+
 @router.get("/runs/{run_id}", response_model=GenerationRunResponse)
 async def get_generation_run(run_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(GenerationRun).where(GenerationRun.id == run_id))
+    result = await db.execute(select(GenerationRun).where(GenerationRun.id == run_id).limit(1))
     run = result.scalar_one_or_none()
     if not run:
         raise HTTPException(status_code=404, detail="Generation run not found")
-    return GenerationRunResponse(
-        id=run.id,
-        episode_id=run.episode_id,
-        stage=run.stage,
-        status=run.status,
-        backend=run.backend,
-        model=run.model,
-        error=run.error,
-        commit_message=run.commit_message,
-        created_at=run.created_at.isoformat() if run.created_at else None,
-        finished_at=run.finished_at.isoformat() if run.finished_at else None,
-    )
+    return _serialize_run(run, include_context=True)
 
 
 @router.get("/episodes/{episode_id}/runs")
 async def list_episode_runs(episode_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
-        select(GenerationRun)
-        .where(GenerationRun.episode_id == episode_id)
-        .order_by(GenerationRun.created_at.desc())
+        select(GenerationRun).where(GenerationRun.episode_id == episode_id).order_by(GenerationRun.created_at.desc())
     )
     runs = result.scalars().all()
-    return {"items": [GenerationRunResponse(
-        id=r.id,
-        episode_id=r.episode_id,
-        stage=r.stage,
-        status=r.status,
-        backend=r.backend,
-        model=r.model,
-        error=r.error,
-        commit_message=r.commit_message,
-        created_at=r.created_at.isoformat() if r.created_at else None,
-        finished_at=r.finished_at.isoformat() if r.finished_at else None,
-    ) for r in runs]}
+    return {"items": [_serialize_run(r, include_context=True) for r in runs]}
 
 
 @router.post("/render", response_model=RenderResponse)
 async def trigger_render(request: RenderRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Episode).where(Episode.id == request.episode_id))
+    result = await db.execute(select(Episode).where(Episode.id == request.episode_id).limit(1))
     episode = result.scalar_one_or_none()
     if not episode:
         raise HTTPException(status_code=404, detail="Episode not found")
     if await generation_service.has_active_run(db, episode.id, "render"):
-        raise HTTPException(status_code=409, detail="A render task is already running for this episode")
+        raise HTTPException(status_code=409, detail="该章节已有正在运行的生图任务")
 
     storyboard_memory_id = request.storyboard_memory_id
     if storyboard_memory_id:
-        mem_result = await db.execute(
-            select(EpisodeMemory).where(EpisodeMemory.id == storyboard_memory_id)
-        )
+        mem_result = await db.execute(select(EpisodeMemory).where(EpisodeMemory.id == storyboard_memory_id).limit(1))
         memory = mem_result.scalar_one_or_none()
         if not memory or memory.type != "storyboard_json":
             raise HTTPException(status_code=400, detail="Invalid storyboard memory ID")
@@ -215,8 +311,8 @@ async def trigger_render(request: RenderRequest, db: AsyncSession = Depends(get_
         db,
         episode_id=episode.id,
         stage="render",
-        backend=request.image_backend or "openai",
-        model=request.image_model,
+        backend=request.image_backend or settings.IMAGE_BACKEND,
+        model=request.image_model or settings.IMAGE_MODEL,
         params={"image_size": request.image_size},
     )
 
@@ -227,7 +323,7 @@ async def trigger_render(request: RenderRequest, db: AsyncSession = Depends(get_
             episode.id,
             request.image_backend,
             request.image_model,
-            request.image_size,
+            request.image_size or "1024x1024",
         )
     except Exception as exc:
         await generation_service.update_generation_run(db, str(run.id), "failed", error=str(exc))
@@ -243,12 +339,12 @@ async def trigger_render(request: RenderRequest, db: AsyncSession = Depends(get_
 
 @router.post("/layout", response_model=LayoutResponse)
 async def trigger_layout(request: LayoutRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Episode).where(Episode.id == request.episode_id))
+    result = await db.execute(select(Episode).where(Episode.id == request.episode_id).limit(1))
     episode = result.scalar_one_or_none()
     if not episode:
         raise HTTPException(status_code=404, detail="Episode not found")
     if await generation_service.has_active_run(db, episode.id, "layout"):
-        raise HTTPException(status_code=409, detail="A layout task is already running for this episode")
+        raise HTTPException(status_code=409, detail="该章节已有正在运行的排版任务")
 
     run = await generation_service.create_generation_run(
         db,
@@ -278,15 +374,20 @@ async def trigger_layout(request: LayoutRequest, db: AsyncSession = Depends(get_
 @router.get("/episodes/{episode_id}/images")
 async def list_generated_images(episode_id: str, db: AsyncSession = Depends(get_db)):
     images = await generation_service.get_generated_images(db, episode_id)
-    return {"items": [GeneratedImageResponse(
-        id=img.id,
-        generation_run_id=img.generation_run_id,
-        episode_id=img.episode_id,
-        panel_id=img.panel_id,
-        image_path=img.image_path,
-        meta=img.meta,
-        created_at=img.created_at.isoformat() if img.created_at else None,
-    ) for img in images]}
+    return {
+        "items": [
+            GeneratedImageResponse(
+                id=img.id,
+                generation_run_id=img.generation_run_id,
+                episode_id=img.episode_id,
+                panel_id=img.panel_id,
+                image_path=img.image_path,
+                meta=img.meta,
+                created_at=img.created_at.isoformat() if img.created_at else None,
+            )
+            for img in images
+        ]
+    }
 
 
 @router.get("/episodes/{episode_id}/layout")
@@ -300,10 +401,6 @@ async def get_episode_layout(episode_id: str, db: AsyncSession = Depends(get_db)
 @router.get("/episodes/{episode_id}/export")
 async def export_episode(episode_id: str, format: str = "pdf", db: AsyncSession = Depends(get_db)):
     """Export an episode's composed final pages as a single document (PDF)."""
-    import io
-
-    from fastapi.responses import Response
-
     if format != "pdf":
         raise HTTPException(status_code=400, detail="Only format=pdf is supported")
 
@@ -317,13 +414,12 @@ async def export_episode(episode_id: str, format: str = "pdf", db: AsyncSession 
 
     from PIL import Image
 
-    from app.config import settings as app_settings
     from app.services import storage_service
 
     pages = sorted(layout.content.get("pages", []), key=lambda p: p.get("page_number", 0))
     images: list[Image.Image] = []
     for page in pages:
-        data = storage_service.get_object_bytes(app_settings.MINIO_BUCKET, page.get("image_path", ""))
+        data = storage_service.get_object_bytes(settings.MINIO_BUCKET, page.get("image_path", ""))
         if data is None:
             continue
         images.append(Image.open(io.BytesIO(data)).convert("RGB"))

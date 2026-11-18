@@ -45,6 +45,8 @@ class DiffRequest(BaseModel):
 class EpisodeDiffItem(BaseModel):
     number: Decimal
     label: str
+    source_episode_id: str | None = None
+    target_episode_id: str | None = None
     source_status: str | None = None
     target_status: str | None = None
     title_source: str | None = None
@@ -54,6 +56,7 @@ class EpisodeDiffItem(BaseModel):
 
 
 class AssetDiffItem(BaseModel):
+    asset_id: str | None = None
     name: str
     asset_type: str
     in_source: bool = False
@@ -63,6 +66,8 @@ class AssetDiffItem(BaseModel):
 
 
 class PitDiffItem(BaseModel):
+    source_pit_id: str | None = None
+    target_pit_id: str | None = None
     title: str
     status_source: str | None = None
     status_target: str | None = None

@@ -24,19 +24,21 @@ async def list_branches(project_id: str, db: AsyncSession = Depends(get_db)):
     for b in branches:
         episode_count = await branch_service.get_branch_episode_count(db, b.id)
         latest_number = await branch_service.get_branch_latest_episode_number(db, b.id)
-        result.append(BranchDetailResponse(
-            id=b.id,
-            project_id=b.project_id,
-            name=b.name,
-            description=b.description,
-            is_default=b.is_default,
-            base_branch_id=b.base_branch_id,
-            base_episode_id=b.base_episode_id,
-            created_at=b.created_at,
-            updated_at=b.updated_at,
-            episode_count=episode_count,
-            latest_episode_number=latest_number,
-        ))
+        result.append(
+            BranchDetailResponse(
+                id=b.id,
+                project_id=b.project_id,
+                name=b.name,
+                description=b.description,
+                is_default=b.is_default,
+                base_branch_id=b.base_branch_id,
+                base_episode_id=b.base_episode_id,
+                created_at=b.created_at,
+                updated_at=b.updated_at,
+                episode_count=episode_count,
+                latest_episode_number=latest_number,
+            )
+        )
     return result
 
 
