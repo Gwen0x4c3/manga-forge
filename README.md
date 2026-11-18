@@ -115,4 +115,4 @@ Switch backends in `.env` (`IMAGE_BACKEND=...`) or per run inside the web studio
 
 ## License
 
-For research and personal experimentation. Please respect the rights of original manga creators when importing or working with copyrighted material.
+Released under the [MIT License](LICENSE). Please respect the rights of original manga creators when importing or working with copyrighted material.
