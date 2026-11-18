@@ -1697,6 +1697,7 @@ export default function ProjectDetail() {
                                 style={{ width: '100%' }}
                                 placeholder="默认配置"
                             >
+                                <Select.Option value="antigravity">Antigravity (原生生图)</Select.Option>
                                 <Select.Option value="openai">OpenAI (GPT-Image)</Select.Option>
                                 <Select.Option value="gemini">Gemini (Nano Banana)</Select.Option>
                                 <Select.Option value="custom">Custom HTTP</Select.Option>

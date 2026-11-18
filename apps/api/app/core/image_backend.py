@@ -89,16 +89,46 @@ class OpenAIImageBackend(ImageBackend):
     reference images (character sheets etc.) are supplied."""
 
     def __init__(self, model: str | None = None) -> None:
+        raw_url = settings.IMAGE_API_URL or settings.OPENAI_BASE_URL
+        if raw_url and "open.bigmodel.cn/api/coding/paas/v4" in raw_url and not settings.IMAGE_API_URL:
+            raw_url = raw_url.replace("/api/coding/paas/v4", "/api/paas/v4")
+        self._base_url = raw_url
         self._client = AsyncOpenAI(
             api_key=settings.IMAGE_API_KEY or settings.OPENAI_API_KEY,
-            base_url=settings.IMAGE_API_URL or settings.OPENAI_BASE_URL,
+            base_url=raw_url,
             http_client=httpx.AsyncClient(trust_env=False, timeout=600.0),
         )
         self._model = model or settings.IMAGE_MODEL or "gpt-image-2"
+        self._edits_supported = not bool(raw_url and "open.bigmodel.cn" in raw_url)
 
     @staticmethod
-    def _size_to_str(size: tuple[int, int]) -> str:
-        return f"{size[0]}x{size[1]}"
+    def _size_to_str(size: tuple[int, int], model: str = "") -> str:
+        w, h = size
+        ratio = w / max(h, 1)
+        m = (model or "").lower()
+        if "cogview" in m:
+            if ratio >= 1.75:
+                return "1440x720"
+            if ratio >= 1.35:
+                return "1344x768"
+            if ratio >= 1.15:
+                return "1152x864"
+            if ratio <= 0.57:
+                return "720x1440"
+            if ratio <= 0.74:
+                return "768x1344"
+            if ratio <= 0.87:
+                return "864x1152"
+            return "1024x1024"
+        if "gpt-image" in m or "dall-e" in m:
+            if (w, h) in {(1024, 1024), (1536, 1024), (1024, 1536), (1792, 1024), (1024, 1792)}:
+                return f"{w}x{h}"
+            if ratio >= 1.25:
+                return "1536x1024"
+            if ratio <= 0.80:
+                return "1024x1536"
+            return "1024x1024"
+        return f"{w}x{h}"
 
     async def generate(
         self,
@@ -110,29 +140,59 @@ class OpenAIImageBackend(ImageBackend):
         context: dict | None = None,
         **kwargs,
     ) -> ImageResult:
-        full_prompt = _compose_prompt(prompt, negative_prompt, context)
-        size_str = self._size_to_str(size)
-        model = kwargs.get("model") or self._model
+        import asyncio
 
-        if reference_images:
-            files = []
-            for i, (data, mime) in enumerate(reference_images):
-                ext = "png" if "png" in mime else "jpg" if "jpeg" in mime else "webp"
-                files.append(("image[]", (f"reference_{i}.{ext}", data, mime)))
-            response = await self._client.images.edit(
-                model=model,
-                image=files,
-                prompt=full_prompt,
-                size=size_str,
-                n=1,
-            )
-        else:
-            response = await self._client.images.generate(
-                model=model,
-                prompt=full_prompt,
-                size=size_str,
-                n=1,
-            )
+        full_prompt = _compose_prompt(prompt, negative_prompt, context)
+        model = kwargs.get("model") or self._model
+        size_str = self._size_to_str(size, model)
+
+        used_edits = False
+        response = None
+        for attempt in range(4):
+            try:
+                if reference_images and self._edits_supported:
+                    files = []
+                    for i, (data, mime) in enumerate(reference_images):
+                        ext = "png" if "png" in mime else "jpg" if "jpeg" in mime else "webp"
+                        files.append(("image[]", (f"reference_{i}.{ext}", data, mime)))
+                    try:
+                        response = await self._client.images.edit(
+                            model=model,
+                            image=files,
+                            prompt=full_prompt,
+                            size=size_str,
+                            n=1,
+                        )
+                        used_edits = True
+                    except Exception as edit_exc:
+                        err_s = str(edit_exc)
+                        if any(code in err_s for code in ("404", "405", "400", "Not Found", "unsupported")):
+                            logger.info(
+                                "Images edits endpoint unsupported on %s, falling back to generations",
+                                self._base_url,
+                            )
+                            self._edits_supported = False
+                            response = await self._client.images.generate(
+                                model=model,
+                                prompt=full_prompt[:1800],
+                                size=size_str,
+                                n=1,
+                            )
+                        else:
+                            raise
+                else:
+                    response = await self._client.images.generate(
+                        model=model,
+                        prompt=full_prompt[:1800],
+                        size=size_str,
+                        n=1,
+                    )
+                break
+            except Exception as exc:
+                if attempt < 3 and ("429" in str(exc) or "RateLimit" in type(exc).__name__):
+                    await asyncio.sleep(3 * (attempt + 1))
+                    continue
+                raise
         item = response.data[0]
         if getattr(item, "b64_json", None):
             result_data = base64.b64decode(item.b64_json)
@@ -151,7 +211,7 @@ class OpenAIImageBackend(ImageBackend):
                 "size": size_str,
                 "prompt": full_prompt,
                 "references": len(reference_images or []),
-                "endpoint": "edits" if reference_images else "generations",
+                "endpoint": "edits" if used_edits else "generations",
             },
         )
 
@@ -477,9 +537,147 @@ class MockImageBackend(ImageBackend):
         )
 
 
+class AntigravityImageBackend(ImageBackend):
+    """Google Antigravity native image-generator backend (`agy` CLI or Bridge Queue).
+    Supports passing local character/item/style reference crops (`ImagePaths`) directly
+    to Antigravity's native `generate_image` tool for multi-reference manga consistency."""
+
+    def __init__(self, model: str | None = None) -> None:
+        self._model = model or "antigravity-image-generator"
+        self._cli_bin = settings.AGY_CLI_BIN or "agy"
+        self._bridge_dir = settings.AGY_BRIDGE_DIR
+
+    async def generate(
+        self,
+        prompt: str,
+        negative_prompt: str | None = None,
+        size: tuple[int, int] = (1024, 1024),
+        seed: int | None = None,
+        reference_images: list[tuple[bytes, str]] | None = None,
+        context: dict | None = None,
+        **kwargs,
+    ) -> ImageResult:
+        import asyncio
+        import json
+        import re
+        import shutil
+        import tempfile
+        import uuid
+        from pathlib import Path
+
+        full_prompt = _compose_prompt(prompt, negative_prompt, context)
+        aspect_ratio = _nearest_ratio(size)
+        req_id = f"panel_{uuid.uuid4().hex[:10]}"
+
+        if self._bridge_dir:
+            base = Path(self._bridge_dir)
+            refs_dir = base / "refs" / req_id
+            req_dir = base / "requests"
+            out_dir = base / "outputs"
+            refs_dir.mkdir(parents=True, exist_ok=True)
+            req_dir.mkdir(parents=True, exist_ok=True)
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            ref_paths: list[str] = []
+            for idx, (data, mime) in enumerate(reference_images or []):
+                ext = "png" if "png" in mime else ("webp" if "webp" in mime else "jpg")
+                rp = refs_dir / f"ref_{idx}.{ext}"
+                rp.write_bytes(data)
+                ref_paths.append(str(rp))
+
+            req_file = req_dir / f"{req_id}.json"
+            done_file = out_dir / f"{req_id}.json"
+            req_file.write_text(
+                json.dumps(
+                    {
+                        "id": req_id,
+                        "prompt": full_prompt,
+                        "aspect_ratio": aspect_ratio,
+                        "image_paths": ref_paths,
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            for _ in range(300):
+                if done_file.exists():
+                    meta = json.loads(done_file.read_text(encoding="utf-8"))
+                    img_bytes = Path(meta["image_path"]).read_bytes()
+                    return ImageResult(
+                        image_data=img_bytes,
+                        seed=seed,
+                        meta={
+                            "model": self._model,
+                            "aspect_ratio": aspect_ratio,
+                            "references": len(ref_paths),
+                            "mode": "bridge",
+                        },
+                    )
+                await asyncio.sleep(1.0)
+            raise TimeoutError(f"Antigravity bridge request {req_id} timed out")
+
+        cli_path = shutil.which(self._cli_bin) or self._cli_bin
+        with tempfile.TemporaryDirectory(prefix="mf_agy_") as tmp:
+            tmp_dir = Path(tmp)
+            ref_paths = []
+            for idx, (data, mime) in enumerate(reference_images or []):
+                ext = "png" if "png" in mime else ("webp" if "webp" in mime else "jpg")
+                rp = tmp_dir / f"ref_{idx}.{ext}"
+                rp.write_bytes(data)
+                ref_paths.append(str(rp))
+
+            agy_prompt = (
+                "Invoke the `image-generator` subagent to generate a single manga panel using `generate_image` "
+                f"with `ImageName`: {req_id!r}, `AspectRatio`: {aspect_ratio!r}, "
+                f"`ImagePaths`: {json.dumps(ref_paths)}, and `Prompt`: {full_prompt!r}. "
+                "Reply ONLY with the exact absolute file path of the saved image."
+            )
+            proc = await asyncio.create_subprocess_exec(
+                cli_path,
+                "--dangerously-skip-permissions",
+                "--add-dir",
+                str(tmp_dir),
+                "-p",
+                agy_prompt,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            out_text = stdout.decode("utf-8", errors="replace").strip()
+            if proc.returncode != 0:
+                err_text = stderr.decode("utf-8", errors="replace").strip()
+                raise RuntimeError(f"Antigravity CLI failed ({proc.returncode}): {err_text or out_text}")
+
+            match = re.search(r"(/[^\s`'\"<>]+\.(?:png|jpg|jpeg|webp))", out_text)
+            if not match or not Path(match.group(1)).is_file():
+                raise RuntimeError(f"Antigravity CLI did not return a valid image path: {out_text[:300]}")
+            img_bytes = Path(match.group(1)).read_bytes()
+            return ImageResult(
+                image_data=img_bytes,
+                seed=seed,
+                meta={
+                    "model": self._model,
+                    "aspect_ratio": aspect_ratio,
+                    "references": len(ref_paths),
+                    "mode": "cli",
+                },
+            )
+
+    async def inpaint(
+        self,
+        image_data: bytes,
+        mask_data: bytes,
+        prompt: str,
+        **kwargs,
+    ) -> ImageResult:
+        return await self.generate(prompt=prompt, reference_images=[(image_data, "image/png")], **kwargs)
+
+
 def get_image_backend(backend_name: str | None = None, model: str | None = None) -> ImageBackend:
     backend = backend_name or settings.IMAGE_BACKEND
-    if backend == "openai":
+    if backend == "antigravity":
+        return AntigravityImageBackend(model=model)
+    elif backend == "openai":
         return OpenAIImageBackend(model=model)
     elif backend in ("gemini", "nano-banana"):
         return GeminiImageBackend(model=model)

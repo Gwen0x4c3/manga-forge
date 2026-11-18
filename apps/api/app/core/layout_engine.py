@@ -226,6 +226,8 @@ class LayoutEngine:
         bottom_y = max(py + pad, py + ph - bh - pad - tail_margin)
 
         anchor_map = {
+            "right": (right_x, top_y),
+            "left": (left_x, top_y),
             "top-right": (right_x, top_y),
             "top-left": (left_x, top_y),
             "bottom-right": (right_x, bottom_y),
@@ -307,7 +309,7 @@ class LayoutEngine:
             ]
 
         if num_panels == 3:
-            if layout == "3_vertical":
+            if layout in ("3_vertical", "3-vertical", "3-stack", "3_stack", "1x3"):
                 row_h = (usable_h - 2 * gp) // 3
                 return [
                     (x0, y0, usable_w, row_h),

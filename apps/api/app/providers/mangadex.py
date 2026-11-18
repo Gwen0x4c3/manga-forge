@@ -406,22 +406,34 @@ async def fetch_chapter_candidates(
         seed_chapter_ids: list[str] = []
         seed_group_ids: list[str] = []
         if not explicit_groups:
-            read_payload = await _request_json(
-                client,
-                f"{MANGADEX_API_BASE}/manga/read",
-                params={"ids[]": manga_id, "grouped": "true"},
-                request_headers=request_headers,
-            )
-            seed_chapter_ids = extract_chapter_ids_from_read_response(read_payload, manga_id)
-            for seed_chapter_id in seed_chapter_ids:
-                seed_payload = await _request_json(
+            try:
+                read_payload = await _request_json(
                     client,
-                    f"{MANGADEX_API_BASE}/chapter/{seed_chapter_id}",
-                    params={"includes[]": ["scanlation_group", "manga", "user"]},
+                    f"{MANGADEX_API_BASE}/manga/read",
+                    params={"ids[]": manga_id, "grouped": "true"},
                     request_headers=request_headers,
                 )
-                seed_relationships = (seed_payload.get("data") or {}).get("relationships") or []
-                seed_group_ids.extend(_extract_group_ids(seed_relationships))
+                seed_chapter_ids = extract_chapter_ids_from_read_response(read_payload, manga_id)
+                for seed_chapter_id in seed_chapter_ids:
+                    seed_payload = await _request_json(
+                        client,
+                        f"{MANGADEX_API_BASE}/chapter/{seed_chapter_id}",
+                        params={"includes[]": ["scanlation_group", "manga", "user"]},
+                        request_headers=request_headers,
+                    )
+                    seed_relationships = (seed_payload.get("data") or {}).get("relationships") or []
+                    seed_group_ids.extend(_extract_group_ids(seed_relationships))
+            except Exception as exc:
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                if status in (401, 403) or "401" in str(exc) or "403" in str(exc):
+                    logger.info(
+                        "MangaDex /manga/read returned %s (unauthenticated); falling back to public aggregate",
+                        status or "401",
+                    )
+                    seed_chapter_ids = []
+                    seed_group_ids = []
+                else:
+                    raise
 
         inferred_groups = dedupe_preserve_order(seed_group_ids)
         resolved_groups = explicit_groups or inferred_groups

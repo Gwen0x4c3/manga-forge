@@ -517,6 +517,7 @@ export default function GenerationStudio() {
                                     style={{ width: '100%' }}
                                     placeholder="使用系统默认"
                                 >
+                                    <Select.Option value="antigravity">Antigravity (原生生图)</Select.Option>
                                     <Select.Option value="openai">OpenAI (GPT-Image)</Select.Option>
                                     <Select.Option value="gemini">Gemini (Nano Banana)</Select.Option>
                                     <Select.Option value="custom">Custom HTTP</Select.Option>

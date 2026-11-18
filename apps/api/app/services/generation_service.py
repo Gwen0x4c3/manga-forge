@@ -28,6 +28,7 @@ async def create_generation_run(
     params: dict | None = None,
     prompt: str | None = None,
     retrieved_context: dict | None = None,
+    commit_message: str | None = None,
 ) -> GenerationRun:
     run = GenerationRun(
         id=str(uuid.uuid4()),
@@ -38,6 +39,7 @@ async def create_generation_run(
         params=params,
         prompt=prompt,
         retrieved_context=retrieved_context,
+        commit_message=commit_message,
         status="queued",
     )
     db.add(run)

@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     IMAGE_API_URL: str = ""
     IMAGE_DEFAULT_SIZE: str = "1024x1024"
     GEMINI_API_KEY: str = ""
+    AGY_CLI_BIN: str = "agy"
+    AGY_BRIDGE_DIR: str = ""
 
     CELERY_BROKER_URL: str = "redis://localhost:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"

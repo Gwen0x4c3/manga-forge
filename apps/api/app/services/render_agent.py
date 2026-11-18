@@ -166,6 +166,7 @@ class RenderAgent:
         self.image_size = image_size
         w, h = (image_size or "1024x1024").split("x")
         self.size = (int(w), int(h))
+        self.panel_sizes: dict[str, tuple[int, int]] = {}
         self.rendered: dict[str, str] = {}
         self.trace: list[dict] = []
         self.art_style: str = ""
@@ -188,11 +189,34 @@ class RenderAgent:
             if not self.art_style and style_asset.description:
                 self.art_style = style_asset.description
 
+    def _compute_panel_sizes(self, storyboard: dict) -> None:
+        if self.size != (1024, 1024):
+            return
+        from app.core.layout_engine import LayoutEngine
+
+        engine = LayoutEngine()
+        for page in storyboard.get("pages", []):
+            p_list = page.get("panels", [])
+            if not p_list:
+                continue
+            boxes = engine._apply_layout(page.get("layout", ""), len(p_list))
+            for panel, (_px, _py, pw, ph) in zip(p_list, boxes):
+                pid = panel.get("panel_id")
+                if pid and pw > 0 and ph > 0:
+                    ratio = pw / ph
+                    if ratio >= 1.25:
+                        self.panel_sizes[pid] = (int(round(1024 * min(ratio, 2.0))), 1024)
+                    elif ratio <= 0.80:
+                        self.panel_sizes[pid] = (1024, int(round(1024 / max(ratio, 0.5))))
+                    else:
+                        self.panel_sizes[pid] = (1024, 1024)
+
     async def run(self, storyboard: dict) -> dict:
         panels = [p for page in storyboard.get("pages", []) for p in page.get("panels", [])]
         if not panels:
             raise ValueError("Storyboard has no panels")
 
+        self._compute_panel_sizes(storyboard)
         await self._load_style_context()
         brief = self._build_brief(storyboard, panels)
         client = get_raw_openai_client()
@@ -466,11 +490,12 @@ class RenderAgent:
                     reference_images.append((data, mime))
 
         neg = negative_prompt or "speech bubble, text, dialogue balloon, watermark, signature, blurry"
+        target_size = self.panel_sizes.get(panel_id, self.size)
 
         result = await self.backend.generate(
             prompt=prompt,
             negative_prompt=neg,
-            size=self.size,
+            size=target_size,
             reference_images=reference_images or None,
             context=context,
             model=self.image_model or None,

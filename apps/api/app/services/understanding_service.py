@@ -366,8 +366,9 @@ async def _ensure_project_style_asset(
         await db.execute(select(func.count()).select_from(AssetImage).where(AssetImage.asset_id == existing.id))
     ).scalar() or 0
     if img_count == 0 and raw_pages:
-        first_page = raw_pages[sorted(raw_pages.keys())[0]]
-        scaled, mime = _downscale_with_mime(first_page, "image/jpeg")
+        sorted_keys = sorted(raw_pages.keys())
+        sample_page = raw_pages[sorted_keys[len(sorted_keys) // 2]]
+        scaled, mime = _downscale_with_mime(sample_page, "image/jpeg")
         ext = "png" if "png" in mime else "jpg"
         object_key = storage_service.generate_object_key(f"assets/{existing.id}", f"style_sample.{ext}")
         storage_service.upload_file(settings.MINIO_BUCKET, object_key, scaled, content_type=mime)
@@ -570,6 +571,29 @@ async def run_multimodal_understanding(
             intra_context_lines.append(f"- Segment {idx + 1}: {chunk_dict['summary']}")
 
     understanding_dict = _merge_chunk_understandings(chunk_results)
+    return await persist_episode_understanding(
+        db=db,
+        episode=episode,
+        understanding_dict=understanding_dict,
+        raw_pages=raw_pages,
+        target_status=target_status,
+        authoritative_storyboard=authoritative_storyboard,
+    )
+
+
+async def persist_episode_understanding(
+    db: AsyncSession,
+    episode: Episode,
+    understanding_dict: dict,
+    raw_pages: dict[int, bytes] | None = None,
+    target_status: str | None = "understood",
+    authoritative_storyboard: dict | None = None,
+) -> dict:
+    """Persist an EpisodeUnderstanding dict into Assets, AssetImages, Pits, Story Bible, and EpisodeMemory."""
+    raw_pages = raw_pages or {}
+    project = (await db.execute(select(Project).where(Project.id == episode.project_id).limit(1))).scalar_one_or_none()
+    known_assets = (await db.execute(select(Asset).where(Asset.project_id == episode.project_id))).scalars().all()
+    known_char_ids = {a.id for a in known_assets if a.type == "character"}
 
     # Backfill exact dialogue from authoritative_storyboard when writeback didn't need to re-OCR every page
     if authoritative_storyboard and not understanding_dict.get("page_dialogues"):
@@ -591,7 +615,6 @@ async def run_multimodal_understanding(
         understanding_dict["page_dialogues"] = sb_pages
 
     # Ensure any unrecognized character in characters[] is also registered in new_assets[]
-    known_char_ids = {c["asset_id"] for c in known_characters}
     synthesized_new_assets = list(understanding_dict.get("new_assets") or [])
     existing_new_names = {
         generation_service._normalize_name(na.get("name", ""))
