@@ -48,3 +48,8 @@ uploads/
 data/
 logs/
 exports/
+
+handoff/
+*.sql
+*.sql.gz
+*.dump
