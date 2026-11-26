@@ -53,7 +53,6 @@ async def _run_continue(
     context_profile: str | None = None,
 ):
     """Execute script -> consistency check -> render -> layout -> writeback in a single event loop."""
-    from app.config import settings
     from app.database import worker_session
     from app.models.episode import Episode
     from app.models.generation_run import GenerationRun
@@ -74,15 +73,21 @@ async def _run_continue(
             episode = (await db.execute(select(Episode).where(Episode.id == episode_id).limit(1))).scalar_one()
             project_id = str(episode.project_id)
 
+            from app.core.llm import get_active_llm_config
+            from app.core.provider_runtime import resolve_role_config
+
+            main_cfg = get_active_llm_config("main_llm")
+            img_cfg = resolve_role_config("image_gen")
+
             script_run = await generation_service.create_generation_run(
-                db, episode_id=episode_id, stage="script", backend="openai", model=settings.OPENAI_MODEL
+                db, episode_id=episode_id, stage="script", backend=main_cfg.provider_key, model=main_cfg.model
             )
             render_run = await generation_service.create_generation_run(
                 db,
                 episode_id=episode_id,
                 stage="render",
-                backend=image_backend or settings.IMAGE_BACKEND,
-                model=image_model or settings.IMAGE_MODEL,
+                backend=image_backend or img_cfg.provider_key,
+                model=image_model or img_cfg.model,
             )
             layout_run = await generation_service.create_generation_run(db, episode_id=episode_id, stage="layout")
 

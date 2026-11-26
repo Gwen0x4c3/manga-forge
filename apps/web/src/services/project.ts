@@ -1045,3 +1045,120 @@ export const usageService = {
         page_size?: number
     }) => api.get<UsageRecordListResponse>('/usage/records', { params }),
 }
+
+export interface ModelPresetInfo {
+    id: string
+    label: string
+    context_window?: number | null
+    supports_vision: boolean
+    supports_tools: boolean
+    supports_image_gen: boolean
+    supports_embedding: boolean
+}
+
+export interface ProviderPreset {
+    key: string
+    name: string
+    category: 'aggregator' | 'global' | 'china' | 'image' | 'custom' | string
+    interface_type: string
+    base_url: string
+    default_model: string
+    description: string
+    requires_api_key: boolean
+    supports_llm: boolean
+    supports_vision: boolean
+    supports_image: boolean
+    supports_embedding: boolean
+    api_key_placeholder: string
+    docs_url: string
+    extra_headers: Record<string, string>
+    models: ModelPresetInfo[]
+}
+
+export interface ModelProviderItem {
+    id: string
+    preset_key: string
+    name: string
+    interface_type: string
+    base_url: string
+    has_api_key: boolean
+    api_key_masked: string
+    default_model: string
+    models_cache: string[]
+    extra_headers: Record<string, string>
+    enabled: boolean
+    last_test_status?: string | null
+    last_test_message?: string | null
+    last_tested_at?: string | null
+    created_at: string
+    updated_at: string
+}
+
+export interface RoleBindingItem {
+    role: 'main_llm' | 'vision_llm' | 'image_gen' | 'embedding' | string
+    provider_id?: string | null
+    provider_name?: string | null
+    preset_key?: string | null
+    model_id?: string | null
+    params: Record<string, unknown>
+    effective_source: 'database' | 'env' | string
+    effective_provider: string
+    effective_model: string
+    effective_base_url?: string | null
+}
+
+export interface ProviderOverviewResponse {
+    presets: ProviderPreset[]
+    providers: ModelProviderItem[]
+    roles: RoleBindingItem[]
+}
+
+export interface ProviderTestResponse {
+    ok: boolean
+    latency_ms: number
+    message: string
+    models: string[]
+}
+
+export const providerService = {
+    overview: () => api.get<ProviderOverviewResponse>('/providers'),
+    create: (data: {
+        preset_key: string
+        name: string
+        interface_type?: string
+        base_url?: string
+        api_key?: string
+        default_model?: string
+        models_cache?: string[]
+        extra_headers?: Record<string, string>
+        enabled?: boolean
+        activate_roles?: string[]
+    }) => api.post<ModelProviderItem>('/providers', data),
+    update: (
+        providerId: string,
+        data: {
+            name?: string
+            interface_type?: string
+            base_url?: string
+            api_key?: string
+            default_model?: string
+            models_cache?: string[]
+            extra_headers?: Record<string, string>
+            enabled?: boolean
+        },
+    ) => api.put<ModelProviderItem>(`/providers/${providerId}`, data),
+    remove: (providerId: string) => api.delete(`/providers/${providerId}`),
+    test: (data: {
+        provider_id?: string
+        preset_key?: string
+        interface_type?: string
+        base_url?: string
+        api_key?: string
+        model?: string
+        extra_headers?: Record<string, string>
+    }) => api.post<ProviderTestResponse>('/providers/test', data, { timeout: 30000 }),
+    updateRole: (
+        role: string,
+        data: { provider_id?: string | null; model_id?: string | null; params?: Record<string, unknown> },
+    ) => api.put<RoleBindingItem>(`/providers/roles/${role}`, data),
+}

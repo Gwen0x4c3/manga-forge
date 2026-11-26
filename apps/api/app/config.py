@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     OPENAI_BASE_URL: str | None = None
     DEFAULT_CONTEXT_PROFILE: str = "quality"  # quality (200K+) | balanced (128K) | cost (32K)
     MAX_CONTEXT_TOKENS: int | None = None
+    APP_SECRET_KEY: str = ""
     QDRANT_API_KEY: str = ""
 
     IMAGE_BACKEND: str = "openai"

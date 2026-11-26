@@ -456,8 +456,7 @@ async def append_episode_summary(
 async def _compress_long_summary(text: str) -> str | None:
     from pydantic import BaseModel
 
-    from app.config import settings
-    from app.core.llm import get_llm_client
+    from app.core.llm import get_active_llm_config, get_llm_client
 
     system = (
         "You are a manga story archivist. Compress the episode-by-episode story "
@@ -471,7 +470,8 @@ async def _compress_long_summary(text: str) -> str | None:
         f"Keep it under {_SUMMARY_COMPRESS_TARGET} characters."
     )
     try:
-        client = get_llm_client()
+        llm_cfg = get_active_llm_config("main_llm")
+        client = get_llm_client(role="main_llm")
 
         class Compressed(BaseModel):
             summary: str
@@ -480,13 +480,13 @@ async def _compress_long_summary(text: str) -> str | None:
 
         with usage_context(operation="summarize_compress"):
             result = await client.chat.completions.create(
-                model=settings.OPENAI_MODEL,
+                model=llm_cfg.model,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": text},
                 ],
                 response_model=Compressed,
-                max_tokens=settings.OPENAI_MAX_TOKENS,
+                max_tokens=llm_cfg.max_tokens,
                 max_retries=1,
             )
         compressed = result.summary.strip()
@@ -1782,7 +1782,6 @@ async def ask_story_bible(
 ) -> dict:
     """Grounded Q&A against the manga's Story Bible, multi-scale history, assets, and pits,
     returning an LLM answer with visual episode/page citations."""
-    from app.config import settings
     from app.core.llm import get_raw_openai_client
     from app.models.asset_image import AssetImage
     from app.models.branch import Branch
@@ -1963,17 +1962,19 @@ async def ask_story_bible(
         "- Never hallucinate chapters or facts that are not present in the provided manga context."
     )
 
+    from app.core.llm import get_active_llm_config
     from app.core.telemetry import usage_context
 
+    llm_cfg = get_active_llm_config("main_llm")
     client = get_raw_openai_client()
     with usage_context(project_id=project_id, operation="story_qa"):
         resp = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
+            model=llm_cfg.model,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": "\n\n".join(context_sections) + f"\n\n用户问题：{question}"},
             ],
-            max_tokens=settings.OPENAI_MAX_TOKENS,
+            max_tokens=llm_cfg.max_tokens,
         )
     msg = resp.choices[0].message
     answer = (msg.content or "").strip()
@@ -1983,7 +1984,7 @@ async def ask_story_bible(
     return {
         "question": question,
         "answer": answer or "暂未能从已导入的章节记忆中归纳出明确答案。",
-        "model": settings.OPENAI_MODEL,
+        "model": llm_cfg.model,
         "citations": citations[:6],
         "matched_characters": matched_chars[:6],
     }

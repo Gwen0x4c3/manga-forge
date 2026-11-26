@@ -13,7 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.core.llm import ensure_llm_configured
+from app.core.llm import ensure_llm_configured, get_active_llm_config
+from app.core.provider_runtime import resolve_role_config
 from app.dependencies import get_db
 from app.models.branch import Branch
 from app.models.episode import Episode
@@ -102,16 +103,19 @@ async def continue_from_episode(request: ContinueFromEpisodeRequest, db: AsyncSe
     await db.commit()
     await db.refresh(new_episode)
 
+    main_cfg = get_active_llm_config("main_llm")
+    img_cfg = resolve_role_config("image_gen")
     run = await generation_service.create_generation_run(
         db,
         episode_id=str(new_episode.id),
         stage="continue",
-        backend="openai",
-        model=settings.OPENAI_MODEL,
+        backend=main_cfg.provider_key,
+        model=main_cfg.model,
         params={
             "tone": request.tone,
             "base_episode_number": float(request.base_episode_number),
-            "image_backend": request.image_backend or settings.IMAGE_BACKEND,
+            "image_backend": request.image_backend or img_cfg.provider_key,
+            "image_model": request.image_model or img_cfg.model,
             "image_size": request.image_size,
             "context_profile": request.context_profile or settings.DEFAULT_CONTEXT_PROFILE,
         },
@@ -151,8 +155,9 @@ async def trigger_understand(request: UnderstandRequest, db: AsyncSession = Depe
         raise HTTPException(status_code=404, detail="Episode not found")
     if await generation_service.has_active_run(db, episode.id, "understand"):
         raise HTTPException(status_code=409, detail="该章节已有正在运行的剧情理解任务")
+    vision_cfg = get_active_llm_config("vision_llm")
     run = await generation_service.create_generation_run(
-        db, episode_id=episode.id, stage="understand", backend="openai", model=settings.OPENAI_MODEL
+        db, episode_id=episode.id, stage="understand", backend=vision_cfg.provider_key, model=vision_cfg.model
     )
     try:
         task = _dispatch_task("workers.tasks.understand.summarize_episode", str(run.id), episode.id)
@@ -233,12 +238,13 @@ async def trigger_script_generation(request: ScriptGenerateRequest, db: AsyncSes
         raise HTTPException(status_code=404, detail="Episode not found")
     if await generation_service.has_active_run(db, episode.id, "script"):
         raise HTTPException(status_code=409, detail="该章节已有正在运行的分镜生成任务")
+    main_cfg = get_active_llm_config("main_llm")
     run = await generation_service.create_generation_run(
         db,
         episode_id=episode.id,
         stage="script",
-        backend="openai",
-        model=settings.OPENAI_MODEL,
+        backend=main_cfg.provider_key,
+        model=main_cfg.model,
         params={
             "tone": request.tone,
             "base_episode_number": float(request.base_episode_number),
@@ -319,12 +325,13 @@ async def trigger_render(request: RenderRequest, db: AsyncSession = Depends(get_
         if not memory or memory.type != "storyboard_json":
             raise HTTPException(status_code=400, detail="Invalid storyboard memory ID")
 
+    img_cfg = resolve_role_config("image_gen")
     run = await generation_service.create_generation_run(
         db,
         episode_id=episode.id,
         stage="render",
-        backend=request.image_backend or settings.IMAGE_BACKEND,
-        model=request.image_model or settings.IMAGE_MODEL,
+        backend=request.image_backend or img_cfg.provider_key,
+        model=request.image_model or img_cfg.model,
         params={"image_size": request.image_size},
     )
 
@@ -364,12 +371,13 @@ async def rerender_single_panel(
     storyboard_mem = await generation_service.get_latest_storyboard(db, episode_id)
     storyboard = storyboard_mem.content if storyboard_mem else None
 
+    img_cfg = resolve_role_config("image_gen")
     run = await generation_service.create_generation_run(
         db,
         episode_id=episode.id,
         stage="render",
-        backend=request.image_backend or settings.IMAGE_BACKEND,
-        model=request.image_model or settings.IMAGE_MODEL,
+        backend=request.image_backend or img_cfg.provider_key,
+        model=request.image_model or img_cfg.model,
         params={"panel_id": panel_id, "single_panel": True, "image_size": request.image_size or "1024x1024"},
     )
     await generation_service.update_generation_run(db, run.id, "running")
@@ -461,12 +469,13 @@ async def inpaint_single_panel(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid mask_base64: {exc}") from exc
 
+    img_cfg = resolve_role_config("image_gen")
     run = await generation_service.create_generation_run(
         db,
         episode_id=episode.id,
         stage="render",
-        backend=request.image_backend or settings.IMAGE_BACKEND,
-        model=request.image_model or settings.IMAGE_MODEL,
+        backend=request.image_backend or img_cfg.provider_key,
+        model=request.image_model or img_cfg.model,
         params={"panel_id": panel_id, "inpaint": True},
     )
     await generation_service.update_generation_run(db, run.id, "running")

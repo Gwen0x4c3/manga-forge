@@ -11,7 +11,7 @@ from PIL import Image
 from sqlalchemy import delete, func, select
 
 from app.config import settings
-from app.core.llm import get_llm_client
+from app.core.llm import get_active_llm_config, get_llm_client
 from app.models.asset import Asset
 from app.models.asset_image import AssetImage
 from app.models.episode_memory import EpisodeMemory
@@ -613,7 +613,8 @@ async def run_multimodal_understanding(
     if not page_blocks and not fallback_text:
         raise ValueError("Episode has no page images and no text content to understand")
 
-    client = get_llm_client()
+    vision_cfg = get_active_llm_config("vision_llm")
+    client = get_llm_client(role="vision_llm")
 
     # Windowed multimodal analysis when a chapter has many pages (> _MAX_PAGES_PER_CHUNK)
     if len(page_blocks) <= _MAX_PAGES_PER_CHUNK:
@@ -662,13 +663,13 @@ async def run_multimodal_understanding(
 
         with usage_context(project_id=episode.project_id, episode_id=episode.id, operation="understand"):
             chunk_model = await client.chat.completions.create(
-                model=settings.OPENAI_MODEL,
+                model=vision_cfg.model,
                 messages=[
                     {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT},
                     {"role": "user", "content": content},
                 ],
                 response_model=EpisodeUnderstanding,
-                max_tokens=settings.OPENAI_MAX_TOKENS,
+                max_tokens=vision_cfg.max_tokens,
                 max_retries=2,
             )
         chunk_dict = chunk_model.model_dump()

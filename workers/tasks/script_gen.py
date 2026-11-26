@@ -46,9 +46,10 @@ async def _generate_script_with_feedback(
     user_prompt: str,
     feedback: str | None,
 ):
-    from app.config import settings
+    from app.core.llm import get_active_llm_config
     from app.schemas.storyboard import Storyboard
 
+    llm_cfg = get_active_llm_config("main_llm")
     prompt = user_prompt
     if feedback:
         prompt += (
@@ -57,25 +58,26 @@ async def _generate_script_with_feedback(
             "Regenerate the complete Storyboard resolving every issue listed above."
         )
     return await client.chat.completions.create(
-        model=settings.OPENAI_MODEL,
+        model=llm_cfg.model,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
         response_model=Storyboard,
-        max_tokens=settings.OPENAI_MAX_TOKENS,
+        max_tokens=llm_cfg.max_tokens,
         max_retries=2,
     )
 
 
 async def _check_consistency(client, context: dict, storyboard_dict: dict):
-    from app.config import settings
+    from app.core.llm import get_active_llm_config
     from app.prompts.consistency_check import (
         CONSISTENCY_CHECK_SYSTEM_PROMPT,
         CONSISTENCY_CHECK_USER_TEMPLATE,
     )
     from app.schemas.consistency import ConsistencyReport
 
+    llm_cfg = get_active_llm_config("main_llm")
     user_prompt = CONSISTENCY_CHECK_USER_TEMPLATE.render(
         story_bible=context.get("story_bible") or {},
         canon_rules=context.get("canon_rules", ""),
@@ -89,13 +91,13 @@ async def _check_consistency(client, context: dict, storyboard_dict: dict):
         storyboard_json=json.dumps(storyboard_dict, ensure_ascii=False, indent=2),
     )
     return await client.chat.completions.create(
-        model=settings.OPENAI_MODEL,
+        model=llm_cfg.model,
         messages=[
             {"role": "system", "content": CONSISTENCY_CHECK_SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
         response_model=ConsistencyReport,
-        max_tokens=settings.OPENAI_MAX_TOKENS,
+        max_tokens=llm_cfg.max_tokens,
         max_retries=1,
     )
 
@@ -111,8 +113,7 @@ async def _generate_script_with_db(
     custom_instructions: str | None,
     context_profile: str | None = None,
 ) -> dict:
-    from app.config import settings
-    from app.core.llm import get_llm_client
+    from app.core.llm import get_active_model, get_llm_client
     from app.models.episode import Episode
     from app.models.episode_memory import EpisodeMemory
     from app.models.generation_run import GenerationRun
@@ -123,7 +124,7 @@ async def _generate_script_with_db(
     run = result.scalar_one_or_none()
     if run:
         run.status = "running"
-        run.model = settings.OPENAI_MODEL
+        run.model = get_active_model("main_llm")
         await db.commit()
 
     try:

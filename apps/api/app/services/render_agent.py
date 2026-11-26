@@ -228,8 +228,10 @@ class RenderAgent:
             {"role": "user", "content": brief},
         ]
 
+        from app.core.llm import get_active_llm_config
         from app.core.telemetry import usage_context
 
+        llm_cfg = get_active_llm_config("main_llm")
         fallback: list[str] = []
         nudged_missing = False
         try:
@@ -241,10 +243,10 @@ class RenderAgent:
                     operation="render_plan",
                 ):
                     response = await client.chat.completions.create(
-                        model=settings.OPENAI_MODEL,
+                        model=llm_cfg.model,
                         messages=messages,
                         tools=TOOL_DEFINITIONS,
-                        max_tokens=settings.OPENAI_MAX_TOKENS,
+                        max_tokens=llm_cfg.max_tokens,
                     )
                 message = response.choices[0].message
                 tool_calls = getattr(message, "tool_calls", None) or []

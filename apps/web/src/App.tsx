@@ -8,6 +8,7 @@ import EpisodeDetail from '@/pages/EpisodeDetail'
 import GenerationStudio from '@/pages/GenerationStudio'
 import MangaDexImportPage from '@/pages/MangaDexImport'
 import UsagePage from '@/pages/Usage'
+import ModelsPage from '@/pages/Models'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -26,6 +27,7 @@ export default function App() {
           <Route element={<AppLayout />}>
             <Route path="/" element={<HomePage />} />
             <Route path="/projects" element={<ProjectList />} />
+            <Route path="/models" element={<ModelsPage />} />
             <Route path="/usage" element={<UsagePage />} />
             <Route path="/projects/:id" element={<ProjectDetail />} />
             <Route path="/projects/:projectId/imports/mangadex" element={<MangaDexImportPage />} />

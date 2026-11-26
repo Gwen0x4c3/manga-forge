@@ -9,6 +9,7 @@ from app.models.generated_image import GeneratedImage
 from app.models.generation_run import GenerationRun
 from app.models.import_job import ImportJob
 from app.models.import_job_item import ImportJobItem
+from app.models.model_provider import ModelProvider, ModelRoleBinding
 from app.models.panel import Panel
 from app.models.pit import Pit
 from app.models.project import Project
@@ -20,5 +21,5 @@ __all__ = [
     "EpisodeMemory", "Asset", "AssetImage", "Pit",
     "GenerationRun", "GeneratedImage", "SourceBinding",
     "ImportJob", "ImportJobItem", "EpisodeExternalRef",
-    "UsageRecord",
+    "UsageRecord", "ModelProvider", "ModelRoleBinding",
 ]

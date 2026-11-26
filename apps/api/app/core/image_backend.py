@@ -88,13 +88,19 @@ class OpenAIImageBackend(ImageBackend):
     OpenAI Images API: /images/generations for text-to-image, /images/edits when
     reference images (character sheets etc.) are supplied."""
 
-    def __init__(self, model: str | None = None) -> None:
-        raw_url = settings.IMAGE_API_URL or settings.OPENAI_BASE_URL
-        if raw_url and "open.bigmodel.cn/api/coding/paas/v4" in raw_url and not settings.IMAGE_API_URL:
+    def __init__(
+        self,
+        model: str | None = None,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+    ) -> None:
+        raw_url = base_url or settings.IMAGE_API_URL or settings.OPENAI_BASE_URL
+        if raw_url and "open.bigmodel.cn/api/coding/paas/v4" in raw_url and not base_url and not settings.IMAGE_API_URL:
             raw_url = raw_url.replace("/api/coding/paas/v4", "/api/paas/v4")
         self._base_url = raw_url
         self._client = AsyncOpenAI(
-            api_key=settings.IMAGE_API_KEY or settings.OPENAI_API_KEY,
+            api_key=api_key or settings.IMAGE_API_KEY or settings.OPENAI_API_KEY,
             base_url=raw_url,
             http_client=httpx.AsyncClient(trust_env=False, timeout=600.0),
         )
@@ -263,9 +269,17 @@ class GeminiImageBackend(ImageBackend):
 
     DEFAULT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions"
 
-    def __init__(self, model: str | None = None) -> None:
-        self._endpoint = settings.IMAGE_API_URL or self.DEFAULT_ENDPOINT
-        self._api_key = settings.IMAGE_API_KEY or settings.GEMINI_API_KEY
+    def __init__(
+        self,
+        model: str | None = None,
+        *,
+        api_key: str | None = None,
+        endpoint: str | None = None,
+    ) -> None:
+        self._endpoint = endpoint or settings.IMAGE_API_URL or self.DEFAULT_ENDPOINT
+        if self._endpoint and "/openai" in self._endpoint:
+            self._endpoint = self.DEFAULT_ENDPOINT
+        self._api_key = api_key or settings.IMAGE_API_KEY or settings.GEMINI_API_KEY
         self._model = model or settings.IMAGE_MODEL or "gemini-3.1-flash-image"
 
     async def generate(
@@ -958,17 +972,47 @@ class InstrumentedImageBackend(ImageBackend):
 
 
 def get_image_backend(backend_name: str | None = None, model: str | None = None) -> ImageBackend:
-    backend = backend_name or settings.IMAGE_BACKEND
+    from app.core.provider_runtime import resolve_role_config
+
+    resolved = resolve_role_config("image_gen")
+    if backend_name:
+        backend = backend_name
+        eff_model = model
+        eff_key = None
+        eff_url = None
+    elif resolved.source == "database":
+        if resolved.interface_type == "gemini_image" or resolved.provider_key == "gemini":
+            backend = "gemini"
+        elif resolved.interface_type == "comfyui" or resolved.provider_key == "comfyui":
+            backend = "comfyui"
+        elif resolved.interface_type == "mock":
+            backend = "mock"
+        elif resolved.interface_type == "antigravity":
+            backend = "antigravity"
+        else:
+            backend = "openai"
+        eff_model = model or resolved.model or None
+        eff_key = resolved.api_key or None
+        eff_url = resolved.base_url or None
+    else:
+        backend = settings.IMAGE_BACKEND
+        eff_model = model
+        eff_key = None
+        eff_url = None
+
     if backend == "antigravity":
-        inner: ImageBackend = AntigravityImageBackend(model=model)
+        inner: ImageBackend = AntigravityImageBackend(model=eff_model)
     elif backend == "comfyui":
-        inner = ComfyUIImageBackend(model=model)
+        inner = ComfyUIImageBackend(model=eff_model)
+        if eff_url:
+            inner._base_url = eff_url.rstrip("/")
     elif backend == "openai":
-        inner = OpenAIImageBackend(model=model)
+        inner = OpenAIImageBackend(model=eff_model, api_key=eff_key, base_url=eff_url)
     elif backend in ("gemini", "nano-banana"):
-        inner = GeminiImageBackend(model=model)
+        inner = GeminiImageBackend(model=eff_model, api_key=eff_key)
     elif backend == "custom":
-        inner = CustomHttpBackend(model=model)
+        inner = CustomHttpBackend(model=eff_model)
     else:
         inner = MockImageBackend()
-    return InstrumentedImageBackend(inner, backend_name=backend, default_model=model)
+    provider_label = resolved.provider_key if (not backend_name and resolved.source == "database") else backend
+    return InstrumentedImageBackend(inner, backend_name=provider_label, default_model=eff_model)
