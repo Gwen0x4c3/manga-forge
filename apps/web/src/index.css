@@ -1,142 +1,203 @@
 @import "tailwindcss";
 
 :root {
-  --mf-paper: #f6f3ec;
+  --mf-bg: #f6f8fc;
   --mf-surface: #ffffff;
-  --mf-surface-subtle: #faf8f3;
-  --mf-border: #e5dfd3;
-  --mf-border-strong: #d3cbbd;
-  --mf-ink: #13151b;
-  --mf-ink-muted: #5c606d;
-  --mf-accent: #e11d48;
-  --mf-accent-indigo: #4f46e5;
+  --mf-surface-soft: #f8fafd;
+  --mf-border: #e5eaf2;
+  --mf-border-strong: #d0d9e6;
+  --mf-text: #0f172a;
+  --mf-text-muted: #64748b;
+  --mf-brand: #ff5a36;
+  --mf-brand-pink: #ff2e63;
+  --mf-primary: #2563eb;
   font-family:
-    "Inter", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei",
+    "Plus Jakarta Sans", "Inter", "Hiragino Sans", "PingFang SC", "Noto Sans CJK SC",
     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  color: var(--mf-ink);
-  background-color: var(--mf-paper);
+  color: var(--mf-text);
+  background-color: var(--mf-bg);
 }
 
 body {
   margin: 0;
   min-height: 100vh;
-  background-color: var(--mf-paper);
-  background-image: radial-gradient(rgba(19, 21, 27, 0.045) 0.85px, transparent 0.85px);
-  background-size: 22px 22px;
-  color: var(--mf-ink);
+  background-color: var(--mf-bg);
+  background-image:
+    radial-gradient(ellipse 75% 40% at 15% -5%, rgba(56, 189, 248, 0.14), transparent 60%),
+    radial-gradient(ellipse 65% 35% at 88% -8%, rgba(255, 90, 54, 0.11), transparent 58%);
+  background-attachment: fixed;
+  color: var(--mf-text);
   -webkit-font-smoothing: antialiased;
 }
 
-/* Manga editorial halftone paper surface */
+/* Crisp Figma / Pixiv style airy studio dot canvas */
 .manga-paper-bg {
-  background-color: #efebe2;
-  background-image: radial-gradient(rgba(19, 21, 27, 0.11) 0.9px, transparent 0.9px);
-  background-size: 16px 16px;
+  background-color: #f1f5fb;
+  background-image: radial-gradient(rgba(37, 99, 235, 0.14) 1px, transparent 1px);
+  background-size: 18px 18px;
 }
 
-/* Sumi-ink dark editorial canvas (Hero banners & Story Graph) */
-.ink-hero-surface {
-  background-color: #12141b;
+/* Luminous Pop Daylight Hero Surface (Shonen Jump+ × Figma Light) */
+.pop-hero-surface {
+  background-color: #ffffff;
   background-image:
-    radial-gradient(ellipse at 85% 0%, rgba(225, 29, 72, 0.16), transparent 52%),
-    radial-gradient(ellipse at 10% 100%, rgba(99, 102, 241, 0.18), transparent 55%),
-    radial-gradient(rgba(255, 255, 255, 0.055) 1px, transparent 1px);
-  background-size: 100% 100%, 100% 100%, 18px 18px;
+    radial-gradient(circle at 92% 14%, rgba(255, 90, 54, 0.14), transparent 36%),
+    radial-gradient(circle at 76% 92%, rgba(37, 99, 235, 0.12), transparent 40%),
+    radial-gradient(circle at 8% 8%, rgba(16, 185, 129, 0.08), transparent 34%);
+  border: 1px solid #e2e8f0;
+  box-shadow:
+    0 2px 6px rgba(15, 23, 42, 0.03),
+    0 18px 38px -18px rgba(37, 99, 235, 0.14);
 }
 
 .studio-card {
   background: var(--mf-surface);
   border: 1px solid var(--mf-border);
-  border-radius: 16px;
+  border-radius: 20px;
   box-shadow:
-    0 1px 2px rgba(19, 21, 27, 0.04),
-    0 8px 24px -16px rgba(19, 21, 27, 0.12);
-  transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+    0 1px 3px rgba(15, 23, 42, 0.03),
+    0 10px 26px -14px rgba(15, 23, 42, 0.08);
+  transition: box-shadow 0.22s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.2s ease, transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .studio-card-hover:hover {
-  border-color: #13151b;
+  border-color: #93c5fd;
   box-shadow:
-    0 2px 6px rgba(19, 21, 27, 0.08),
-    0 16px 32px -14px rgba(19, 21, 27, 0.2);
+    0 4px 12px rgba(37, 99, 235, 0.08),
+    0 18px 34px -12px rgba(37, 99, 235, 0.16);
   transform: translateY(-2px);
 }
 
-/* Editorial typography polish for Semi-UI controls */
+.brand-gradient-btn {
+  background: linear-gradient(135deg, #ff5e3a 0%, #ff2e63 100%) !important;
+  border: none !important;
+  color: #ffffff !important;
+  box-shadow: 0 6px 16px -4px rgba(255, 58, 76, 0.42) !important;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, filter 0.18s ease !important;
+}
+
+.brand-gradient-btn:hover {
+  filter: brightness(1.05);
+  box-shadow: 0 10px 22px -4px rgba(255, 58, 76, 0.5) !important;
+  transform: translateY(-1px);
+}
+
+.brand-gradient-btn:active {
+  transform: translateY(0) scale(0.98);
+}
+
+/* Tactile US/JP Modern Component Polish (Semi-UI overrides) */
+.semi-button {
+  border-radius: 12px !important;
+  font-weight: 600 !important;
+  transition: transform 0.15s ease, box-shadow 0.18s ease, background-color 0.18s ease !important;
+}
+
+.semi-button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.semi-button-primary.semi-button-solid {
+  background: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%) !important;
+  border-color: transparent !important;
+  box-shadow: 0 4px 12px -3px rgba(37, 99, 235, 0.38) !important;
+}
+
+.semi-button-primary.semi-button-solid:hover {
+  background: linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%) !important;
+  box-shadow: 0 6px 16px -3px rgba(37, 99, 235, 0.48) !important;
+}
+
+.semi-button-light:not(.semi-button-danger) {
+  background-color: #f1f5f9 !important;
+  color: #1e293b !important;
+  border: 1px solid #e2e8f0 !important;
+}
+
+.semi-button-light:not(.semi-button-danger):hover {
+  background-color: #e2e8f0 !important;
+  border-color: #cbd5e1 !important;
+}
+
+.semi-button-borderless:not(.semi-button-danger) {
+  color: #2563eb !important;
+}
+
+/* Crisp Pill Tabs */
 .semi-tabs-bar-line {
-  border-bottom: 1px solid var(--mf-border) !important;
-  gap: 6px;
+  border-bottom: 1px solid #e5eaf2 !important;
+  gap: 8px;
 }
 
 .semi-tabs-tab {
   font-weight: 600 !important;
-  color: #5c606d !important;
-  padding-top: 10px !important;
-  padding-bottom: 10px !important;
+  color: #64748b !important;
+  padding: 10px 14px !important;
+  border-radius: 12px 12px 0 0 !important;
+  transition: color 0.18s ease, background-color 0.18s ease !important;
+}
+
+.semi-tabs-tab:hover {
+  color: #0f172a !important;
+  background-color: #f8fafc !important;
 }
 
 .semi-tabs-tab-active {
-  color: #13151b !important;
+  color: #2563eb !important;
   font-weight: 700 !important;
 }
 
 .semi-tabs-bar-line .semi-tabs-tab-active::after,
 .semi-tabs-bar-line .semi-tabs-tab-active {
-  border-bottom-color: #13151b !important;
+  border-bottom-color: #2563eb !important;
+  border-bottom-width: 2.5px !important;
 }
 
+/* Apple / Figma Pill Segmented Controls */
 .semi-radioGroup-buttonRadio {
-  background: #efebe2 !important;
-  border-radius: 10px !important;
-  padding: 3px !important;
+  background: #edf2f8 !important;
+  border-radius: 9999px !important;
+  padding: 4px !important;
+  gap: 2px;
 }
 
 .semi-radio-addon-buttonRadio {
-  border-radius: 8px !important;
+  border-radius: 9999px !important;
   font-weight: 600 !important;
+  color: #475569 !important;
+  transition: all 0.18s ease !important;
 }
 
 .semi-radio-addon-buttonRadio-checked {
-  background: #13151b !important;
-  color: #ffffff !important;
-  box-shadow: 0 1px 3px rgba(19, 21, 27, 0.22) !important;
+  background: #ffffff !important;
+  color: #2563eb !important;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08), 0 0 0 1px rgba(37, 99, 235, 0.12) !important;
 }
 
-.semi-button-primary.semi-button-solid {
-  background-color: #181a22 !important;
-  border-color: #181a22 !important;
+/* Inputs, Selects & Sliders */
+.semi-input-wrapper,
+.semi-select,
+.semi-input-textarea-wrapper {
+  border-radius: 12px !important;
 }
 
-.semi-button-primary.semi-button-solid:hover {
-  background-color: #2b2f3d !important;
-  border-color: #2b2f3d !important;
-}
-
-.semi-button-light:not(.semi-button-danger),
-.semi-button-borderless:not(.semi-button-danger) {
-  color: #1c1f28 !important;
-}
-
-.semi-button-light:not(.semi-button-danger) {
-  background-color: #f1ede4 !important;
-  border: 1px solid #e2dccf !important;
-}
-
-.semi-button-light:not(.semi-button-danger):hover {
-  background-color: #e8e2d5 !important;
+.semi-tag {
+  border-radius: 9999px !important;
+  font-weight: 600 !important;
 }
 
 .semi-slider-track {
-  background-color: #181a22 !important;
+  background: linear-gradient(90deg, #2563eb, #38bdf8) !important;
 }
 
 .semi-slider-handle {
-  border-color: #181a22 !important;
+  border-color: #2563eb !important;
+  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.35) !important;
 }
 
 .semi-table-thead > .semi-table-row > .semi-table-row-head {
-  background-color: #faf8f3 !important;
-  color: #4b505d !important;
+  background-color: #f8fafd !important;
+  color: #475569 !important;
   font-weight: 700 !important;
-  border-bottom-color: var(--mf-border) !important;
+  border-bottom-color: #e5eaf2 !important;
 }

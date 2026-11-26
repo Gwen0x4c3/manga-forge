@@ -869,24 +869,24 @@ export default function ProjectDetail() {
 
     return (
         <div className="space-y-6">
-            {/* Editorial Sumi-Ink Project Hero Banner */}
-            <div className="rounded-2xl ink-hero-surface text-white p-6 md:p-7 space-y-5 shadow-lg border border-white/10">
+            {/* Luminous Bright Pop Editorial Project Hero */}
+            <div className="rounded-3xl pop-hero-surface p-6 md:p-7 space-y-5">
                 <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
                     <div className="space-y-2">
                         <div className="flex flex-wrap items-center gap-2.5">
-                            <h1 className="text-2xl md:text-[26px] font-black tracking-tight text-white m-0">
+                            <h1 className="text-2xl md:text-[28px] font-black tracking-tight text-slate-900 m-0">
                                 {project.title}
                             </h1>
-                            <span className="px-2 py-0.5 rounded bg-white/10 border border-white/15 text-[11px] font-bold text-slate-200">
+                            <span className="px-2.5 py-0.5 rounded-full bg-blue-50 border border-blue-200/80 text-[11px] font-bold text-blue-700">
                                 {project.language.toUpperCase()}
                             </span>
                             {storyBible?.art_style && (
-                                <span className="px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/30 text-[11px] font-semibold text-emerald-200">
-                                    画风已锚定
+                                <span className="px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200/80 text-[11px] font-bold text-emerald-700">
+                                    ✦ 画风已锚定
                                 </span>
                             )}
                         </div>
-                        <p className="text-xs md:text-sm text-slate-300 m-0 max-w-3xl leading-relaxed">
+                        <p className="text-xs md:text-sm text-slate-600 m-0 max-w-3xl leading-relaxed">
                             {project.description || '导入连载章节并执行多模态理解后，系统将自动提取人物/道具/场景设定、主线脉络与伏笔。'}
                         </p>
                     </div>
@@ -894,21 +894,21 @@ export default function ProjectDetail() {
                     <div className="flex flex-wrap items-center gap-2">
                         <Button
                             icon={<IconLink />}
-                            style={{ backgroundColor: 'rgba(255,255,255,0.08)', color: '#f8fafc', border: '1px solid rgba(255,255,255,0.16)' }}
+                            theme="light"
                             onClick={() => navigate(`/projects/${projectId}/imports/mangadex`)}
                         >
                             MangaDex 抓取
                         </Button>
                         <Button
                             icon={<IconPlus />}
-                            style={{ backgroundColor: 'rgba(255,255,255,0.08)', color: '#f8fafc', border: '1px solid rgba(255,255,255,0.16)' }}
+                            theme="light"
                             onClick={() => setShowImport(true)}
                         >
                             导入章节
                         </Button>
                         <Button
                             icon={<IconBolt />}
-                            style={{ backgroundColor: 'rgba(99,102,241,0.22)', color: '#e0e7ff', border: '1px solid rgba(129,140,248,0.35)' }}
+                            theme="solid"
                             loading={batchUnderstandMutation.isPending}
                             onClick={() => batchUnderstandMutation.mutate(false)}
                         >
@@ -917,7 +917,7 @@ export default function ProjectDetail() {
                         <Button
                             icon={<IconForward />}
                             theme="solid"
-                            style={{ backgroundColor: '#e11d48', color: '#fff', borderColor: '#e11d48' }}
+                            className="brand-gradient-btn"
                             disabled={episodes.length === 0}
                             onClick={() => openContinueModal()}
                         >
@@ -926,45 +926,45 @@ export default function ProjectDetail() {
                     </div>
                 </div>
 
-                {/* Translucent Ink Metrics Strip */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-3 border-t border-white/10">
+                {/* Energetic Color-Accented KPI Cards */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-2">
                     <div
-                        className="rounded-xl bg-white/[0.06] hover:bg-white/[0.1] border border-white/10 px-4 py-3 cursor-pointer transition"
+                        className="rounded-2xl bg-gradient-to-br from-blue-50/80 to-white hover:border-blue-300 border border-blue-100 px-4 py-3.5 cursor-pointer transition-all hover:-translate-y-0.5"
                         onClick={() => setActiveTab('episodes')}
                     >
-                        <div className="text-[11px] text-slate-400">当前连载章节</div>
-                        <div className="text-xl font-black text-white mt-0.5">
+                        <div className="text-[11px] font-bold text-blue-600 uppercase tracking-wide">连载章节</div>
+                        <div className="text-2xl font-black text-slate-900 mt-0.5">
                             {episodesData?.total || 0}{' '}
-                            <span className="text-xs font-normal text-slate-400">话 · 已理解 {understoodCount}</span>
+                            <span className="text-xs font-semibold text-slate-500">话 · 已理解 {understoodCount}</span>
                         </div>
                     </div>
                     <div
-                        className="rounded-xl bg-white/[0.06] hover:bg-white/[0.1] border border-white/10 px-4 py-3 cursor-pointer transition"
+                        className="rounded-2xl bg-gradient-to-br from-violet-50/80 to-white hover:border-violet-300 border border-violet-100 px-4 py-3.5 cursor-pointer transition-all hover:-translate-y-0.5"
                         onClick={() => setActiveTab('story')}
                     >
-                        <div className="text-[11px] text-slate-400">主线篇章状态</div>
-                        <div className="text-sm font-bold text-rose-200 mt-1 line-clamp-1">
+                        <div className="text-[11px] font-bold text-violet-600 uppercase tracking-wide">当前主线篇章</div>
+                        <div className="text-sm font-extrabold text-slate-900 mt-1.5 line-clamp-1">
                             {mainPlot?.current_arc || (project.long_summary ? '已生成长程摘要' : '待理解提炼')}
                         </div>
                     </div>
                     <div
-                        className="rounded-xl bg-white/[0.06] hover:bg-white/[0.1] border border-white/10 px-4 py-3 cursor-pointer transition"
+                        className="rounded-2xl bg-gradient-to-br from-emerald-50/80 to-white hover:border-emerald-300 border border-emerald-100 px-4 py-3.5 cursor-pointer transition-all hover:-translate-y-0.5"
                         onClick={() => setActiveTab('assets')}
                     >
-                        <div className="text-[11px] text-slate-400">视觉设定资产</div>
-                        <div className="text-xl font-black text-white mt-0.5">
+                        <div className="text-[11px] font-bold text-emerald-600 uppercase tracking-wide">视觉设定资产</div>
+                        <div className="text-2xl font-black text-slate-900 mt-0.5">
                             {assetsData?.total || 0}{' '}
-                            <span className="text-xs font-normal text-slate-400">项（角色/道具/场景）</span>
+                            <span className="text-xs font-semibold text-slate-500">项（角色/道具/场景）</span>
                         </div>
                     </div>
                     <div
-                        className="rounded-xl bg-white/[0.06] hover:bg-white/[0.1] border border-white/10 px-4 py-3 cursor-pointer transition"
+                        className="rounded-2xl bg-gradient-to-br from-orange-50/90 to-white hover:border-orange-300 border border-orange-100 px-4 py-3.5 cursor-pointer transition-all hover:-translate-y-0.5"
                         onClick={() => setActiveTab('atlas')}
                     >
-                        <div className="text-[11px] text-slate-400">活跃伏笔 / 悬念线</div>
-                        <div className="text-xl font-black text-amber-300 mt-0.5">
+                        <div className="text-[11px] font-bold text-[#ff5a36] uppercase tracking-wide">活跃伏笔悬念</div>
+                        <div className="text-2xl font-black text-[#ff5a36] mt-0.5">
                             {pitsData?.total || 0}{' '}
-                            <span className="text-xs font-normal text-slate-400">
+                            <span className="text-xs font-semibold text-slate-500">
                                 条 ({pitStatusFilter === 'open' ? '待回收' : '当前筛选'})
                             </span>
                         </div>

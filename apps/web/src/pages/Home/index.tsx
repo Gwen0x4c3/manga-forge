@@ -54,34 +54,36 @@ export default function HomePage() {
 
     return (
         <div className="space-y-8">
-            <section className="relative overflow-hidden rounded-2xl ink-hero-surface text-white p-8 md:p-11 shadow-xl border border-white/10">
+            <section className="relative overflow-hidden rounded-3xl pop-hero-surface p-8 md:p-11">
                 <div className="relative z-10 max-w-3xl space-y-4">
-                    <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-rose-500/15 border border-rose-400/30 text-rose-200 text-xs font-semibold tracking-wide">
+                    <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-gradient-to-r from-orange-50 to-rose-50 border border-orange-200/80 text-[#ff4d36] text-xs font-bold tracking-wide">
                         <IconBolt size="small" />
-                        MANGAFORGE CONTINUITY ENGINE · 连载漫画图谱与续画工坊
+                        MANGAFORGE STUDIO · AI 连载漫画图谱与续画工作台
                     </div>
-                    <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight leading-tight m-0">
+                    <h1 className="text-3xl md:text-4xl font-black tracking-tight leading-tight text-slate-900 m-0">
                         读懂整部连载的人物命运与伏笔，
                         <br />
-                        <span className="text-rose-300">创作真正忠于原作的下一话漫画</span>
+                        <span className="bg-gradient-to-r from-[#ff5a36] via-[#ff2e63] to-[#2563eb] bg-clip-text text-transparent">
+                            创作真正忠于原作的下一话漫画
+                        </span>
                     </h1>
-                    <p className="text-slate-300 text-sm md:text-base leading-relaxed m-0 max-w-2xl">
-                        从原画多模态理解、视觉参考图自动裁剪、角色生死与状态跨话迭代，到交互式故事宇宙图谱、单格精修渲染与传统日漫竖排嵌字，全链路闭环驱动连载级续画。
+                    <p className="text-slate-600 text-sm md:text-base leading-relaxed m-0 max-w-2xl">
+                        从原画多模态理解、视觉参考图自动裁剪、角色生死与状态跨话迭代，到交互式故事宇宙图谱、单格精修渲染与传统日漫竖排嵌字，让每一话续作都保持饱满的原作灵魂。
                     </p>
                     <div className="pt-2 flex flex-wrap gap-3">
                         <Button
                             size="large"
                             theme="solid"
+                            className="brand-gradient-btn"
                             icon={<IconPlus />}
-                            style={{ backgroundColor: '#e11d48', color: '#fff', borderColor: '#e11d48' }}
                             onClick={() => navigate('/projects?create=1')}
                         >
                             新建连载漫画项目
                         </Button>
                         <Button
                             size="large"
+                            theme="light"
                             icon={<IconFolder />}
-                            style={{ backgroundColor: 'rgba(255,255,255,0.08)', color: '#fff', border: '1px solid rgba(255,255,255,0.18)' }}
                             onClick={() => navigate('/projects')}
                         >
                             浏览全部作品 ({data?.total ?? 0})

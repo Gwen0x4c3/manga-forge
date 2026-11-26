@@ -1,5 +1,5 @@
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
-import { IconHome, IconFolder, IconPlus } from '@douyinfe/semi-icons'
+import { IconHome, IconFolder, IconPlus, IconBolt } from '@douyinfe/semi-icons'
 
 export default function AppLayout() {
     const navigate = useNavigate()
@@ -16,34 +16,34 @@ export default function AppLayout() {
     }
 
     return (
-        <div className="min-h-screen flex flex-col text-[#13151b]">
-            {/* Sleek Editorial Sumi-Ink Top Bar — full-width studio canvas below */}
-            <header className="sticky top-0 z-30 h-14 bg-[#12141b]/95 backdrop-blur-md border-b border-white/10 text-white">
+        <div className="min-h-screen flex flex-col text-slate-900">
+            {/* Airy Bright Daylight Glass Topbar (JP Pop × US Modern Creative Tool) */}
+            <header className="sticky top-0 z-30 h-16 bg-white/85 backdrop-blur-xl border-b border-slate-200/80">
                 <div className="max-w-[1480px] h-full mx-auto px-5 md:px-8 flex items-center justify-between gap-4">
-                    <div className="flex items-center gap-7">
-                        {/* Manga Stamp Brand Mark */}
+                    <div className="flex items-center gap-6">
+                        {/* Energetic Pop Brand Mark */}
                         <button
                             type="button"
                             onClick={() => navigate('/')}
                             className="flex items-center gap-2.5 bg-transparent border-0 p-0 cursor-pointer group"
                         >
-                            <span className="w-8 h-8 rounded-lg bg-[#e11d48] text-white font-black text-sm tracking-tighter flex items-center justify-center shadow-md shadow-rose-600/30 group-hover:scale-105 transition-transform">
-                                漫
+                            <span className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#ff5e3a] via-[#ff3b5c] to-[#f43f5e] text-white flex items-center justify-center shadow-md shadow-rose-500/25 group-hover:scale-105 group-hover:-rotate-3 transition-transform">
+                                <IconBolt size="large" />
                             </span>
                             <div className="text-left">
-                                <div className="flex items-center gap-1.5 leading-none">
-                                    <span className="text-[15px] font-extrabold tracking-tight text-white">
+                                <div className="flex items-center gap-2 leading-none">
+                                    <span className="text-[17px] font-black tracking-tight text-slate-900">
                                         MangaForge
                                     </span>
-                                    <span className="text-[9px] font-bold tracking-widest uppercase px-1.5 py-0.5 rounded bg-white/10 text-rose-300 border border-white/10">
+                                    <span className="text-[10px] font-extrabold tracking-wider uppercase px-2 py-0.5 rounded-full bg-gradient-to-r from-blue-50 to-sky-50 text-blue-600 border border-blue-200/80">
                                         Studio
                                     </span>
                                 </div>
                             </div>
                         </button>
 
-                        {/* Primary Navigation */}
-                        <nav className="flex items-center gap-1">
+                        {/* Pill Navigation */}
+                        <nav className="flex items-center gap-1.5 bg-slate-100/90 p-1 rounded-full border border-slate-200/70">
                             {navItems.map((item) => {
                                 const active = isActive(item.key)
                                 return (
@@ -51,10 +51,10 @@ export default function AppLayout() {
                                         key={item.key}
                                         type="button"
                                         onClick={() => navigate(item.key)}
-                                        className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer border-0 ${
+                                        className={`px-4 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer border-0 ${
                                             active
-                                                ? 'bg-white text-[#12141b] shadow-sm'
-                                                : 'bg-transparent text-slate-300 hover:text-white hover:bg-white/10'
+                                                ? 'bg-white text-blue-600 shadow-sm'
+                                                : 'bg-transparent text-slate-600 hover:text-slate-900'
                                         }`}
                                     >
                                         {item.icon}
@@ -66,14 +66,14 @@ export default function AppLayout() {
                     </div>
 
                     <div className="flex items-center gap-3">
-                        <div className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[11px] text-slate-300">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                            <span>长程记忆与图谱引擎就绪</span>
+                        <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-50 border border-emerald-200/80 text-[11px] font-semibold text-emerald-700">
+                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                            <span>Story Engine Online</span>
                         </div>
                         <button
                             type="button"
                             onClick={() => navigate('/projects?create=1')}
-                            className="px-3 py-1.5 rounded-lg bg-[#e11d48] hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-1.5 border-0 cursor-pointer shadow-sm shadow-rose-600/30 transition"
+                            className="brand-gradient-btn px-4 py-2 rounded-full text-xs font-bold flex items-center gap-1.5 cursor-pointer"
                         >
                             <IconPlus size="small" />
                             新建连载

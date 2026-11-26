@@ -9,19 +9,19 @@ interface Props {
     onStatusUpdated?: () => void
 }
 
-const ROLE_STYLES: Record<string, { stroke: string; glow: string; label: string }> = {
-    protagonist: { stroke: '#f43f5e', glow: 'rgba(244,63,94,0.35)', label: '主角' },
-    main: { stroke: '#818cf8', glow: 'rgba(129,140,248,0.32)', label: '主要角色' },
-    antagonist: { stroke: '#f59e0b', glow: 'rgba(245,158,11,0.32)', label: '反派/对手' },
-    support: { stroke: '#2dd4bf', glow: 'rgba(45,212,191,0.28)', label: '配角' },
+const ROLE_STYLES: Record<string, { stroke: string; glow: string; bg: string; label: string }> = {
+    protagonist: { stroke: '#ff5a36', glow: 'rgba(255,90,54,0.22)', bg: '#fff4f0', label: '主角' },
+    main: { stroke: '#2563eb', glow: 'rgba(37,99,235,0.20)', bg: '#eff6ff', label: '主要角色' },
+    antagonist: { stroke: '#8b5cf6', glow: 'rgba(139,92,246,0.20)', bg: '#f5f3ff', label: '反派/对手' },
+    support: { stroke: '#10b981', glow: 'rgba(16,185,129,0.20)', bg: '#ecfdf5', label: '配角' },
 }
 
-const VITAL_META: Record<string, { label: string; badgeBg: string; badgeText: string; short: string }> = {
-    alive: { label: '存活', badgeBg: 'bg-emerald-50 border-emerald-200', badgeText: 'text-emerald-800', short: '存活' },
-    injured: { label: '重伤 / 失能', badgeBg: 'bg-amber-50 border-amber-200', badgeText: 'text-amber-800', short: '重伤' },
-    missing: { label: '失踪 / 下落不明', badgeBg: 'bg-violet-50 border-violet-200', badgeText: 'text-violet-800', short: '失踪' },
-    sealed: { label: '封印 / 囚禁', badgeBg: 'bg-sky-50 border-sky-200', badgeText: 'text-sky-800', short: '封印' },
-    deceased: { label: '† 已故（死亡锁定）', badgeBg: 'bg-rose-50 border-rose-300', badgeText: 'text-rose-800', short: '† 已故' },
+const VITAL_META: Record<string, { label: string; badgeBg: string; badgeText: string }> = {
+    alive: { label: '存活', badgeBg: 'bg-emerald-50/90 border-emerald-200', badgeText: 'text-emerald-700' },
+    injured: { label: '重伤 / 失能', badgeBg: 'bg-amber-50/90 border-amber-200', badgeText: 'text-amber-700' },
+    missing: { label: '失踪 / 下落不明', badgeBg: 'bg-violet-50/90 border-violet-200', badgeText: 'text-violet-700' },
+    sealed: { label: '封印 / 囚禁', badgeBg: 'bg-sky-50/90 border-sky-200', badgeText: 'text-sky-700' },
+    deceased: { label: '† 已故（死亡锁定）', badgeBg: 'bg-rose-50/90 border-rose-200', badgeText: 'text-rose-700' },
 }
 
 const SVG_W = 880
@@ -59,14 +59,14 @@ export default function CharacterGraph({ nodes, edges, onStatusUpdated }: Props)
 
         visibleNodes.forEach((node, idx) => {
             const ratio = (node.appearances || 1) / maxApp
-            const r = Math.round(24 + ratio * 15)
+            const r = Math.round(25 + ratio * 15)
             if (n === 1) {
                 pos.set(node.id, { x: CX, y: CY, r: 38 })
                 return
             }
             if (idx < innerCount) {
                 const angle = (idx / innerCount) * Math.PI * 2 - Math.PI / 2
-                const rad = innerCount <= 3 ? 120 : 136
+                const rad = innerCount <= 3 ? 122 : 138
                 pos.set(node.id, {
                     x: CX + Math.cos(angle) * rad * 1.18,
                     y: CY + Math.sin(angle) * rad * 0.92,
@@ -94,15 +94,15 @@ export default function CharacterGraph({ nodes, edges, onStatusUpdated }: Props)
                     const dx = b.x - a.x
                     const dy = b.y - a.y
                     const dist = Math.hypot(dx, dy) || 1
-                    const minDist = a.r + b.r + 42
+                    const minDist = a.r + b.r + 44
                     if (dist < minDist) {
                         const push = (minDist - dist) * 0.25
                         const ux = dx / dist
                         const uy = dy / dist
-                        a.x = Math.max(66, Math.min(SVG_W - 66, a.x - ux * push))
-                        a.y = Math.max(58, Math.min(SVG_H - 68, a.y - uy * push))
-                        b.x = Math.max(66, Math.min(SVG_W - 66, b.x + ux * push))
-                        b.y = Math.max(58, Math.min(SVG_H - 68, b.y + uy * push))
+                        a.x = Math.max(70, Math.min(SVG_W - 70, a.x - ux * push))
+                        a.y = Math.max(58, Math.min(SVG_H - 86, a.y - uy * push))
+                        b.x = Math.max(70, Math.min(SVG_W - 70, b.x + ux * push))
+                        b.y = Math.max(58, Math.min(SVG_H - 86, b.y + uy * push))
                     }
                 }
             }
@@ -140,7 +140,11 @@ export default function CharacterGraph({ nodes, edges, onStatusUpdated }: Props)
                 nextTags.vital_status_override = nextVal
             }
             await assetService.update(node.id, { tags: nextTags })
-            Toast.success(nextVal === 'auto' ? `已恢复 ${node.name} 为剧情自动推导状态` : `已锁定 ${node.name} 状态为「${VITAL_META[nextVal]?.label || nextVal}」`)
+            Toast.success(
+                nextVal === 'auto'
+                    ? `已恢复 ${node.name} 为剧情自动推导状态`
+                    : `已锁定 ${node.name} 状态为「${VITAL_META[nextVal]?.label || nextVal}」`,
+            )
             onStatusUpdated?.()
         } catch {
             Toast.error('更新角色生命状态失败')
@@ -157,13 +161,13 @@ export default function CharacterGraph({ nodes, edges, onStatusUpdated }: Props)
         <div className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                    <h3 className="text-base font-extrabold text-[#13151b] m-0 tracking-tight">人物共现与命运演进星图</h3>
-                    <p className="text-xs text-[#5c606d] m-0 mt-0.5">
-                        节点光环代表角色定位、大小映射出场话数，已故角色自动转为黑白肖像并锁定续画禁令；点击头像查看服装与跨话状态轨迹
+                    <h3 className="text-base font-extrabold text-slate-900 m-0 tracking-tight">人物共现与命运演进图谱</h3>
+                    <p className="text-xs text-slate-500 m-0 mt-0.5">
+                        节点大小映射出场话数，彩色光环区分角色定位；已故角色自动转为黑白肖像并锁定续画禁活，点击头像查看服装与状态轨迹
                     </p>
                 </div>
                 <div className="flex items-center gap-3">
-                    <div className="hidden md:flex items-center gap-2.5 text-[11px] text-[#5c606d]">
+                    <div className="hidden md:flex items-center gap-2.5 text-[11px] font-semibold text-slate-600 bg-slate-50 px-3 py-1.5 rounded-full border border-slate-200/80">
                         {Object.entries(ROLE_STYLES).map(([k, v]) => (
                             <span key={k} className="inline-flex items-center gap-1.5">
                                 <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: v.stroke }} />
@@ -187,21 +191,27 @@ export default function CharacterGraph({ nodes, edges, onStatusUpdated }: Props)
             </div>
 
             <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
-                {/* Dark Sumi-Ink Constellation Canvas */}
-                <div className="xl:col-span-8 rounded-2xl border border-[#232735] bg-[#101219] overflow-hidden relative shadow-lg">
+                {/* Bright Airy Figma / Pixiv Pop Constellation Canvas */}
+                <div className="xl:col-span-8 rounded-3xl border border-slate-200/90 bg-gradient-to-br from-white via-[#f7faff] to-[#fff7f5] overflow-hidden relative shadow-sm">
                     <svg
                         viewBox={`0 0 ${SVG_W} ${SVG_H}`}
                         className="w-full h-auto block select-none"
                         style={{ minHeight: 430 }}
                     >
                         <defs>
-                            <radialGradient id="constellation-glow" cx="50%" cy="50%" r="58%">
-                                <stop offset="0%" stopColor="#4f46e5" stopOpacity="0.18" />
-                                <stop offset="55%" stopColor="#e11d48" stopOpacity="0.06" />
-                                <stop offset="100%" stopColor="#0d0f15" stopOpacity="0" />
+                            <pattern id="pop-dot-grid" width="22" height="22" patternUnits="userSpaceOnUse">
+                                <circle cx="2" cy="2" r="1" fill="#cbd5e1" fillOpacity="0.45" />
+                            </pattern>
+                            <radialGradient id="pop-center-aura" cx="50%" cy="50%" r="55%">
+                                <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.11" />
+                                <stop offset="55%" stopColor="#ff5a36" stopOpacity="0.06" />
+                                <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
                             </radialGradient>
                             <filter id="deceased-mono">
                                 <feColorMatrix type="saturate" values="0" />
+                            </filter>
+                            <filter id="pill-shadow" x="-20%" y="-20%" width="140%" height="160%">
+                                <feDropShadow dx="0" dy="2" stdDeviation="2.5" floodColor="#0f172a" floodOpacity="0.1" />
                             </filter>
                             {visibleNodes.map((node) => {
                                 const p = positions.get(node.id)
@@ -214,11 +224,11 @@ export default function CharacterGraph({ nodes, edges, onStatusUpdated }: Props)
                             })}
                         </defs>
 
-                        {/* Deep space ink backdrop + subtle editorial orbital rings */}
-                        <rect x={0} y={0} width={SVG_W} height={SVG_H} fill="#101219" />
-                        <rect x={0} y={0} width={SVG_W} height={SVG_H} fill="url(#constellation-glow)" />
-                        <ellipse cx={CX} cy={CY} rx={155} ry={125} fill="none" stroke="rgba(255,255,255,0.05)" strokeDasharray="4 6" />
-                        <ellipse cx={CX} cy={CY} rx={305} ry={210} fill="none" stroke="rgba(255,255,255,0.04)" strokeDasharray="3 8" />
+                        {/* Crisp Bright Dot Canvas + Soft Orbital Rings */}
+                        <rect x={0} y={0} width={SVG_W} height={SVG_H} fill="url(#pop-dot-grid)" />
+                        <rect x={0} y={0} width={SVG_W} height={SVG_H} fill="url(#pop-center-aura)" />
+                        <ellipse cx={CX} cy={CY} rx={155} ry={125} fill="none" stroke="#dbeafe" strokeWidth={1.5} strokeDasharray="5 7" />
+                        <ellipse cx={CX} cy={CY} rx={305} ry={210} fill="none" stroke="#e2e8f0" strokeWidth={1.2} strokeDasharray="4 8" />
 
                         {/* Co-occurrence Edges */}
                         {visibleEdges.map((edge) => {
@@ -231,7 +241,7 @@ export default function CharacterGraph({ nodes, edges, onStatusUpdated }: Props)
                                 isSelected ||
                                 (hoveredId !== null && (edge.source === hoveredId || edge.target === hoveredId))
                             const dimmed = hoveredId !== null && !isHighlighted
-                            const strokeWidth = 1.2 + (edge.weight / maxWeight) * 3.8
+                            const strokeWidth = 1.4 + (edge.weight / maxWeight) * 4.2
                             const mx = (a.x + b.x) / 2
                             const my = (a.y + b.y) / 2
                             return (
@@ -249,21 +259,21 @@ export default function CharacterGraph({ nodes, edges, onStatusUpdated }: Props)
                                         y1={a.y}
                                         x2={b.x}
                                         y2={b.y}
-                                        stroke={isSelected ? '#f43f5e' : isHighlighted ? '#a5b4fc' : '#64748b'}
+                                        stroke={isSelected ? '#ff5a36' : isHighlighted ? '#2563eb' : '#94a3b8'}
                                         strokeWidth={isSelected ? strokeWidth + 1.4 : strokeWidth}
-                                        strokeOpacity={dimmed ? 0.1 : isHighlighted ? 0.85 : 0.32}
+                                        strokeOpacity={dimmed ? 0.14 : isHighlighted ? 0.85 : 0.34}
                                         strokeLinecap="round"
                                     />
                                     {(isHighlighted || edge.weight >= Math.max(3, Math.ceil(maxWeight * 0.65))) && (
-                                        <g opacity={dimmed ? 0.15 : 1}>
-                                            <circle cx={mx} cy={my} r={10.5} fill="#181b26" stroke={isSelected ? '#f43f5e' : '#6366f1'} strokeWidth={1.3} />
+                                        <g opacity={dimmed ? 0.15 : 1} filter="url(#pill-shadow)">
+                                            <circle cx={mx} cy={my} r={11} fill="#ffffff" stroke={isSelected ? '#ff5a36' : '#3b82f6'} strokeWidth={1.6} />
                                             <text
                                                 x={mx}
                                                 y={my + 3.5}
                                                 textAnchor="middle"
                                                 fontSize={9.5}
-                                                fontWeight={700}
-                                                fill="#e2e8f0"
+                                                fontWeight={800}
+                                                fill={isSelected ? '#ff5a36' : '#2563eb'}
                                             >
                                                 {edge.weight}
                                             </text>
@@ -285,13 +295,13 @@ export default function CharacterGraph({ nodes, edges, onStatusUpdated }: Props)
                             const dimmed = connectedToHover !== null && !connectedToHover.has(node.id)
                             const initials = node.name.slice(0, 2)
                             const labelText = node.name.length > 7 ? `${node.name.slice(0, 6)}…` : node.name
-                            const pillW = Math.min(130, Math.max(62, labelText.length * 14 + 26))
+                            const pillW = Math.min(130, Math.max(64, labelText.length * 14 + 26))
 
                             return (
                                 <g
                                     key={node.id}
                                     className="cursor-pointer"
-                                    opacity={dimmed ? 0.22 : 1}
+                                    opacity={dimmed ? 0.25 : 1}
                                     onMouseEnter={() => setHoveredId(node.id)}
                                     onMouseLeave={() => setHoveredId(null)}
                                     onClick={() => {
@@ -299,21 +309,21 @@ export default function CharacterGraph({ nodes, edges, onStatusUpdated }: Props)
                                         setSelectedEdgeKey(null)
                                     }}
                                 >
-                                    {/* Ambient halo behind node */}
+                                    {/* Soft pastel aura */}
                                     <circle
                                         cx={p.x}
                                         cy={p.y}
-                                        r={p.r + (isSelected ? 10 : 5)}
-                                        fill={isDeceased ? 'rgba(148,163,184,0.14)' : roleStyle.glow}
+                                        r={p.r + (isSelected ? 11 : 6)}
+                                        fill={isDeceased ? 'rgba(148,163,184,0.16)' : roleStyle.glow}
                                     />
                                     {isSelected && (
                                         <circle
                                             cx={p.x}
                                             cy={p.y}
-                                            r={p.r + 6}
+                                            r={p.r + 6.5}
                                             fill="none"
                                             stroke={ringColor}
-                                            strokeWidth={2}
+                                            strokeWidth={2.2}
                                             strokeDasharray="5 3"
                                         />
                                     )}
@@ -321,10 +331,11 @@ export default function CharacterGraph({ nodes, edges, onStatusUpdated }: Props)
                                         cx={p.x}
                                         cy={p.y}
                                         r={p.r}
-                                        fill="#1a1e2b"
+                                        fill={isDeceased ? '#f1f5f9' : roleStyle.bg}
                                         stroke={ringColor}
-                                        strokeWidth={isSelected ? 3 : 2.2}
+                                        strokeWidth={isSelected ? 3.2 : 2.5}
                                         strokeDasharray={isUnavailable ? '4 3' : undefined}
+                                        filter="url(#pill-shadow)"
                                     />
                                     {node.avatar_path ? (
                                         <image
@@ -344,63 +355,64 @@ export default function CharacterGraph({ nodes, edges, onStatusUpdated }: Props)
                                             y={p.y + 5}
                                             textAnchor="middle"
                                             fontSize={13}
-                                            fontWeight={700}
+                                            fontWeight={800}
                                             fill={ringColor}
                                         >
                                             {initials}
                                         </text>
                                     )}
 
-                                    {/* Top-right badge: † if deceased, else appearance count */}
+                                    {/* Top-right pill badge: † if deceased, else appearance count */}
                                     <circle
                                         cx={p.x + p.r * 0.72}
                                         cy={p.y - p.r * 0.72}
-                                        r={10.5}
-                                        fill={isDeceased ? '#e11d48' : ringColor}
-                                        stroke="#101219"
-                                        strokeWidth={1.8}
+                                        r={11}
+                                        fill={isDeceased ? '#f43f5e' : ringColor}
+                                        stroke="#ffffff"
+                                        strokeWidth={2}
                                     />
                                     <text
                                         x={p.x + p.r * 0.72}
-                                        y={p.y - p.r * 0.72 + (isDeceased ? 4 : 3.5)}
+                                        y={p.y - p.r * 0.72 + (isDeceased ? 4.2 : 3.5)}
                                         textAnchor="middle"
-                                        fontSize={isDeceased ? 12 : 9.5}
+                                        fontSize={isDeceased ? 12.5 : 9.5}
                                         fontWeight={800}
                                         fill="#ffffff"
                                     >
                                         {isDeceased ? '†' : node.appearances}
                                     </text>
 
-                                    {/* High-contrast dark-glass label pill */}
-                                    <rect
-                                        x={p.x - pillW / 2}
-                                        y={p.y + p.r + 7}
-                                        width={pillW}
-                                        height={22}
-                                        rx={11}
-                                        fill="#171a24"
-                                        fillOpacity={0.96}
-                                        stroke={isSelected ? ringColor : 'rgba(255,255,255,0.16)'}
-                                        strokeWidth={isSelected ? 1.5 : 1}
-                                    />
-                                    <text
-                                        x={p.x}
-                                        y={p.y + p.r + 21.5}
-                                        textAnchor="middle"
-                                        fontSize={11.5}
-                                        fontWeight={700}
-                                        fill={isDeceased ? '#cbd5e1' : '#f8fafc'}
-                                    >
-                                        {labelText}
-                                    </text>
+                                    {/* Crisp Floating White Nameplate Pill */}
+                                    <g filter="url(#pill-shadow)">
+                                        <rect
+                                            x={p.x - pillW / 2}
+                                            y={p.y + p.r + 7}
+                                            width={pillW}
+                                            height={23}
+                                            rx={11.5}
+                                            fill="#ffffff"
+                                            stroke={isSelected ? ringColor : '#e2e8f0'}
+                                            strokeWidth={isSelected ? 1.8 : 1.1}
+                                        />
+                                        <text
+                                            x={p.x}
+                                            y={p.y + p.r + 22}
+                                            textAnchor="middle"
+                                            fontSize={11.5}
+                                            fontWeight={700}
+                                            fill={isDeceased ? '#64748b' : '#0f172a'}
+                                        >
+                                            {labelText}
+                                        </text>
+                                    </g>
                                 </g>
                             )
                         })}
                     </svg>
                 </div>
 
-                {/* Right-side Editorial Character Dossier & Lifecycle Lock */}
-                <div className="xl:col-span-4 rounded-2xl border border-[#e5dfd3] bg-[#faf8f3] p-4 space-y-4 max-h-[540px] overflow-y-auto">
+                {/* Right-side Crisp Apple / Pixiv Style Character Dossier */}
+                <div className="xl:col-span-4 rounded-3xl border border-slate-200/90 bg-white p-5 space-y-4 max-h-[540px] overflow-y-auto shadow-sm">
                     {selectedNode ? (
                         (() => {
                             const vKey = selectedNode.vital_status || 'alive'
@@ -408,34 +420,34 @@ export default function CharacterGraph({ nodes, edges, onStatusUpdated }: Props)
                             const isDeceased = vKey === 'deceased'
                             return (
                                 <>
-                                    <div className="flex items-start gap-3.5 pb-3.5 border-b border-[#e5dfd3]">
+                                    <div className="flex items-start gap-3.5 pb-3.5 border-b border-slate-100">
                                         {selectedNode.avatar_path ? (
                                             <img
                                                 src={storageFileUrl(selectedNode.avatar_path)}
                                                 alt={selectedNode.name}
-                                                className={`w-16 h-16 rounded-xl object-cover border border-[#d3cbbd] shrink-0 ${
-                                                    isDeceased ? 'grayscale opacity-80' : ''
+                                                className={`w-16 h-16 rounded-2xl object-cover border-2 border-slate-100 shadow-sm shrink-0 ${
+                                                    isDeceased ? 'grayscale opacity-75' : ''
                                                 }`}
                                             />
                                         ) : (
-                                            <div className="w-16 h-16 rounded-xl bg-[#13151b] text-white font-bold text-lg flex items-center justify-center shrink-0">
+                                            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-sky-400 text-white font-bold text-lg flex items-center justify-center shrink-0">
                                                 {selectedNode.name.slice(0, 2)}
                                             </div>
                                         )}
                                         <div className="min-w-0 flex-1 space-y-1.5">
                                             <div className="flex items-center gap-1.5 flex-wrap">
-                                                <span className="font-extrabold text-base text-[#13151b]">
+                                                <span className="font-black text-base text-slate-900">
                                                     {selectedNode.name}
                                                 </span>
-                                                <Tag size="small" color="grey">
+                                                <Tag size="small" color="orange">
                                                     {(ROLE_STYLES[selectedNode.role] || ROLE_STYLES.support).label}
                                                 </Tag>
-                                                <Tag size="small" color="indigo">
+                                                <Tag size="small" color="blue">
                                                     出场 {selectedNode.appearances} 话
                                                 </Tag>
                                             </div>
                                             {selectedNode.aliases.length > 0 && (
-                                                <div className="text-[11px] text-[#5c606d]">
+                                                <div className="text-[11px] text-slate-500">
                                                     别名：{selectedNode.aliases.join(' / ')}
                                                 </div>
                                             )}
@@ -443,10 +455,10 @@ export default function CharacterGraph({ nodes, edges, onStatusUpdated }: Props)
                                     </div>
 
                                     {/* Iterative Vital Status + Author Manual Override */}
-                                    <div className={`rounded-xl border p-3 space-y-2 ${vMeta.badgeBg}`}>
+                                    <div className={`rounded-2xl border p-3.5 space-y-2 ${vMeta.badgeBg}`}>
                                         <div className="flex items-center justify-between gap-2">
                                             <span className={`text-xs font-extrabold ${vMeta.badgeText}`}>
-                                                当前生命状态：{vMeta.label}
+                                                生命状态：{vMeta.label}
                                                 {selectedNode.vital_status_episode ? `（第 ${selectedNode.vital_status_episode} 话）` : ''}
                                             </span>
                                             {selectedNode.vital_status_override && (
@@ -456,12 +468,12 @@ export default function CharacterGraph({ nodes, edges, onStatusUpdated }: Props)
                                             )}
                                         </div>
                                         {selectedNode.vital_status_note && (
-                                            <div className="text-[11px] text-slate-700 leading-snug">
-                                                变更记录：{selectedNode.vital_status_note}
+                                            <div className="text-[11px] text-slate-600 leading-snug">
+                                                {selectedNode.vital_status_note}
                                             </div>
                                         )}
                                         <div className="flex items-center gap-2 pt-0.5">
-                                            <span className="text-[11px] text-[#5c606d] shrink-0">作者覆写：</span>
+                                            <span className="text-[11px] font-semibold text-slate-500 shrink-0">作者覆写：</span>
                                             <Select
                                                 size="small"
                                                 loading={savingStatus}
@@ -480,17 +492,17 @@ export default function CharacterGraph({ nodes, edges, onStatusUpdated }: Props)
                                     </div>
 
                                     {selectedNode.description && (
-                                        <div className="text-xs text-[#2b2e38] leading-relaxed bg-white rounded-xl p-3 border border-[#e5dfd3]">
+                                        <div className="text-xs text-slate-700 leading-relaxed bg-slate-50/80 rounded-2xl p-3.5 border border-slate-100">
                                             {selectedNode.description}
                                         </div>
                                     )}
 
                                     {selectedNode.speech_style && (
                                         <div className="space-y-1">
-                                            <div className="text-[11px] font-bold text-[#5c606d] uppercase tracking-wider">
-                                                台词口癖与说话风格
+                                            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                                                台词口癖与性格
                                             </div>
-                                            <div className="text-xs text-[#13151b] bg-white rounded-lg px-3 py-2 border border-[#e5dfd3]">
+                                            <div className="text-xs text-blue-900 bg-blue-50/70 rounded-xl px-3 py-2 border border-blue-100">
                                                 {selectedNode.speech_style}
                                             </div>
                                         </div>
@@ -498,23 +510,23 @@ export default function CharacterGraph({ nodes, edges, onStatusUpdated }: Props)
 
                                     {selectedNode.outfits.length > 0 && (
                                         <div className="space-y-1.5">
-                                            <div className="text-[11px] font-bold text-[#5c606d] uppercase tracking-wider">
-                                                已收录服装造型 ({selectedNode.outfits.length})
+                                            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                                                服装造型 ({selectedNode.outfits.length})
                                             </div>
                                             <div className="grid grid-cols-2 gap-2">
                                                 {selectedNode.outfits.slice(0, 4).map((of) => (
-                                                    <div key={of.id} className="rounded-lg border border-[#e5dfd3] p-2 bg-white flex items-center gap-2">
+                                                    <div key={of.id} className="rounded-xl border border-slate-200/80 p-2 bg-slate-50/60 flex items-center gap-2 hover:border-blue-300 transition">
                                                         {of.image_path && (
                                                             <img
                                                                 src={storageFileUrl(of.image_path)}
                                                                 alt={of.name}
-                                                                className="w-9 h-9 rounded object-cover shrink-0"
+                                                                className="w-9 h-9 rounded-lg object-cover shrink-0"
                                                             />
                                                         )}
                                                         <div className="min-w-0">
-                                                            <div className="text-xs font-semibold text-[#13151b] truncate">{of.name}</div>
+                                                            <div className="text-xs font-bold text-slate-800 truncate">{of.name}</div>
                                                             {of.description && (
-                                                                <div className="text-[10px] text-[#5c606d] line-clamp-1">{of.description}</div>
+                                                                <div className="text-[10px] text-slate-500 line-clamp-1">{of.description}</div>
                                                             )}
                                                         </div>
                                                     </div>
@@ -524,22 +536,22 @@ export default function CharacterGraph({ nodes, edges, onStatusUpdated }: Props)
                                     )}
 
                                     <div className="space-y-2">
-                                        <div className="text-[11px] font-bold text-[#5c606d] uppercase tracking-wider">
-                                            跨话状态演进轨迹 ({selectedNode.state_timeline.length})
+                                        <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                                            跨话状态演进 ({selectedNode.state_timeline.length})
                                         </div>
                                         {selectedNode.state_timeline.length === 0 ? (
                                             <div className="text-xs text-slate-400">暂无跨话状态变更记录</div>
                                         ) : (
-                                            <div className="space-y-2 border-l-2 border-[#13151b]/20 pl-3 ml-1">
+                                            <div className="space-y-2 border-l-2 border-blue-200 pl-3 ml-1">
                                                 {selectedNode.state_timeline.map((st, idx) => (
                                                     <div key={idx} className="text-xs space-y-0.5 relative">
-                                                        <span className="w-2 h-2 rounded-full bg-[#e11d48] absolute -left-[17px] top-1.5" />
-                                                        <div className="font-semibold text-[#13151b]">
+                                                        <span className="w-2.5 h-2.5 rounded-full bg-[#ff5a36] border-2 border-white shadow absolute -left-[18px] top-1" />
+                                                        <div className="font-bold text-slate-800">
                                                             第 {st.episode_label} 话 · {st.attribute}
                                                         </div>
-                                                        <div className="text-[#5c606d]">
+                                                        <div className="text-slate-600">
                                                             {st.before ? `${st.before} → ` : ''}
-                                                            <span className="text-emerald-800 font-semibold">{st.after}</span>
+                                                            <span className="text-emerald-700 font-semibold">{st.after}</span>
                                                         </div>
                                                     </div>
                                                 ))}
@@ -551,40 +563,41 @@ export default function CharacterGraph({ nodes, edges, onStatusUpdated }: Props)
                         })()
                     ) : selectedEdge ? (
                         <div className="space-y-4">
-                            <div className="flex items-center justify-between border-b border-[#e5dfd3] pb-3">
-                                <div className="font-bold text-sm text-[#13151b]">
+                            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                                <div className="font-bold text-sm text-slate-900">
                                     {nodeById.get(selectedEdge.source)?.name || '角色A'} ↔{' '}
                                     {nodeById.get(selectedEdge.target)?.name || '角色B'}
                                 </div>
-                                <Tag color="red">共现权重 {selectedEdge.weight}</Tag>
+                                <Tag color="blue">共现权重 {selectedEdge.weight}</Tag>
                             </div>
                             <div className="flex flex-wrap gap-1.5">
                                 {selectedEdge.shared_episodes.map((epNo) => (
-                                    <Tag key={epNo} size="small" color="grey">
+                                    <Tag key={epNo} size="small" color="cyan">
                                         第 {epNo} 话同场
                                     </Tag>
                                 ))}
                             </div>
                             <div className="space-y-2">
-                                <div className="text-[11px] font-bold text-[#5c606d] uppercase">
+                                <div className="text-[11px] font-bold text-slate-400 uppercase">
                                     关键交集事件 ({selectedEdge.moments.length})
                                 </div>
                                 {selectedEdge.moments.length === 0 ? (
-                                    <div className="text-xs text-[#5c606d]">双方在以上章节中同场出场。</div>
+                                    <div className="text-xs text-slate-500">双方在以上章节中同场出场。</div>
                                 ) : (
                                     selectedEdge.moments.map((m, idx) => (
-                                        <div key={idx} className="rounded-xl bg-white border border-[#e5dfd3] p-3 space-y-1 text-xs">
+                                        <div key={idx} className="rounded-2xl bg-slate-50 border border-slate-200/80 p-3 space-y-1 text-xs">
                                             <div className="flex items-center justify-between">
-                                                <span className="font-bold text-[#e11d48]">第 {m.episode_label} 话</span>
+                                                <span className="font-bold text-blue-600">第 {m.episode_label} 话</span>
                                                 {m.location && <span className="text-slate-400">{m.location}</span>}
                                             </div>
-                                            <div className="text-[#2b2e38] leading-relaxed">{m.description}</div>
+                                            <div className="text-slate-700 leading-relaxed">{m.description}</div>
                                         </div>
                                     ))
                                 )}
                             </div>
                             <Button
                                 size="small"
+                                theme="light"
                                 onClick={() => {
                                     setSelectedEdgeKey(null)
                                     setSelectedNodeId(selectedEdge.source)
@@ -594,7 +607,7 @@ export default function CharacterGraph({ nodes, edges, onStatusUpdated }: Props)
                             </Button>
                         </div>
                     ) : (
-                        <Empty description="点击星图中的任意角色头像或连线查看详情" />
+                        <Empty description="点击图谱中的任意角色头像或连线查看详情" />
                     )}
                 </div>
             </div>

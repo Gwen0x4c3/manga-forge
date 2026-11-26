@@ -42,8 +42,8 @@ export default function StoryAtlas({ projectId, defaultBranchId }: Props) {
 
     return (
         <div className="space-y-6 pt-2">
-            {/* Top Controls & Telemetry Strip */}
-            <div className="flex flex-wrap items-center justify-between gap-3 bg-[#faf8f3] rounded-2xl p-3 border border-[#e5dfd3]">
+            {/* Top Controls & Pill Segmented Bar */}
+            <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50/90 rounded-2xl p-3 border border-slate-200/80">
                 <div className="flex flex-wrap items-center gap-3">
                     <RadioGroup
                         type="button"
@@ -71,35 +71,35 @@ export default function StoryAtlas({ projectId, defaultBranchId }: Props) {
                             </Select.Option>
                         ))}
                     </Select>
-                    <Button size="small" icon={<IconRefresh />} loading={isFetching} onClick={() => refetch()}>
+                    <Button size="small" theme="light" icon={<IconRefresh />} loading={isFetching} onClick={() => refetch()}>
                         刷新图谱
                     </Button>
                 </div>
             </div>
 
-            {/* Compact Editorial KPI Strip */}
+            {/* Bright Pop Telemetry KPI Strip */}
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                <div className="rounded-xl bg-[#faf8f3] border border-[#e5dfd3] px-4 py-2.5">
-                    <div className="text-[11px] font-semibold text-[#5c606d]">人物实体节点</div>
-                    <div className="text-xl font-black text-[#13151b]">{data.character_graph.nodes.length}</div>
+                <div className="rounded-2xl bg-gradient-to-br from-blue-50/70 to-white border border-blue-100 px-4 py-3">
+                    <div className="text-[11px] font-bold text-blue-600">人物实体节点</div>
+                    <div className="text-xl font-black text-slate-900 mt-0.5">{data.character_graph.nodes.length}</div>
                 </div>
-                <div className="rounded-xl bg-[#faf8f3] border border-[#e5dfd3] px-4 py-2.5">
-                    <div className="text-[11px] font-semibold text-[#5c606d]">共现关系连线</div>
-                    <div className="text-xl font-black text-[#13151b]">{data.character_graph.edges.length}</div>
+                <div className="rounded-2xl bg-gradient-to-br from-violet-50/70 to-white border border-violet-100 px-4 py-3">
+                    <div className="text-[11px] font-bold text-violet-600">共现关系连线</div>
+                    <div className="text-xl font-black text-slate-900 mt-0.5">{data.character_graph.edges.length}</div>
                 </div>
-                <div className="rounded-xl bg-[#faf8f3] border border-[#e5dfd3] px-4 py-2.5">
-                    <div className="text-[11px] font-semibold text-[#5c606d]">分支连载章节</div>
-                    <div className="text-xl font-black text-[#13151b]">{data.timeline.episodes.length}</div>
+                <div className="rounded-2xl bg-gradient-to-br from-sky-50/70 to-white border border-sky-100 px-4 py-3">
+                    <div className="text-[11px] font-bold text-sky-600">分支连载章节</div>
+                    <div className="text-xl font-black text-slate-900 mt-0.5">{data.timeline.episodes.length}</div>
                 </div>
-                <div className="rounded-xl bg-[#faf8f3] border border-[#e5dfd3] px-4 py-2.5">
-                    <div className="text-[11px] font-semibold text-[#5c606d]">伏笔待填 / 已填</div>
-                    <div className="text-xl font-black text-[#e11d48]">
-                        {openPits} <span className="text-xs font-bold text-emerald-700">/ {resolvedPits}</span>
+                <div className="rounded-2xl bg-gradient-to-br from-orange-50/80 to-white border border-orange-100 px-4 py-3">
+                    <div className="text-[11px] font-bold text-[#ff5a36]">伏笔待填 / 已填</div>
+                    <div className="text-xl font-black text-[#ff5a36] mt-0.5">
+                        {openPits} <span className="text-xs font-bold text-emerald-600">/ {resolvedPits}</span>
                     </div>
                 </div>
-                <div className="rounded-xl bg-[#faf8f3] border border-[#e5dfd3] px-4 py-2.5">
-                    <div className="text-[11px] font-semibold text-[#5c606d]">平行世界线</div>
-                    <div className="text-xl font-black text-[#13151b]">{data.branch_tree.length}</div>
+                <div className="rounded-2xl bg-gradient-to-br from-emerald-50/70 to-white border border-emerald-100 px-4 py-3">
+                    <div className="text-[11px] font-bold text-emerald-600">平行世界线</div>
+                    <div className="text-xl font-black text-slate-900 mt-0.5">{data.branch_tree.length}</div>
                 </div>
             </div>
 

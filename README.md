@@ -21,7 +21,7 @@ MangaForge ingests serialized manga chapters (local archives/images or MangaDex)
 - **Hierarchical Long-Series Memory**: Combines immutable 10-episode arc digests, tiered world rules (`core_rules` + rolling `discovered_rules`), recent episode windows, and multi-query RRF RAG (Qdrant vector search with CJK-aware keyword fallback) to support 60–150+ episode series without context truncation.
 - **Iterative Character Lifecycle & Death Locks**: Replays character `vital_status` transitions (`alive` / `injured` / `missing` / `sealed` / `deceased`) chronologically per branch up to the target episode — pinning deceased/unavailable characters into script generation and consistency validation (even 50+ chapters later) while keeping forked what-if timelines strictly isolated, with manual author override in the Story Atlas UI.
 - **Visual Story Atlas & Grounded Story Bible Q&A**:
-  - **Character Co-Occurrence & Evolution Graph**: Interactive dark-ink constellation graph sized by appearances and weighted by shared scenes, with cropped circular avatars (monochrome `†` portraits for deceased characters), outfit galleries, per-episode state timelines, and one-click vital-status locks (`GET /memory/graph`).
+  - **Character Co-Occurrence & Evolution Graph**: Interactive character constellation graph sized by appearances and weighted by shared scenes, with cropped circular avatars (monochrome `†` portraits for deceased characters), outfit galleries, per-episode state timelines, and one-click vital-status locks (`GET /memory/graph`).
   - **Arc Memory & Foreshadowing Swimlanes**: Timeline ribbon displaying sealed/active arcs, tiered world rules, episode covers, and pit lifecycles (introduction → clue progressions → resolution).
   - **Multiverse Branch DAG**: Visual branch lanes showing forked what-if timelines with per-branch isolated memory and `fork` / `diff` / `merge`.
   - **Story Detective Q&A**: Grounded natural-language search over the ingested manga with thinking-model `OPENAI_MAX_TOKENS` support, matched character avatars, and clickable episode citations (`POST /memory/ask`).
@@ -43,7 +43,7 @@ End-to-end live workspace on ***Isekai Ojisan* (*Uncle from Another World*)**: C
 | :---: | :---: |
 | [<img src="docs/assets/showcase/story_atlas_characters.jpg" width="420" />](docs/assets/showcase/story_atlas_characters.jpg) | [<img src="docs/assets/showcase/story_atlas_timeline.jpg" width="420" />](docs/assets/showcase/story_atlas_timeline.jpg) |
 
-**Grounded Story Bible Q&A (`glm-5.3-flash`)** — answers strictly from ingested chapters with clickable episode citations:
+**Grounded Story Bible Q&A** — answers strictly from ingested chapters with clickable episode citations:
 
 [<img src="docs/assets/showcase/story_atlas_qa.jpg" width="850" />](docs/assets/showcase/story_atlas_qa.jpg)
 

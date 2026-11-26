@@ -21,7 +21,7 @@ MangaForge 支持从本地图片/压缩包或 MangaDex 导入连载漫画，通�
 - **分层长程记忆与多路召回**：采用“10 话不可变篇章纪要 + 核心/演进分级世界观规则 + 近期章节滑窗 + 多路 RRF 检索（Qdrant 向量检索与中文关键词回退）”架构，支持 60～150+ 话长连载上下文组装且不丢失早期设定。
 - **角色生命状态迭代与死亡硬锁定**：按分支时间线顺序重放角色 `vital_status` 变更（`存活` / `重伤` / `失踪` / `封印` / `已故`）——角色战死后自动在后续章节的剧本生成与一致性校验中硬锁定禁活（即使跨越 50+ 话也不遗忘），同时在死亡前分叉的平行世界线中自动保持存活，并支持在图谱界面手动覆写。
 - **故事宇宙可视化（Story Atlas）与剧情侦探问答**：
-  - **人物共现与命运演进星图**：深墨色交互式星图，节点大小按出场话数缩放并内嵌裁剪角色头像（已故角色自动转为黑白肖像并标注 `†`），支持查看服装造型、跨话状态演进轨迹与一键作者状态覆写（`GET /memory/graph`）。
+  - **人物共现与命运演进星图**：交互式人物关系星图，节点大小按出场话数缩放并内嵌裁剪角色头像（已故角色自动转为黑白肖像并标注 `†`），支持查看服装造型、跨话状态演进轨迹与一键作者状态覆写（`GET /memory/graph`）。
   - **篇章压缩与伏笔生命周期泳道**：集中展示分层世界观法则、篇章纪要、连载时间轴封面与伏笔从埋设 → 线索推进 → 回收闭环的跨话泳道。
   - **平行世界线分支树**：可视化展示各条 `fork` 支线与章节缩略图，支线记忆与伏笔状态严格隔离，支持 `fork` / `diff` / `merge`。
   - **剧情侦探 Story Bible 问答**：严格基于已入库原漫与续画记忆回答剧情考据问题（适配深度思考模型高 `OPENAI_MAX_TOKENS` 预算），返回匹配角色头像与可点击跳转的章节引证（`POST /memory/ask`）。
@@ -43,7 +43,7 @@ MangaForge 支持从本地图片/压缩包或 MangaDex 导入连载漫画，通�
 | :---: | :---: |
 | [<img src="docs/assets/showcase/story_atlas_characters.jpg" width="420" />](docs/assets/showcase/story_atlas_characters.jpg) | [<img src="docs/assets/showcase/story_atlas_timeline.jpg" width="420" />](docs/assets/showcase/story_atlas_timeline.jpg) |
 
-**剧情侦探 Story Bible 实时问答（`glm-5.3-flash`）** —— 严格基于已收录章节与伏笔台账作答并附带章节引证卡片：
+**剧情侦探 Story Bible 实时问答** —— 严格基于已收录章节与伏笔台账作答并附带章节引证卡片：
 
 [<img src="docs/assets/showcase/story_atlas_qa.jpg" width="850" />](docs/assets/showcase/story_atlas_qa.jpg)
 

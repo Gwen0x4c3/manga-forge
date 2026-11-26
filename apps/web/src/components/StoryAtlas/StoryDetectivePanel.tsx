@@ -34,14 +34,15 @@ function renderMarkdownAnswer(md: string): ReactNode {
         if (!line) return
         if (line.startsWith('### ')) {
             blocks.push(
-                <h5 key={idx} className="text-sm font-bold text-indigo-900 mt-3 mb-1">
+                <h5 key={idx} className="text-sm font-bold text-blue-700 mt-3 mb-1">
                     {renderInlineMarkdown(line.slice(4))}
                 </h5>,
             )
-        } else if (line.startsWith('## ')) {
+        } else if (line.startsWith('## ') || line.startsWith('# ')) {
+            const titleText = line.startsWith('## ') ? line.slice(3) : line.slice(2)
             blocks.push(
                 <h4 key={idx} className="text-base font-extrabold text-slate-900 mt-3 mb-1.5 border-b border-slate-100 pb-1">
-                    {renderInlineMarkdown(line.slice(3))}
+                    {renderInlineMarkdown(titleText)}
                 </h4>,
             )
         } else if (/^[-*]\s+/.test(line)) {
@@ -116,8 +117,8 @@ export default function StoryDetectivePanel({ projectId, branchId, characters }:
                 </p>
             </div>
 
-            <div className="rounded-2xl border border-indigo-200 bg-gradient-to-br from-indigo-50/70 via-white to-slate-50 p-4 space-y-3">
-                <div className="flex gap-2">
+            <div className="rounded-3xl border border-blue-200/80 bg-gradient-to-br from-blue-50/70 via-white to-orange-50/40 p-5 space-y-3.5 shadow-sm">
+                <div className="flex gap-2.5">
                     <Input
                         size="large"
                         prefix={<IconSearch />}
@@ -129,6 +130,7 @@ export default function StoryDetectivePanel({ projectId, branchId, characters }:
                     <Button
                         theme="solid"
                         size="large"
+                        className="brand-gradient-btn"
                         icon={<IconBolt />}
                         loading={loading}
                         onClick={() => submitQuestion(question)}
@@ -142,16 +144,16 @@ export default function StoryDetectivePanel({ projectId, branchId, characters }:
                             key={idx}
                             type="button"
                             onClick={() => submitQuestion(sq)}
-                            className="text-xs bg-white hover:bg-indigo-50 text-indigo-800 border border-indigo-200/80 rounded-full px-3 py-1 transition cursor-pointer"
+                            className="text-xs font-semibold bg-white hover:bg-blue-50 text-slate-700 hover:text-blue-700 border border-slate-200 hover:border-blue-300 rounded-full px-3.5 py-1.5 transition-all hover:-translate-y-0.5 cursor-pointer shadow-xs"
                         >
-                            {sq}
+                            ✦ {sq}
                         </button>
                     ))}
                 </div>
             </div>
 
             {loading && (
-                <div className="rounded-2xl border border-slate-200 bg-white p-8 flex flex-col items-center gap-2">
+                <div className="rounded-3xl border border-slate-200 bg-white p-8 flex flex-col items-center gap-2">
                     <Spin size="large" />
                     <div className="text-xs text-slate-500">正在联合检索层级篇章记忆、人物档案与原始章节引证...</div>
                 </div>
@@ -160,11 +162,11 @@ export default function StoryDetectivePanel({ projectId, branchId, characters }:
             {history.length > 0 && (
                 <div className="space-y-4">
                     {history.map((item, idx) => (
-                        <div key={idx} className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4 shadow-sm">
-                            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
-                                <div className="font-bold text-sm text-slate-900">Q: {item.question}</div>
-                                <Tag size="small" color="indigo">
-                                    {item.model}
+                        <div key={idx} className="rounded-3xl border border-slate-200/90 bg-white p-6 space-y-4 shadow-sm">
+                            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                                <div className="font-extrabold text-sm text-slate-900">Q: {item.question}</div>
+                                <Tag size="small" color="blue">
+                                    Story Bible · {item.citations.length} 条引证
                                 </Tag>
                             </div>
 

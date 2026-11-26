@@ -8,7 +8,7 @@ This document captures the architectural audit, identified creator pain points, 
 2. **Coarse generation granularity**: `GenerationStudio` only supports full-episode re-rendering, even though single-panel rendering (`render_panel`) and `ImageBackend.inpaint` exist underneath. One flawed panel forces regenerating the entire chapter.
 3. **Static horizontal lettering**: `LayoutEngine` renders fixed horizontal speech boxes server-side, lacking traditional vertical CJK manga lettering (`竖排对白`), shout/whisper balloon variants, and interactive client-side bubble adjustment.
 4. **Manual reference curation friction**: When auto-cropping grabs an awkward profile or cover frame, creators cannot visually drag a crop box on the original manga page to replace a character's reference image.
-5. **Reasoning-model output truncation**: High-thinking multimodal models (e.g., `glm-5.3-flash`, `glm-5.4`) consume substantial thinking tokens; omitting an explicit `OPENAI_MAX_TOKENS` budget risks truncating structured JSON output.
+5. **Reasoning-model output truncation**: High-thinking multimodal models consume substantial reasoning tokens; omitting an explicit `OPENAI_MAX_TOKENS` budget risks truncating structured JSON output.
 
 ---
 
