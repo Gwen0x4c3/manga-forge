@@ -14,9 +14,16 @@ import {
     Modal,
     Banner,
 } from '@douyinfe/semi-ui'
-import { IconForward, IconArrowLeft, IconSearch, IconBolt } from '@douyinfe/semi-icons'
+import { IconForward, IconArrowLeft, IconSearch, IconBolt, IconRefresh } from '@douyinfe/semi-icons'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { episodeService, generationService, memoryService, storageFileUrl } from '@/services/project'
+import {
+    assetService,
+    episodeService,
+    generationService,
+    memoryService,
+    pitService,
+    storageFileUrl,
+} from '@/services/project'
 import type {
     GenerationRun,
     GeneratedImage,
@@ -24,6 +31,7 @@ import type {
     Storyboard,
     GenerationContext,
 } from '@/services/project'
+import BubbleCanvasEditor from '@/components/BubbleCanvasEditor'
 
 const LAYOUT_OPTIONS = [
     { value: 'splash', label: 'Splash 单幅整页特写 (1格)' },
@@ -50,6 +58,14 @@ export default function GenerationStudio() {
     const [imageSize, setImageSize] = useState<string>('1024x1024')
 
     const [editedStoryboard, setEditedStoryboard] = useState<Storyboard | null>(null)
+    const [writingMode, setWritingMode] = useState<'horizontal' | 'vertical'>('vertical')
+
+    // Single-panel rerender modal state
+    const [rerenderPanelId, setRerenderPanelId] = useState<string | null>(null)
+    const [rerenderPrompt, setRerenderPrompt] = useState('')
+    const [rerenderNegPrompt, setRerenderNegPrompt] = useState('')
+    const [rerenderRefIds, setRerenderRefIds] = useState<string[]>([])
+    const [rerenderBackend, setRerenderBackend] = useState<string | undefined>(undefined)
 
     const [showContextModal, setShowContextModal] = useState(false)
     const [previewContext, setPreviewContext] = useState<GenerationContext | null>(null)
@@ -81,8 +97,8 @@ export default function GenerationStudio() {
     })
 
     const { data: generatedImagesData } = useQuery({
-        queryKey: ['generated-images', episodeId],
-        queryFn: () => generationService.getGeneratedImages(episodeId!),
+        queryKey: ['generated-images', episodeId, 'all'],
+        queryFn: () => generationService.getGeneratedImages(episodeId!, true),
         enabled: !!episodeId,
     })
 
@@ -90,6 +106,18 @@ export default function GenerationStudio() {
         queryKey: ['layout-result', episodeId],
         queryFn: () => generationService.getLayoutResult(episodeId!),
         enabled: !!episodeId,
+    })
+
+    const { data: projectAssets } = useQuery({
+        queryKey: ['project-assets-studio', projectId],
+        queryFn: () => assetService.list(projectId!, undefined, { page: 1, page_size: 100 }),
+        enabled: !!projectId,
+    })
+
+    const { data: openPitsData } = useQuery({
+        queryKey: ['project-open-pits-studio', projectId],
+        queryFn: () => pitService.list(projectId!, 'open', { page: 1, page_size: 30 }),
+        enabled: !!projectId,
     })
 
     const storyboardMemories = memories?.filter((m) => m.type === 'storyboard_json') || []
@@ -200,17 +228,54 @@ export default function GenerationStudio() {
     })
 
     const layoutMutation = useMutation({
-        mutationFn: async () => {
+        mutationFn: async (overrideMode?: 'horizontal' | 'vertical') => {
             if (storyboardDirty && draftStoryboard) {
                 await generationService.updateStoryboard(episodeId!, draftStoryboard)
                 setEditedStoryboard(null)
             }
-            return generationService.triggerLayout({ episode_id: episodeId! })
+            return generationService.triggerLayout({
+                episode_id: episodeId!,
+                writing_mode: overrideMode || writingMode,
+                sync: true,
+            })
         },
         onSuccess: () => {
-            Toast.success('漫画页面分格与对白气泡排版已启动')
+            Toast.success('漫画页面分格与对白气泡已实时合成')
             setManualStep(3)
+            queryClient.invalidateQueries({ queryKey: ['layout-result', episodeId] })
             queryClient.invalidateQueries({ queryKey: ['generation-runs', episodeId] })
+            queryClient.invalidateQueries({ queryKey: ['episode', episodeId] })
+        },
+        onError: () => {},
+    })
+
+    const rerenderPanelMutation = useMutation({
+        mutationFn: async () => {
+            if (!rerenderPanelId) throw new Error('No panel selected')
+            return generationService.rerenderPanel(episodeId!, rerenderPanelId, {
+                prompt: rerenderPrompt || undefined,
+                negative_prompt: rerenderNegPrompt || undefined,
+                reference_asset_ids: rerenderRefIds.length > 0 ? rerenderRefIds : undefined,
+                image_backend: rerenderBackend || imageBackend || undefined,
+                image_model: imageModel || undefined,
+                image_size: imageSize,
+            })
+        },
+        onSuccess: () => {
+            Toast.success(`Panel ${rerenderPanelId} 单格重绘完成，已自动保留历史候选版本`)
+            setRerenderPanelId(null)
+            queryClient.invalidateQueries({ queryKey: ['generated-images', episodeId] })
+            queryClient.invalidateQueries({ queryKey: ['generation-runs', episodeId] })
+        },
+        onError: () => {},
+    })
+
+    const selectCandidateMutation = useMutation({
+        mutationFn: ({ panelId, imageId }: { panelId: string; imageId: string }) =>
+            generationService.selectPanelCandidate(episodeId!, panelId, imageId),
+        onSuccess: () => {
+            Toast.success('已切换该分格的生效候选原画')
+            queryClient.invalidateQueries({ queryKey: ['generated-images', episodeId] })
         },
         onError: () => {},
     })
@@ -230,6 +295,26 @@ export default function GenerationStudio() {
         onError: () => {},
     })
 
+    const candidatesByPanel = useMemo(() => {
+        const items = generatedImagesData?.items || []
+        const map = new Map<string, GeneratedImage[]>()
+        for (const img of items) {
+            const key = img.panel_id || img.id
+            const arr = map.get(key) || []
+            arr.push(img)
+            map.set(key, arr)
+        }
+        return map
+    }, [generatedImagesData])
+    const generatedImages: GeneratedImage[] = useMemo(() => {
+        const active: GeneratedImage[] = []
+        candidatesByPanel.forEach((list) => {
+            const picked = list.find((i) => Boolean(i.meta?.selected)) || list[list.length - 1]
+            if (picked) active.push(picked)
+        })
+        return active
+    }, [candidatesByPanel])
+
     if (episodeLoading) {
         return (
             <div className="py-20 flex justify-center">
@@ -246,8 +331,33 @@ export default function GenerationStudio() {
     const isLayoutRunning = activeRuns.some((r) => r.stage === 'layout' || r.stage === 'writeback')
     const isContinueRunning = activeRuns.some((r) => r.stage === 'continue')
 
-    const generatedImages: GeneratedImage[] = generatedImagesData?.items || []
     const composedPages: ComposedPage[] = layoutResult?.pages || []
+
+    const studioAssets = projectAssets?.items || []
+    const characterChips = studioAssets.filter((a) => a.type === 'character').slice(0, 12)
+    const openPitChips = (openPitsData?.items || []).slice(0, 8)
+
+    const openPanelRerender = (img: GeneratedImage) => {
+        const pid = img.panel_id || ''
+        setRerenderPanelId(pid)
+        const sbPanel = draftStoryboard?.pages
+            .flatMap((p) => p.panels)
+            .find((p) => p.panel_id === pid)
+        setRerenderPrompt(String(img.meta?.prompt || sbPanel?.prompt || ''))
+        setRerenderNegPrompt(String(img.meta?.negative_prompt || sbPanel?.negative_prompt || ''))
+        const metaIds = Array.isArray(img.meta?.reference_asset_ids)
+            ? (img.meta?.reference_asset_ids as string[])
+            : []
+        setRerenderRefIds(metaIds)
+        setRerenderBackend(imageBackend)
+    }
+
+    const handleBubbleApplyAndRecompose = async (nextSb: Storyboard, mode: 'horizontal' | 'vertical') => {
+        setWritingMode(mode)
+        await generationService.updateStoryboard(episodeId!, nextSb)
+        setEditedStoryboard(null)
+        await layoutMutation.mutateAsync(mode)
+    }
 
     return (
         <div className="space-y-6">
@@ -321,6 +431,57 @@ export default function GenerationStudio() {
                         </div>
                         <div>
                             <label className="block text-sm font-semibold mb-1.5">导演剧情指令（可选）</label>
+                            {(characterChips.length > 0 || openPitChips.length > 0) && (
+                                <div className="mb-2 space-y-1.5 bg-slate-50 rounded-xl p-2.5 border border-slate-200">
+                                    {characterChips.length > 0 && (
+                                        <div className="flex flex-wrap items-center gap-1.5">
+                                            <span className="text-[11px] font-semibold text-slate-500">点击插入 @角色：</span>
+                                            {characterChips.map((ch) => (
+                                                <button
+                                                    key={ch.id}
+                                                    type="button"
+                                                    onClick={() =>
+                                                        setCustomInstructions((prev) =>
+                                                            prev ? `${prev} @${ch.name}` : `聚焦 @${ch.name} `,
+                                                        )
+                                                    }
+                                                    className="inline-flex items-center gap-1 text-[11px] bg-white hover:bg-indigo-50 text-indigo-800 border border-indigo-200 rounded-full px-2 py-0.5 cursor-pointer transition"
+                                                >
+                                                    {ch.preview_image_path && (
+                                                        <img
+                                                            src={storageFileUrl(ch.preview_image_path)}
+                                                            alt={ch.name}
+                                                            className="w-3.5 h-3.5 rounded-full object-cover"
+                                                        />
+                                                    )}
+                                                    @{ch.name}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {openPitChips.length > 0 && (
+                                        <div className="flex flex-wrap items-center gap-1.5">
+                                            <span className="text-[11px] font-semibold text-slate-500">点击回收 #伏笔：</span>
+                                            {openPitChips.map((pit) => (
+                                                <button
+                                                    key={pit.id}
+                                                    type="button"
+                                                    onClick={() =>
+                                                        setCustomInstructions((prev) =>
+                                                            prev
+                                                                ? `${prev}\n请在本话推进/回收伏笔【${pit.title}】`
+                                                                : `请在本话推进/回收伏笔【${pit.title}】`,
+                                                        )
+                                                    }
+                                                    className="text-[11px] bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-full px-2 py-0.5 cursor-pointer transition"
+                                                >
+                                                    #{pit.title.slice(0, 18)}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
                             <TextArea
                                 value={customInstructions}
                                 onChange={setCustomInstructions}
@@ -520,6 +681,7 @@ export default function GenerationStudio() {
                                     <Select.Option value="antigravity">Antigravity (原生生图)</Select.Option>
                                     <Select.Option value="openai">OpenAI (GPT-Image)</Select.Option>
                                     <Select.Option value="gemini">Gemini (Nano Banana)</Select.Option>
+                                    <Select.Option value="comfyui">ComfyUI (本地工作流)</Select.Option>
                                     <Select.Option value="custom">Custom HTTP</Select.Option>
                                     <Select.Option value="mock">Mock 本地打样</Select.Option>
                                 </Select>
@@ -571,23 +733,87 @@ export default function GenerationStudio() {
 
                         {generatedImages.length > 0 && (
                             <div className="space-y-4">
-                                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                                    {generatedImages.map((img) => (
-                                        <div key={img.id} className="border border-slate-200 rounded-xl p-2.5 bg-white space-y-1.5">
-                                            <Image
-                                                src={storageFileUrl(img.image_path)}
-                                                alt={`Panel ${img.panel_id || img.id}`}
-                                                className="w-full rounded"
-                                            />
-                                            <div className="text-xs font-semibold text-center text-slate-700">
-                                                Panel {img.panel_id}
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                                    {generatedImages.map((img) => {
+                                        const pid = img.panel_id || img.id
+                                        const candidates = candidatesByPanel.get(pid) || [img]
+                                        const refNames = Array.isArray(img.meta?.reference_assets)
+                                            ? (img.meta?.reference_assets as string[])
+                                            : []
+                                        return (
+                                            <div key={img.id} className="border border-slate-200 rounded-xl p-2.5 bg-white space-y-2 flex flex-col">
+                                                <div className="flex items-center justify-between">
+                                                    <Tag size="small" color="indigo">
+                                                        Panel {pid}
+                                                    </Tag>
+                                                    <Button
+                                                        size="small"
+                                                        theme="borderless"
+                                                        icon={<IconRefresh />}
+                                                        onClick={() => openPanelRerender(img)}
+                                                    >
+                                                        单格重绘
+                                                    </Button>
+                                                </div>
+                                                <Image
+                                                    src={storageFileUrl(img.image_path)}
+                                                    alt={`Panel ${pid}`}
+                                                    className="w-full rounded"
+                                                />
+                                                {refNames.length > 0 && (
+                                                    <div className="flex flex-wrap gap-1">
+                                                        {refNames.slice(0, 3).map((rn, idx) => (
+                                                            <span key={idx} className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
+                                                                ref: {rn}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                                {candidates.length > 1 && (
+                                                    <div className="pt-1 border-t border-slate-100 space-y-1">
+                                                        <div className="text-[10px] text-slate-500 font-semibold">
+                                                            候选版本切换 ({candidates.length})
+                                                        </div>
+                                                        <div className="flex flex-wrap gap-1">
+                                                            {candidates.map((cand, cIdx) => {
+                                                                const isCur = cand.id === img.id
+                                                                return (
+                                                                    <button
+                                                                        key={cand.id}
+                                                                        type="button"
+                                                                        disabled={selectCandidateMutation.isPending}
+                                                                        onClick={() =>
+                                                                            !isCur &&
+                                                                            selectCandidateMutation.mutate({
+                                                                                panelId: pid,
+                                                                                imageId: cand.id,
+                                                                            })
+                                                                        }
+                                                                        className={`px-1.5 py-0.5 rounded text-[10px] border cursor-pointer ${
+                                                                            isCur
+                                                                                ? 'bg-indigo-600 text-white border-indigo-600 font-bold'
+                                                                                : 'bg-slate-50 text-slate-600 border-slate-200 hover:border-indigo-400'
+                                                                        }`}
+                                                                    >
+                                                                        v{cIdx + 1}
+                                                                    </button>
+                                                                )
+                                                            })}
+                                                        </div>
+                                                    </div>
+                                                )}
                                             </div>
-                                        </div>
-                                    ))}
+                                        )
+                                    })}
                                 </div>
                                 <div className="flex justify-between pt-2">
                                     <Button onClick={() => setActiveStep(1)}>← 返回调整分镜或对白</Button>
-                                    <Button theme="solid" size="large" onClick={() => layoutMutation.mutate()}>
+                                    <Button
+                                        theme="solid"
+                                        size="large"
+                                        loading={layoutMutation.isPending}
+                                        onClick={() => layoutMutation.mutate(writingMode)}
+                                    >
                                         合成漫画排版与对白气泡 →
                                     </Button>
                                 </div>
@@ -596,19 +822,19 @@ export default function GenerationStudio() {
                     </div>
                 )}
 
-                {/* STEP 3: FINAL COMPOSED PAGES & WRITEBACK */}
+                {/* STEP 3: INTERACTIVE BUBBLE STUDIO & WRITEBACK */}
                 {activeStep === 3 && (
                     <div className="space-y-5 pt-2">
                         <div className="flex flex-wrap items-center justify-between gap-3">
                             <div className="text-sm text-slate-600">
-                                将所有分镜原画按页面模板裁切镶框，绘制无遮挡中文/日文漫画气泡，并自动执行记忆回写。
+                                支持传统日漫竖排与横排气泡切换、鼠标拖拽调整气泡位置、切换呐喊/低语样式，以及导出 PDF / CBZ / 长条漫。
                             </div>
                             <div className="flex gap-2">
                                 <Button
                                     loading={layoutMutation.isPending || isLayoutRunning}
-                                    onClick={() => layoutMutation.mutate()}
+                                    onClick={() => layoutMutation.mutate(writingMode)}
                                 >
-                                    {composedPages.length > 0 ? '重新合成排版' : '开始合成漫画页'}
+                                    {composedPages.length > 0 ? '重新合成全部页' : '开始合成漫画页'}
                                 </Button>
                                 {composedPages.length > 0 && (
                                     <Button
@@ -631,28 +857,79 @@ export default function GenerationStudio() {
                         )}
 
                         {composedPages.length > 0 && (
-                            <div className="manga-paper-bg rounded-2xl p-4 md:p-8 flex flex-col items-center gap-6">
-                                {composedPages.map((page) => (
-                                    <div
-                                        key={page.page_number}
-                                        className="w-full max-w-2xl bg-white rounded-lg shadow-lg border border-slate-200 overflow-hidden"
-                                    >
-                                        <div className="px-4 py-2 bg-slate-50 border-b border-slate-100 flex justify-between text-xs text-slate-500">
-                                            <span className="font-semibold text-slate-800">第 {page.page_number} 页</span>
-                                            <Tag size="small">{page.layout}</Tag>
-                                        </div>
-                                        <Image
-                                            src={storageFileUrl(page.image_path)}
-                                            alt={`Page ${page.page_number}`}
-                                            className="w-full"
-                                        />
-                                    </div>
-                                ))}
-                            </div>
+                            <BubbleCanvasEditor
+                                episodeId={episodeId!}
+                                pages={composedPages}
+                                storyboard={draftStoryboard}
+                                writingMode={writingMode}
+                                onWritingModeChange={setWritingMode}
+                                onApplyAndRecompose={handleBubbleApplyAndRecompose}
+                                recomposing={layoutMutation.isPending}
+                            />
                         )}
                     </div>
                 )}
             </div>
+
+            {/* SINGLE PANEL RERENDER MODAL */}
+            <Modal
+                title={`单格精修重绘 · Panel ${rerenderPanelId || ''}`}
+                visible={Boolean(rerenderPanelId)}
+                onCancel={() => setRerenderPanelId(null)}
+                okText="立即重绘此格（保留旧版候选）"
+                confirmLoading={rerenderPanelMutation.isPending}
+                onOk={() => rerenderPanelMutation.mutate()}
+                width={680}
+            >
+                <div className="space-y-3.5 text-xs">
+                    <div>
+                        <label className="block font-semibold text-slate-700 mb-1">本格生图 Prompt</label>
+                        <TextArea rows={4} value={rerenderPrompt} onChange={setRerenderPrompt} />
+                    </div>
+                    <div>
+                        <label className="block font-semibold text-slate-700 mb-1">负向约束 (Negative Prompt)</label>
+                        <Input
+                            value={rerenderNegPrompt}
+                            onChange={setRerenderNegPrompt}
+                            placeholder="speech bubble, text, watermark, blurry"
+                        />
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                            <label className="block font-semibold text-slate-700 mb-1">显式挂载参考资产（角色/道具/场景）</label>
+                            <Select
+                                multiple
+                                filter
+                                style={{ width: '100%' }}
+                                value={rerenderRefIds}
+                                onChange={(vals) => setRerenderRefIds(Array.isArray(vals) ? vals.map(String) : [])}
+                                placeholder="留空则按分镜角色自动匹配"
+                            >
+                                {studioAssets.map((a) => (
+                                    <Select.Option key={a.id} value={a.id}>
+                                        [{a.type}] {a.name}
+                                    </Select.Option>
+                                ))}
+                            </Select>
+                        </div>
+                        <div>
+                            <label className="block font-semibold text-slate-700 mb-1">生图后端</label>
+                            <Select
+                                style={{ width: '100%' }}
+                                value={rerenderBackend}
+                                onChange={(v) => setRerenderBackend(v ? String(v) : undefined)}
+                                placeholder="沿用当前后端"
+                            >
+                                <Select.Option value="antigravity">Antigravity</Select.Option>
+                                <Select.Option value="openai">OpenAI (GPT-Image)</Select.Option>
+                                <Select.Option value="gemini">Gemini</Select.Option>
+                                <Select.Option value="comfyui">ComfyUI (本地工作流)</Select.Option>
+                                <Select.Option value="mock">Mock 打样</Select.Option>
+                            </Select>
+                        </div>
+                    </div>
+                </div>
+            </Modal>
 
             {/* CONTEXT PREVIEW MODAL */}
             <Modal

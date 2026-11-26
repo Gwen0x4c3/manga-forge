@@ -16,10 +16,11 @@ import {
     Image,
 } from '@douyinfe/semi-ui'
 import type { TagColor } from '@douyinfe/semi-ui/lib/es/tag'
-import { IconBolt, IconForward, IconArrowLeft, IconRefresh, IconEdit } from '@douyinfe/semi-icons'
+import { IconBolt, IconForward, IconArrowLeft, IconRefresh, IconEdit, IconImage } from '@douyinfe/semi-icons'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { episodeService, generationService, storageFileUrl } from '@/services/project'
-import type { EpisodeMemory, GenerationRun } from '@/services/project'
+import { assetService, episodeService, generationService, storageFileUrl } from '@/services/project'
+import type { EpisodeMemory, EpisodePage, GenerationRun } from '@/services/project'
+import PageCropModal from '@/components/PageCropModal'
 
 const STATUS_META: Record<string, { label: string; color: TagColor }> = {
     imported: { label: '已导入 · 待理解', color: 'blue' },
@@ -66,9 +67,17 @@ export default function EpisodeDetail() {
     const [showContinue, setShowContinue] = useState(false)
     const [continueTone, setContinueTone] = useState('main')
     const [continueInstructions, setContinueInstructions] = useState('')
-    const [readerMode, setReaderMode] = useState<'scroll' | 'grid'>('scroll')
+    const [readerMode, setReaderMode] = useState<'scroll' | 'spread' | 'grid'>('scroll')
+    const [spreadIndex, setSpreadIndex] = useState(0)
+    const [cropPage, setCropPage] = useState<EpisodePage | null>(null)
     const [inspectRun, setInspectRun] = useState<GenerationRun | null>(null)
     const prevActiveCountRef = useRef(0)
+
+    const { data: projectAssets } = useQuery({
+        queryKey: ['project-assets-reader', projectId],
+        queryFn: () => assetService.list(projectId!, undefined, { page: 1, page_size: 120 }),
+        enabled: !!projectId,
+    })
 
     const { data: episode, isLoading: episodeLoading } = useQuery({
         queryKey: ['episode', episodeId],
@@ -321,24 +330,44 @@ export default function EpisodeDetail() {
                     {/* FINAL COMPOSED PAGES */}
                     {hasComposedPages && (
                         <TabPane tab={`成稿阅读 (${layoutResult?.pages?.length || 0} 页)`} itemKey="layout">
-                            <div className="flex items-center justify-between mb-4 pt-2">
+                            <div className="flex flex-wrap items-center justify-between gap-3 mb-4 pt-2">
                                 <RadioGroup
                                     type="button"
                                     value={readerMode}
-                                    onChange={(e) => setReaderMode(e.target.value as 'scroll' | 'grid')}
+                                    onChange={(e) => {
+                                        setReaderMode(e.target.value as 'scroll' | 'spread' | 'grid')
+                                        setSpreadIndex(0)
+                                    }}
                                     options={[
                                         { label: '沉浸条漫连读', value: 'scroll' },
+                                        { label: '右开双页单行本 (RTL)', value: 'spread' },
                                         { label: '双栏网格预览', value: 'grid' },
                                     ]}
                                 />
-                                <Button
-                                    theme="solid"
-                                    onClick={() =>
-                                        window.open(`/api/v1/generation/episodes/${episodeId}/export?format=pdf`, '_blank')
-                                    }
-                                >
-                                    下载整话 PDF
-                                </Button>
+                                <div className="flex flex-wrap gap-2">
+                                    <Button
+                                        theme="solid"
+                                        onClick={() =>
+                                            window.open(`/api/v1/generation/episodes/${episodeId}/export?format=pdf`, '_blank')
+                                        }
+                                    >
+                                        下载 PDF
+                                    </Button>
+                                    <Button
+                                        onClick={() =>
+                                            window.open(`/api/v1/generation/episodes/${episodeId}/export?format=cbz`, '_blank')
+                                        }
+                                    >
+                                        导出 CBZ
+                                    </Button>
+                                    <Button
+                                        onClick={() =>
+                                            window.open(`/api/v1/generation/episodes/${episodeId}/export?format=webtoon`, '_blank')
+                                        }
+                                    >
+                                        导出长条漫
+                                    </Button>
+                                </div>
                             </div>
 
                             {layoutLoading ? (
@@ -355,6 +384,62 @@ export default function EpisodeDetail() {
                                         </div>
                                     ))}
                                 </div>
+                            ) : readerMode === 'spread' ? (
+                                (() => {
+                                    const list = layoutResult?.pages || []
+                                    const spreads: Array<[typeof list[number] | null, typeof list[number] | null]> = []
+                                    for (let i = 0; i < list.length; i += 2) {
+                                        // Right-to-left tankobon: right page is earlier (i), left page is next (i + 1)
+                                        spreads.push([list[i + 1] || null, list[i] || null])
+                                    }
+                                    const safeIdx = Math.min(spreadIndex, Math.max(0, spreads.length - 1))
+                                    const [leftP, rightP] = spreads[safeIdx] || [null, null]
+                                    return (
+                                        <div className="manga-paper-bg rounded-2xl p-4 md:p-6 space-y-4">
+                                            <div className="flex items-center justify-between text-xs text-slate-600">
+                                                <Button
+                                                    size="small"
+                                                    disabled={safeIdx >= spreads.length - 1}
+                                                    onClick={() => setSpreadIndex((s) => Math.min(spreads.length - 1, s + 1))}
+                                                >
+                                                    ← 下一页 (左翻)
+                                                </Button>
+                                                <span className="font-semibold">
+                                                    右开单行本视图 · 跨页 {safeIdx + 1} / {Math.max(1, spreads.length)}
+                                                </span>
+                                                <Button
+                                                    size="small"
+                                                    disabled={safeIdx <= 0}
+                                                    onClick={() => setSpreadIndex((s) => Math.max(0, s - 1))}
+                                                >
+                                                    上一页 (右翻) →
+                                                </Button>
+                                            </div>
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-w-5xl mx-auto bg-slate-900/10 p-2.5 rounded-xl">
+                                                <div className="bg-white rounded-l-lg overflow-hidden flex flex-col items-center justify-center p-1">
+                                                    {leftP ? (
+                                                        <img
+                                                            src={storageFileUrl(leftP.image_path)}
+                                                            alt={`第 ${leftP.page_number} 页`}
+                                                            className="w-full max-h-[74vh] object-contain block"
+                                                        />
+                                                    ) : (
+                                                        <span className="text-xs text-slate-400 py-24">本话完</span>
+                                                    )}
+                                                </div>
+                                                <div className="bg-white rounded-r-lg overflow-hidden flex flex-col items-center justify-center p-1">
+                                                    {rightP && (
+                                                        <img
+                                                            src={storageFileUrl(rightP.image_path)}
+                                                            alt={`第 ${rightP.page_number} 页`}
+                                                            className="w-full max-h-[74vh] object-contain block"
+                                                        />
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )
+                                })()
                             ) : (
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                     {(layoutResult?.pages || []).map((page) => (
@@ -383,16 +468,23 @@ export default function EpisodeDetail() {
                         )}
                         {!pagesLoading && pages && pages.length > 0 && (
                             <div className="space-y-4 pt-2">
-                                <div className="flex justify-start">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
                                     <RadioGroup
                                         type="button"
                                         value={readerMode}
-                                        onChange={(e) => setReaderMode(e.target.value as 'scroll' | 'grid')}
+                                        onChange={(e) => {
+                                            setReaderMode(e.target.value as 'scroll' | 'spread' | 'grid')
+                                            setSpreadIndex(0)
+                                        }}
                                         options={[
                                             { label: '沉浸连读模式', value: 'scroll' },
+                                            { label: '右开双页单行本 (RTL)', value: 'spread' },
                                             { label: '缩略网格模式', value: 'grid' },
                                         ]}
                                     />
+                                    <span className="text-xs text-slate-500">
+                                        提示：点击任意页下方的「框选裁图入库」可直接从原作截取角色/道具参考图
+                                    </span>
                                 </div>
                                 {readerMode === 'scroll' ? (
                                     <div className="manga-paper-bg rounded-2xl p-4 md:p-8 flex flex-col items-center gap-5">
@@ -403,16 +495,89 @@ export default function EpisodeDetail() {
                                                     alt={`第 ${page.page_index + 1} 页`}
                                                     className="w-full"
                                                 />
-                                                <div className="text-center text-xs text-slate-400 py-1.5 bg-slate-50">
-                                                    第 {page.page_index + 1} 页
+                                                <div className="flex items-center justify-between px-3 py-1.5 bg-slate-50 text-xs text-slate-500">
+                                                    <span>第 {page.page_index + 1} 页</span>
+                                                    <Button
+                                                        size="small"
+                                                        theme="borderless"
+                                                        icon={<IconImage />}
+                                                        onClick={() => setCropPage(page)}
+                                                    >
+                                                        框选裁图入资产库
+                                                    </Button>
                                                 </div>
                                             </div>
                                         ))}
                                     </div>
+                                ) : readerMode === 'spread' ? (
+                                    (() => {
+                                        const spreads: Array<[EpisodePage | null, EpisodePage | null]> = []
+                                        for (let i = 0; i < pages.length; i += 2) {
+                                            spreads.push([pages[i + 1] || null, pages[i] || null])
+                                        }
+                                        const safeIdx = Math.min(spreadIndex, Math.max(0, spreads.length - 1))
+                                        const [leftP, rightP] = spreads[safeIdx] || [null, null]
+                                        return (
+                                            <div className="manga-paper-bg rounded-2xl p-4 md:p-6 space-y-4">
+                                                <div className="flex items-center justify-between text-xs text-slate-600">
+                                                    <Button
+                                                        size="small"
+                                                        disabled={safeIdx >= spreads.length - 1}
+                                                        onClick={() => setSpreadIndex((s) => Math.min(spreads.length - 1, s + 1))}
+                                                    >
+                                                        ← 下一页 (左翻)
+                                                    </Button>
+                                                    <span className="font-semibold">
+                                                        右开单行本视图 · 跨页 {safeIdx + 1} / {Math.max(1, spreads.length)}
+                                                    </span>
+                                                    <Button
+                                                        size="small"
+                                                        disabled={safeIdx <= 0}
+                                                        onClick={() => setSpreadIndex((s) => Math.max(0, s - 1))}
+                                                    >
+                                                        上一页 (右翻) →
+                                                    </Button>
+                                                </div>
+                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-w-5xl mx-auto bg-slate-900/10 p-2.5 rounded-xl">
+                                                    {[leftP, rightP].map((pg, idx) => (
+                                                        <div
+                                                            key={idx}
+                                                            className="bg-white rounded overflow-hidden flex flex-col justify-between"
+                                                        >
+                                                            {pg ? (
+                                                                <>
+                                                                    <img
+                                                                        src={storageFileUrl(pg.image_path)}
+                                                                        alt={`第 ${pg.page_index + 1} 页`}
+                                                                        className="w-full max-h-[74vh] object-contain block"
+                                                                    />
+                                                                    <div className="flex items-center justify-between px-3 py-1 bg-slate-50 text-[11px] text-slate-500">
+                                                                        <span>第 {pg.page_index + 1} 页</span>
+                                                                        <Button
+                                                                            size="small"
+                                                                            theme="borderless"
+                                                                            icon={<IconImage />}
+                                                                            onClick={() => setCropPage(pg)}
+                                                                        >
+                                                                            框选裁图
+                                                                        </Button>
+                                                                    </div>
+                                                                </>
+                                                            ) : (
+                                                                <div className="flex-1 flex items-center justify-center text-xs text-slate-400 py-24">
+                                                                    空白页
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )
+                                    })()
                                 ) : (
                                     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                                         {pages.map((page) => (
-                                            <div key={page.id} className="border border-slate-200 rounded-xl p-2 bg-white">
+                                            <div key={page.id} className="border border-slate-200 rounded-xl p-2 bg-white space-y-1.5">
                                                 <div className="w-full h-72 overflow-hidden flex items-center justify-center bg-slate-50 rounded-lg">
                                                     <Image
                                                         src={storageFileUrl(page.image_path)}
@@ -420,8 +585,15 @@ export default function EpisodeDetail() {
                                                         className="max-w-full max-h-full object-contain"
                                                     />
                                                 </div>
-                                                <div className="text-center text-xs text-slate-500 mt-1.5">
-                                                    第 {page.page_index + 1} 页
+                                                <div className="flex items-center justify-between text-xs text-slate-500 px-1">
+                                                    <span>第 {page.page_index + 1} 页</span>
+                                                    <Button
+                                                        size="small"
+                                                        theme="borderless"
+                                                        onClick={() => setCropPage(page)}
+                                                    >
+                                                        裁图
+                                                    </Button>
                                                 </div>
                                             </div>
                                         ))}
@@ -956,6 +1128,21 @@ export default function EpisodeDetail() {
                     </div>
                 )}
             </Modal>
+
+            {/* VISUAL PAGE-TO-ASSET CROP MODAL */}
+            {episodeId && (
+                <PageCropModal
+                    visible={Boolean(cropPage)}
+                    episodeId={episodeId}
+                    page={cropPage}
+                    assets={projectAssets?.items || []}
+                    onClose={() => setCropPage(null)}
+                    onCropped={() => {
+                        queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
+                        queryClient.invalidateQueries({ queryKey: ['project-assets-reader', projectId] })
+                    }}
+                />
+            )}
         </div>
     )
 }

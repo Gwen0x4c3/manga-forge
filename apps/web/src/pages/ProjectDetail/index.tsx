@@ -54,6 +54,7 @@ import type {
     AssetClusterResponse,
     AssetClusterItem,
 } from '@/services/project'
+import StoryAtlas from '@/components/StoryAtlas'
 
 const STATUS_META: Record<string, { label: string; color: TagColor }> = {
     imported: { label: '已导入 · 待理解', color: 'blue' },
@@ -542,7 +543,9 @@ export default function ProjectDetail() {
 
     const storyBible = project.canon_rules?.story_bible
     const mainPlot = storyBible?.main_plot
+    const coreRules = storyBible?.core_rules || []
     const discoveredRules = storyBible?.discovered_rules || []
+    const arcSummaries = storyBible?.arc_summaries || []
 
     const handleDiffForMerge = (sourceId: string, targetId: string) => {
         setMergeSourceBranch(sourceId)
@@ -1016,7 +1019,12 @@ export default function ProjectDetail() {
                         />
                     </TabPane>
 
-                    {/* TAB 2: STORY BIBLE & MAIN PLOTLINE */}
+                    {/* TAB 2: VISUAL STORY ATLAS */}
+                    <TabPane tab="故事宇宙图谱" itemKey="atlas">
+                        {projectId && <StoryAtlas projectId={projectId} defaultBranchId={selectedBranch} />}
+                    </TabPane>
+
+                    {/* TAB 3: STORY BIBLE & MAIN PLOTLINE */}
                     <TabPane tab="剧情主线与世界观" itemKey="story">
                         <div className="space-y-6 pt-3">
                             {/* Main Plotline Dashboard */}
@@ -1072,7 +1080,22 @@ export default function ProjectDetail() {
                                 )}
                             </div>
 
-                            {/* Auto-discovered World Rules */}
+                            {/* Core Foundational Rules + Auto-discovered World Rules */}
+                            {coreRules.length > 0 && (
+                                <div className="space-y-2">
+                                    <h4 className="text-sm font-bold text-amber-900 m-0">
+                                        奠基核心设定法则 · Core Rules ({coreRules.length})
+                                    </h4>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                                        {coreRules.map((rule, idx) => (
+                                            <div key={idx} className="rounded-lg bg-amber-50/70 border border-amber-200 px-3.5 py-2.5 text-xs text-amber-950">
+                                                ★ {rule}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
                             {discoveredRules.length > 0 && (
                                 <div className="space-y-2">
                                     <h4 className="text-sm font-bold text-slate-900 m-0">自动提炼的世界观与设定法则 ({discoveredRules.length})</h4>
@@ -1080,6 +1103,24 @@ export default function ProjectDetail() {
                                         {discoveredRules.map((rule, idx) => (
                                             <div key={idx} className="rounded-lg bg-slate-50 border border-slate-200 px-3.5 py-2.5 text-xs text-slate-700">
                                                 • {rule}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {arcSummaries.length > 0 && (
+                                <div className="space-y-2">
+                                    <h4 className="text-sm font-bold text-slate-900 m-0">
+                                        层级篇章压缩摘要 ({arcSummaries.length} 个篇章块)
+                                    </h4>
+                                    <div className="space-y-2">
+                                        {arcSummaries.map((arc, idx) => (
+                                            <div key={arc.key || idx} className="rounded-xl bg-indigo-50/40 border border-indigo-100 px-4 py-3 text-xs text-slate-700 space-y-1">
+                                                <div className="font-bold text-indigo-900">
+                                                    第 {arc.start_episode} – {arc.end_episode} 话
+                                                </div>
+                                                <div className="leading-relaxed">{arc.summary}</div>
                                             </div>
                                         ))}
                                     </div>

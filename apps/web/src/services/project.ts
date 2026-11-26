@@ -13,10 +13,21 @@ export interface MainPlotInfo {
     next_hook?: string
 }
 
+export interface StoryArcSummary {
+    key?: string
+    start_episode: string | number
+    end_episode: string | number
+    count?: number
+    sealed?: boolean
+    summary: string
+}
+
 export interface StoryBible {
     main_plot?: MainPlotInfo
     art_style?: string
+    core_rules?: string[]
     discovered_rules?: string[]
+    arc_summaries?: StoryArcSummary[]
     last_updated_episode?: string
 }
 
@@ -412,10 +423,47 @@ export interface GeneratedImage {
     created_at: string | null
 }
 
+export interface BubbleCustomBox {
+    x_pct?: number
+    y_pct?: number
+    font_scale?: number
+    style?: string
+    tail_dir?: string
+}
+
+export interface PanelBoxItem {
+    panel_id: string
+    x_pct: number
+    y_pct: number
+    w_pct: number
+    h_pct: number
+}
+
+export interface BubbleLayoutItem {
+    panel_id: string
+    dialogue_index: number
+    speaker: string
+    text: string
+    style: string
+    tail_dir: string
+    font_scale: number
+    x_pct: number
+    y_pct: number
+    w_pct: number
+    h_pct: number
+    page_x_pct: number
+    page_y_pct: number
+    page_w_pct: number
+    page_h_pct: number
+}
+
 export interface ComposedPage {
     page_number: number
     image_path: string
     layout: string
+    writing_mode?: string
+    panel_boxes?: PanelBoxItem[]
+    bubble_layouts?: BubbleLayoutItem[]
 }
 
 export interface StoryboardPanel {
@@ -426,9 +474,148 @@ export interface StoryboardPanel {
     characters: { name: string; outfit?: string; emotion?: string; posture?: string }[]
     camera: string
     mood?: string
-    dialogue: { speaker: string; text: string; type: string; speaker_position?: string }[]
+    dialogue: {
+        speaker: string
+        text: string
+        type: string
+        speaker_position?: string
+        custom_box?: BubbleCustomBox
+    }[]
     prompt: string
     negative_prompt?: string
+}
+
+export interface StoryGraphCharacterNode {
+    id: string
+    name: string
+    role: string
+    aliases: string[]
+    description: string
+    speech_style: string
+    visual_tags: string[]
+    avatar_path: string | null
+    appearances: number
+    episode_numbers: number[]
+    state_timeline: Array<{
+        episode_number: number
+        episode_label: string
+        attribute: string
+        before?: string
+        after: string
+    }>
+    outfits: Array<{
+        id: string
+        name: string
+        description: string
+        image_path: string | null
+    }>
+}
+
+export interface StoryGraphEdge {
+    source: string
+    target: string
+    weight: number
+    shared_episodes: number[]
+    moments: Array<{
+        episode_number: number
+        episode_label: string
+        description: string
+        location: string
+        significance: string
+    }>
+}
+
+export interface StoryTimelineEpisode {
+    id: string
+    number: number
+    label: string
+    title: string
+    source: string
+    status: string
+    cover_path: string | null
+    summary: string
+    event_count: number
+    major_events: Array<{
+        description: string
+        significance: string
+        location?: string | null
+        characters: string[]
+    }>
+    cliffhanger: string
+}
+
+export interface StoryPitSwimlane {
+    id: string
+    title: string
+    description: string
+    status: string
+    priority: number
+    trigger_hint?: string | null
+    introduced_episode_number: number | null
+    introduced_episode_label: string | null
+    resolved_episode_number: number | null
+    resolved_episode_label: string | null
+    clues: Array<{ episode_number: number | null; text: string }>
+}
+
+export interface StoryBranchTreeNode {
+    id: string
+    name: string
+    description: string
+    is_default: boolean
+    base_branch_id?: string | null
+    base_episode_id?: string | null
+    episode_count: number
+    episodes: Array<{
+        id: string
+        number: number
+        label: string
+        title: string
+        source: string
+        status: string
+        parent_episode_id?: string | null
+        cover_path: string | null
+    }>
+}
+
+export interface StoryGraphResponse {
+    project_id: string
+    project_title: string
+    branch_id: string
+    branch_name: string
+    story_bible: StoryBible
+    character_graph: {
+        nodes: StoryGraphCharacterNode[]
+        edges: StoryGraphEdge[]
+    }
+    timeline: {
+        episodes: StoryTimelineEpisode[]
+        arcs: StoryArcSummary[]
+        pit_swimlanes: StoryPitSwimlane[]
+    }
+    branch_tree: StoryBranchTreeNode[]
+}
+
+export interface StoryBibleQAResponse {
+    question: string
+    answer: string
+    model: string
+    citations: Array<{
+        episode_id: string
+        episode_number: number | null
+        episode_label: string
+        title: string
+        type: string
+        excerpt: string
+        page_image_path: string | null
+        score: number
+    }>
+    matched_characters: Array<{
+        id: string
+        name: string
+        role: string
+        avatar_path: string | null
+    }>
 }
 
 export interface AssetImage {
@@ -567,6 +754,14 @@ export const memoryService = {
         api.get<GenerationContext>(`/projects/${projectId}/memory/context`, {
             params: { branch_id: branchId, base_episode_number: baseEpisodeNumber },
         }),
+    getGraph: (projectId: string, branchId?: string) =>
+        api.get<StoryGraphResponse>(`/projects/${projectId}/memory/graph`, {
+            params: branchId ? { branch_id: branchId } : undefined,
+        }),
+    askBible: (
+        projectId: string,
+        data: { question: string; branch_id?: string; max_episode_number?: number },
+    ) => api.post<StoryBibleQAResponse>(`/projects/${projectId}/memory/ask`, data, { timeout: 120000 }),
 }
 
 export const generationService = {
@@ -602,8 +797,44 @@ export const generationService = {
         image_model?: string
         image_size?: string
     }) => api.post<{ task_id: string; episode_id: string; status: string; panel_count: number }>('/generation/render', data),
-    triggerLayout: (data: { episode_id: string; template_override?: Record<number, string> }) =>
-        api.post<{ task_id: string; episode_id: string; status: string; page_count: number }>('/generation/layout', data),
+    rerenderPanel: (
+        episodeId: string,
+        panelId: string,
+        data: {
+            prompt?: string
+            negative_prompt?: string
+            reference_asset_ids?: string[]
+            image_backend?: string
+            image_model?: string
+            image_size?: string
+        },
+    ) =>
+        api.post<GeneratedImage>(`/generation/episodes/${episodeId}/panels/${panelId}/rerender`, data, {
+            timeout: 180000,
+        }),
+    selectPanelCandidate: (episodeId: string, panelId: string, imageId: string) =>
+        api.post<GeneratedImage>(`/generation/episodes/${episodeId}/panels/${panelId}/select/${imageId}`),
+    inpaintPanel: (
+        episodeId: string,
+        panelId: string,
+        data: { prompt: string; mask_base64: string; image_backend?: string; image_model?: string },
+    ) =>
+        api.post<GeneratedImage>(`/generation/episodes/${episodeId}/panels/${panelId}/inpaint`, data, {
+            timeout: 180000,
+        }),
+    triggerLayout: (data: {
+        episode_id: string
+        template_override?: Record<number, string>
+        writing_mode?: 'horizontal' | 'vertical'
+        sync?: boolean
+    }) =>
+        api.post<{
+            task_id: string
+            episode_id: string
+            status: string
+            page_count: number
+            pages?: ComposedPage[]
+        }>('/generation/layout', data, { timeout: 120000 }),
     triggerContinue: (data: {
         project_id: string
         branch_id: string
@@ -617,8 +848,10 @@ export const generationService = {
     }) => api.post<{ episode_id: string; episode_number: number; task_id: string; status: string }>('/generation/continue', data),
     getRun: (runId: string) => api.get<GenerationRun>(`/generation/runs/${runId}`),
     listEpisodeRuns: (episodeId: string) => api.get<{ items: GenerationRun[] }>(`/generation/episodes/${episodeId}/runs`),
-    getGeneratedImages: (episodeId: string) =>
-        api.get<{ items: GeneratedImage[] }>(`/generation/episodes/${episodeId}/images`),
+    getGeneratedImages: (episodeId: string, includeCandidates: boolean = false) =>
+        api.get<{ items: GeneratedImage[] }>(`/generation/episodes/${episodeId}/images`, {
+            params: includeCandidates ? { include_candidates: true } : undefined,
+        }),
     getLayoutResult: (episodeId: string) =>
         api.get<{ pages: ComposedPage[] }>(`/generation/episodes/${episodeId}/layout`),
 }
@@ -648,5 +881,9 @@ export const assetImageService = {
             headers: { 'Content-Type': 'multipart/form-data' },
         })
     },
+    cropFromPage: (
+        assetId: string,
+        data: { episode_id: string; page_index: number; bbox: [number, number, number, number]; kind?: string },
+    ) => api.post<AssetImage>(`/projects/assets/${assetId}/crop-from-page`, data),
     remove: (imageId: string) => api.delete(`/projects/asset-images/${imageId}`),
 }
