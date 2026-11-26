@@ -15,12 +15,12 @@ interface Props {
 }
 
 const BUBBLE_STYLES = [
-    { value: 'speech', label: '标准对白气泡 (Speech)' },
-    { value: 'shout', label: '呐喊尖刺气泡 (Shout)' },
-    { value: 'thought', label: '内心独白云朵 (Thought)' },
-    { value: 'whisper', label: '低语虚线气泡 (Whisper)' },
-    { value: 'narration', label: '旁白矩形框 (Narration)' },
-    { value: 'sfx', label: '拟声词特效 (SFX)' },
+    { value: 'speech', label: '标准对白' },
+    { value: 'shout', label: '呐喊尖刺' },
+    { value: 'thought', label: '心声云朵' },
+    { value: 'whisper', label: '低语虚线' },
+    { value: 'narration', label: '旁白方框' },
+    { value: 'sfx', label: '拟声特效' },
 ]
 
 const TAIL_OPTIONS = [

@@ -1,37 +1,142 @@
 @import "tailwindcss";
 
 :root {
+  --mf-paper: #f6f3ec;
+  --mf-surface: #ffffff;
+  --mf-surface-subtle: #faf8f3;
+  --mf-border: #e5dfd3;
+  --mf-border-strong: #d3cbbd;
+  --mf-ink: #13151b;
+  --mf-ink-muted: #5c606d;
+  --mf-accent: #e11d48;
+  --mf-accent-indigo: #4f46e5;
   font-family:
     "Inter", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei",
     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  color: #0f172a;
-  background-color: #f8fafc;
+  color: var(--mf-ink);
+  background-color: var(--mf-paper);
 }
 
 body {
   margin: 0;
   min-height: 100vh;
-  background-color: #f8fafc;
+  background-color: var(--mf-paper);
+  background-image: radial-gradient(rgba(19, 21, 27, 0.045) 0.85px, transparent 0.85px);
+  background-size: 22px 22px;
+  color: var(--mf-ink);
   -webkit-font-smoothing: antialiased;
 }
 
-/* Subtle manga screentone / paper grid accent for reader & hero surfaces */
+/* Manga editorial halftone paper surface */
 .manga-paper-bg {
-  background-color: #f8fafc;
-  background-image: radial-gradient(#cbd5e1 0.75px, transparent 0.75px);
-  background-size: 18px 18px;
+  background-color: #efebe2;
+  background-image: radial-gradient(rgba(19, 21, 27, 0.11) 0.9px, transparent 0.9px);
+  background-size: 16px 16px;
+}
+
+/* Sumi-ink dark editorial canvas (Hero banners & Story Graph) */
+.ink-hero-surface {
+  background-color: #12141b;
+  background-image:
+    radial-gradient(ellipse at 85% 0%, rgba(225, 29, 72, 0.16), transparent 52%),
+    radial-gradient(ellipse at 10% 100%, rgba(99, 102, 241, 0.18), transparent 55%),
+    radial-gradient(rgba(255, 255, 255, 0.055) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 18px 18px;
 }
 
 .studio-card {
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 14px;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  background: var(--mf-surface);
+  border: 1px solid var(--mf-border);
+  border-radius: 16px;
+  box-shadow:
+    0 1px 2px rgba(19, 21, 27, 0.04),
+    0 8px 24px -16px rgba(19, 21, 27, 0.12);
   transition: box-shadow 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
 }
 
 .studio-card-hover:hover {
-  border-color: #6366f1;
-  box-shadow: 0 10px 24px -8px rgba(79, 70, 229, 0.14);
-  transform: translateY(-1px);
+  border-color: #13151b;
+  box-shadow:
+    0 2px 6px rgba(19, 21, 27, 0.08),
+    0 16px 32px -14px rgba(19, 21, 27, 0.2);
+  transform: translateY(-2px);
+}
+
+/* Editorial typography polish for Semi-UI controls */
+.semi-tabs-bar-line {
+  border-bottom: 1px solid var(--mf-border) !important;
+  gap: 6px;
+}
+
+.semi-tabs-tab {
+  font-weight: 600 !important;
+  color: #5c606d !important;
+  padding-top: 10px !important;
+  padding-bottom: 10px !important;
+}
+
+.semi-tabs-tab-active {
+  color: #13151b !important;
+  font-weight: 700 !important;
+}
+
+.semi-tabs-bar-line .semi-tabs-tab-active::after,
+.semi-tabs-bar-line .semi-tabs-tab-active {
+  border-bottom-color: #13151b !important;
+}
+
+.semi-radioGroup-buttonRadio {
+  background: #efebe2 !important;
+  border-radius: 10px !important;
+  padding: 3px !important;
+}
+
+.semi-radio-addon-buttonRadio {
+  border-radius: 8px !important;
+  font-weight: 600 !important;
+}
+
+.semi-radio-addon-buttonRadio-checked {
+  background: #13151b !important;
+  color: #ffffff !important;
+  box-shadow: 0 1px 3px rgba(19, 21, 27, 0.22) !important;
+}
+
+.semi-button-primary.semi-button-solid {
+  background-color: #181a22 !important;
+  border-color: #181a22 !important;
+}
+
+.semi-button-primary.semi-button-solid:hover {
+  background-color: #2b2f3d !important;
+  border-color: #2b2f3d !important;
+}
+
+.semi-button-light:not(.semi-button-danger),
+.semi-button-borderless:not(.semi-button-danger) {
+  color: #1c1f28 !important;
+}
+
+.semi-button-light:not(.semi-button-danger) {
+  background-color: #f1ede4 !important;
+  border: 1px solid #e2dccf !important;
+}
+
+.semi-button-light:not(.semi-button-danger):hover {
+  background-color: #e8e2d5 !important;
+}
+
+.semi-slider-track {
+  background-color: #181a22 !important;
+}
+
+.semi-slider-handle {
+  border-color: #181a22 !important;
+}
+
+.semi-table-thead > .semi-table-row > .semi-table-row-head {
+  background-color: #faf8f3 !important;
+  color: #4b505d !important;
+  font-weight: 700 !important;
+  border-bottom-color: var(--mf-border) !important;
 }

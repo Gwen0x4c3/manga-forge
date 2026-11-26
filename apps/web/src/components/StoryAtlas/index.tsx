@@ -43,7 +43,7 @@ export default function StoryAtlas({ projectId, defaultBranchId }: Props) {
     return (
         <div className="space-y-6 pt-2">
             {/* Top Controls & Telemetry Strip */}
-            <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50 rounded-2xl p-3.5 border border-slate-200">
+            <div className="flex flex-wrap items-center justify-between gap-3 bg-[#faf8f3] rounded-2xl p-3 border border-[#e5dfd3]">
                 <div className="flex flex-wrap items-center gap-3">
                     <RadioGroup
                         type="button"
@@ -77,34 +77,38 @@ export default function StoryAtlas({ projectId, defaultBranchId }: Props) {
                 </div>
             </div>
 
-            {/* Compact KPI Banner */}
+            {/* Compact Editorial KPI Strip */}
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                <div className="rounded-xl bg-white border border-slate-200 px-3.5 py-2.5">
-                    <div className="text-[11px] text-slate-500">人物实体节点</div>
-                    <div className="text-lg font-extrabold text-indigo-700">{data.character_graph.nodes.length}</div>
+                <div className="rounded-xl bg-[#faf8f3] border border-[#e5dfd3] px-4 py-2.5">
+                    <div className="text-[11px] font-semibold text-[#5c606d]">人物实体节点</div>
+                    <div className="text-xl font-black text-[#13151b]">{data.character_graph.nodes.length}</div>
                 </div>
-                <div className="rounded-xl bg-white border border-slate-200 px-3.5 py-2.5">
-                    <div className="text-[11px] text-slate-500">共现关系连线</div>
-                    <div className="text-lg font-extrabold text-violet-700">{data.character_graph.edges.length}</div>
+                <div className="rounded-xl bg-[#faf8f3] border border-[#e5dfd3] px-4 py-2.5">
+                    <div className="text-[11px] font-semibold text-[#5c606d]">共现关系连线</div>
+                    <div className="text-xl font-black text-[#13151b]">{data.character_graph.edges.length}</div>
                 </div>
-                <div className="rounded-xl bg-white border border-slate-200 px-3.5 py-2.5">
-                    <div className="text-[11px] text-slate-500">分支连载章节</div>
-                    <div className="text-lg font-extrabold text-slate-900">{data.timeline.episodes.length}</div>
+                <div className="rounded-xl bg-[#faf8f3] border border-[#e5dfd3] px-4 py-2.5">
+                    <div className="text-[11px] font-semibold text-[#5c606d]">分支连载章节</div>
+                    <div className="text-xl font-black text-[#13151b]">{data.timeline.episodes.length}</div>
                 </div>
-                <div className="rounded-xl bg-white border border-slate-200 px-3.5 py-2.5">
-                    <div className="text-[11px] text-slate-500">伏笔待填 / 已填</div>
-                    <div className="text-lg font-extrabold text-amber-600">
-                        {openPits} <span className="text-xs font-semibold text-emerald-600">/ {resolvedPits}</span>
+                <div className="rounded-xl bg-[#faf8f3] border border-[#e5dfd3] px-4 py-2.5">
+                    <div className="text-[11px] font-semibold text-[#5c606d]">伏笔待填 / 已填</div>
+                    <div className="text-xl font-black text-[#e11d48]">
+                        {openPits} <span className="text-xs font-bold text-emerald-700">/ {resolvedPits}</span>
                     </div>
                 </div>
-                <div className="rounded-xl bg-white border border-slate-200 px-3.5 py-2.5">
-                    <div className="text-[11px] text-slate-500">平行世界线</div>
-                    <div className="text-lg font-extrabold text-teal-700">{data.branch_tree.length}</div>
+                <div className="rounded-xl bg-[#faf8f3] border border-[#e5dfd3] px-4 py-2.5">
+                    <div className="text-[11px] font-semibold text-[#5c606d]">平行世界线</div>
+                    <div className="text-xl font-black text-[#13151b]">{data.branch_tree.length}</div>
                 </div>
             </div>
 
             {(section === 'all' || section === 'characters') && (
-                <CharacterGraph nodes={data.character_graph.nodes} edges={data.character_graph.edges} />
+                <CharacterGraph
+                    nodes={data.character_graph.nodes}
+                    edges={data.character_graph.edges}
+                    onStatusUpdated={() => refetch()}
+                />
             )}
 
             {(section === 'all' || section === 'timeline') && (

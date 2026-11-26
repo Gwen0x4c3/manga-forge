@@ -975,6 +975,21 @@ export default function GenerationStudio() {
                             ))}
                         </div>
 
+                        {(previewContext.unavailable_characters || []).length > 0 && (
+                            <div className="rounded-xl border border-rose-200 bg-rose-50/70 p-3.5 space-y-1">
+                                <div className="font-bold text-rose-900">
+                                    已故 / 封印 / 失踪状态硬锁定 ({previewContext.unavailable_characters?.length})
+                                </div>
+                                {(previewContext.unavailable_characters || []).map((uc) => (
+                                    <div key={uc.id} className="text-rose-800">
+                                        • <strong>{uc.name}</strong> [{uc.vital_status.toUpperCase()}
+                                        {uc.vital_status_episode ? ` · 第${uc.vital_status_episode}话` : ''}]
+                                        {uc.vital_status_note ? `：${uc.vital_status_note}` : ''}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
                         <div className="rounded-xl border border-slate-200 p-3.5 space-y-1">
                             <div className="font-bold text-slate-900">活跃待填伏笔 ({previewContext.active_pits.length})</div>
                             {previewContext.active_pits.map((p, idx) => (

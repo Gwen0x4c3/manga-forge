@@ -869,42 +869,55 @@ export default function ProjectDetail() {
 
     return (
         <div className="space-y-6">
-            {/* Project Studio Header */}
-            <div className="studio-card p-6 space-y-5">
+            {/* Editorial Sumi-Ink Project Hero Banner */}
+            <div className="rounded-2xl ink-hero-surface text-white p-6 md:p-7 space-y-5 shadow-lg border border-white/10">
                 <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
                     <div className="space-y-2">
                         <div className="flex flex-wrap items-center gap-2.5">
-                            <h1 className="text-2xl font-extrabold text-slate-900 m-0">{project.title}</h1>
-                            <Tag color="indigo">{project.language.toUpperCase()}</Tag>
+                            <h1 className="text-2xl md:text-[26px] font-black tracking-tight text-white m-0">
+                                {project.title}
+                            </h1>
+                            <span className="px-2 py-0.5 rounded bg-white/10 border border-white/15 text-[11px] font-bold text-slate-200">
+                                {project.language.toUpperCase()}
+                            </span>
                             {storyBible?.art_style && (
-                                <Tag color="cyan">画风已锚定</Tag>
+                                <span className="px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-400/30 text-[11px] font-semibold text-emerald-200">
+                                    画风已锚定
+                                </span>
                             )}
                         </div>
-                        <p className="text-sm text-slate-500 m-0 max-w-3xl">
+                        <p className="text-xs md:text-sm text-slate-300 m-0 max-w-3xl leading-relaxed">
                             {project.description || '导入连载章节并执行多模态理解后，系统将自动提取人物/道具/场景设定、主线脉络与伏笔。'}
                         </p>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-2.5">
-                        <Button icon={<IconLink />} onClick={() => navigate(`/projects/${projectId}/imports/mangadex`)}>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                            icon={<IconLink />}
+                            style={{ backgroundColor: 'rgba(255,255,255,0.08)', color: '#f8fafc', border: '1px solid rgba(255,255,255,0.16)' }}
+                            onClick={() => navigate(`/projects/${projectId}/imports/mangadex`)}
+                        >
                             MangaDex 抓取
                         </Button>
-                        <Button icon={<IconPlus />} onClick={() => setShowImport(true)}>
-                            导入章节 (图片/ZIP)
+                        <Button
+                            icon={<IconPlus />}
+                            style={{ backgroundColor: 'rgba(255,255,255,0.08)', color: '#f8fafc', border: '1px solid rgba(255,255,255,0.16)' }}
+                            onClick={() => setShowImport(true)}
+                        >
+                            导入章节
                         </Button>
                         <Button
                             icon={<IconBolt />}
-                            theme="light"
-                            type="primary"
+                            style={{ backgroundColor: 'rgba(99,102,241,0.22)', color: '#e0e7ff', border: '1px solid rgba(129,140,248,0.35)' }}
                             loading={batchUnderstandMutation.isPending}
                             onClick={() => batchUnderstandMutation.mutate(false)}
                         >
-                            一键按序理解全书{unanalyzedCount > 0 ? ` (${unanalyzedCount} 话待解析)` : ''}
+                            一键理解全书{unanalyzedCount > 0 ? ` (${unanalyzedCount})` : ''}
                         </Button>
                         <Button
                             icon={<IconForward />}
                             theme="solid"
-                            style={{ backgroundColor: '#4f46e5', color: '#fff' }}
+                            style={{ backgroundColor: '#e11d48', color: '#fff', borderColor: '#e11d48' }}
                             disabled={episodes.length === 0}
                             onClick={() => openContinueModal()}
                         >
@@ -913,39 +926,47 @@ export default function ProjectDetail() {
                     </div>
                 </div>
 
-                {/* Live Metrics Strip */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-2 border-t border-slate-100">
-                    <div className="rounded-xl bg-slate-50 px-4 py-3">
-                        <div className="text-xs text-slate-500">当前连载章节</div>
-                        <div className="text-xl font-bold text-slate-900 mt-0.5">
-                            {episodesData?.total || 0} <span className="text-xs font-normal text-slate-500">话 (已理解 {understoodCount})</span>
+                {/* Translucent Ink Metrics Strip */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-3 border-t border-white/10">
+                    <div
+                        className="rounded-xl bg-white/[0.06] hover:bg-white/[0.1] border border-white/10 px-4 py-3 cursor-pointer transition"
+                        onClick={() => setActiveTab('episodes')}
+                    >
+                        <div className="text-[11px] text-slate-400">当前连载章节</div>
+                        <div className="text-xl font-black text-white mt-0.5">
+                            {episodesData?.total || 0}{' '}
+                            <span className="text-xs font-normal text-slate-400">话 · 已理解 {understoodCount}</span>
                         </div>
                     </div>
                     <div
-                        className="rounded-xl bg-slate-50 px-4 py-3 cursor-pointer hover:bg-indigo-50/50 transition-colors"
+                        className="rounded-xl bg-white/[0.06] hover:bg-white/[0.1] border border-white/10 px-4 py-3 cursor-pointer transition"
                         onClick={() => setActiveTab('story')}
                     >
-                        <div className="text-xs text-slate-500">主线篇章状态</div>
-                        <div className="text-sm font-bold text-indigo-700 mt-1 line-clamp-1">
+                        <div className="text-[11px] text-slate-400">主线篇章状态</div>
+                        <div className="text-sm font-bold text-rose-200 mt-1 line-clamp-1">
                             {mainPlot?.current_arc || (project.long_summary ? '已生成长程摘要' : '待理解提炼')}
                         </div>
                     </div>
                     <div
-                        className="rounded-xl bg-slate-50 px-4 py-3 cursor-pointer hover:bg-indigo-50/50 transition-colors"
+                        className="rounded-xl bg-white/[0.06] hover:bg-white/[0.1] border border-white/10 px-4 py-3 cursor-pointer transition"
                         onClick={() => setActiveTab('assets')}
                     >
-                        <div className="text-xs text-slate-500">已识别角色 / 物品 / 场景</div>
-                        <div className="text-xl font-bold text-slate-900 mt-0.5">
-                            {assetsData?.total || 0} <span className="text-xs font-normal text-slate-500">项视觉资产</span>
+                        <div className="text-[11px] text-slate-400">视觉设定资产</div>
+                        <div className="text-xl font-black text-white mt-0.5">
+                            {assetsData?.total || 0}{' '}
+                            <span className="text-xs font-normal text-slate-400">项（角色/道具/场景）</span>
                         </div>
                     </div>
                     <div
-                        className="rounded-xl bg-slate-50 px-4 py-3 cursor-pointer hover:bg-indigo-50/50 transition-colors"
-                        onClick={() => setActiveTab('pits')}
+                        className="rounded-xl bg-white/[0.06] hover:bg-white/[0.1] border border-white/10 px-4 py-3 cursor-pointer transition"
+                        onClick={() => setActiveTab('atlas')}
                     >
-                        <div className="text-xs text-slate-500">活跃伏笔 / 悬念线</div>
-                        <div className="text-xl font-bold text-amber-600 mt-0.5">
-                            {pitsData?.total || 0} <span className="text-xs font-normal text-slate-500">条 ({pitStatusFilter === 'open' ? '待填' : '当前筛选'})</span>
+                        <div className="text-[11px] text-slate-400">活跃伏笔 / 悬念线</div>
+                        <div className="text-xl font-black text-amber-300 mt-0.5">
+                            {pitsData?.total || 0}{' '}
+                            <span className="text-xs font-normal text-slate-400">
+                                条 ({pitStatusFilter === 'open' ? '待回收' : '当前筛选'})
+                            </span>
                         </div>
                     </div>
                 </div>

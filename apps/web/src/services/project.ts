@@ -346,11 +346,21 @@ export interface GenerationContext {
         id: string
         name: string
         role?: string
+        vital_status?: 'alive' | 'injured' | 'missing' | 'sealed' | 'deceased' | string
+        vital_status_episode?: string | null
+        vital_status_note?: string
         description: string
         visual_tags?: string[]
         current_state?: string
         speech_style?: string
         speech_samples?: string[]
+    }>
+    unavailable_characters?: Array<{
+        id: string
+        name: string
+        vital_status: string
+        vital_status_episode?: string | null
+        vital_status_note?: string
     }>
     world_assets?: Array<{
         id: string
@@ -489,6 +499,10 @@ export interface StoryGraphCharacterNode {
     id: string
     name: string
     role: string
+    vital_status?: 'alive' | 'injured' | 'missing' | 'sealed' | 'deceased' | string
+    vital_status_episode?: string | null
+    vital_status_note?: string
+    vital_status_override?: string | null
     aliases: string[]
     description: string
     speech_style: string

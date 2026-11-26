@@ -54,26 +54,26 @@ export default function HomePage() {
 
     return (
         <div className="space-y-8">
-            <section className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-900 text-white p-8 md:p-10 shadow-xl">
+            <section className="relative overflow-hidden rounded-2xl ink-hero-surface text-white p-8 md:p-11 shadow-xl border border-white/10">
                 <div className="relative z-10 max-w-3xl space-y-4">
-                    <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/20 border border-indigo-400/30 text-indigo-200 text-xs font-medium">
+                    <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-rose-500/15 border border-rose-400/30 text-rose-200 text-xs font-semibold tracking-wide">
                         <IconBolt size="small" />
-                        MangaForge Continuity Engine · 连载级 AI 漫画续画系统
+                        MANGAFORGE CONTINUITY ENGINE · 连载漫画图谱与续画工坊
                     </div>
                     <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight leading-tight m-0">
-                        读懂整部连载的剧情、人物与伏笔，
+                        读懂整部连载的人物命运与伏笔，
                         <br />
-                        <span className="text-indigo-300">创作真正忠于原作的下一话漫画</span>
+                        <span className="text-rose-300">创作真正忠于原作的下一话漫画</span>
                     </h1>
                     <p className="text-slate-300 text-sm md:text-base leading-relaxed m-0 max-w-2xl">
-                        从原画多模态理解、关键角色/道具/场景自动建档，到主线脉络与未解伏笔追踪、一致性审校分镜、参考图锚定渲染与分格气泡排版，全链路闭环驱动高质量连载续画。
+                        从原画多模态理解、视觉参考图自动裁剪、角色生死与状态跨话迭代，到交互式故事宇宙图谱、单格精修渲染与传统日漫竖排嵌字，全链路闭环驱动连载级续画。
                     </p>
                     <div className="pt-2 flex flex-wrap gap-3">
                         <Button
                             size="large"
                             theme="solid"
                             icon={<IconPlus />}
-                            style={{ backgroundColor: '#6366f1', color: '#fff' }}
+                            style={{ backgroundColor: '#e11d48', color: '#fff', borderColor: '#e11d48' }}
                             onClick={() => navigate('/projects?create=1')}
                         >
                             新建连载漫画项目
@@ -81,7 +81,7 @@ export default function HomePage() {
                         <Button
                             size="large"
                             icon={<IconFolder />}
-                            style={{ backgroundColor: 'rgba(255,255,255,0.1)', color: '#fff', border: '1px solid rgba(255,255,255,0.2)' }}
+                            style={{ backgroundColor: 'rgba(255,255,255,0.08)', color: '#fff', border: '1px solid rgba(255,255,255,0.18)' }}
                             onClick={() => navigate('/projects')}
                         >
                             浏览全部作品 ({data?.total ?? 0})
