@@ -1,10 +1,38 @@
 from __future__ import annotations
 
 import io
+import math
 import os
 from dataclasses import dataclass, field
 
 from PIL import Image, ImageDraw, ImageFont
+
+# Traditional CJK vertical typography substitutions for authentic Japanese/Chinese manga lettering
+_VERTICAL_PUNCT_MAP = str.maketrans(
+    {
+        "「": "﹁",
+        "」": "﹂",
+        "『": "﹃",
+        "』": "﹄",
+        "（": "︵",
+        "）": "︶",
+        "(": "︵",
+        ")": "︶",
+        "《": "︽",
+        "》": "︾",
+        "【": "︻",
+        "】": "︼",
+        "—": "︱",
+        "－": "︱",
+        "-": "︱",
+        "…": "︙",
+        "～": "︱",
+        "~": "︱",
+    }
+)
+
+_KINSOKU_NO_START = set("，。！？、：；︙︱﹂﹄︶︼︾!?,.;:·")
+_KINSOKU_NO_END = set("﹁﹃︵︻︽")
 
 CJK_REGULAR_FONT_PATHS = [
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
@@ -72,6 +100,9 @@ class ComposedPage:
     image_data: bytes
     page_number: int
     layout: str
+    writing_mode: str = "horizontal"
+    panel_boxes: list[dict] = field(default_factory=list)
+    bubble_layouts: list[dict] = field(default_factory=list)
 
 
 # Default corner rotation so multiple dialogue bubbles in a panel don't stack on top of faces.
@@ -94,16 +125,30 @@ class LayoutEngine:
     def __init__(self) -> None:
         self._font_manager = FontManager(default_size=self.DEFAULT_FONT_SIZE)
 
-    def compose_page(self, layout: str, panels: list[PanelImage], page_number: int) -> ComposedPage:
+    def compose_page(
+        self,
+        layout: str,
+        panels: list[PanelImage],
+        page_number: int,
+        writing_mode: str = "horizontal",
+    ) -> ComposedPage:
+        mode = "vertical" if (writing_mode or "").lower() == "vertical" else "horizontal"
         canvas = Image.new("RGBA", (self.PAGE_WIDTH, self.PAGE_HEIGHT), (255, 255, 255, 255))
         if not panels:
             rgb = canvas.convert("RGB")
             buf = io.BytesIO()
             rgb.save(buf, format="PNG", optimize=True)
-            return ComposedPage(image_data=buf.getvalue(), page_number=page_number, layout=layout)
+            return ComposedPage(
+                image_data=buf.getvalue(),
+                page_number=page_number,
+                layout=layout,
+                writing_mode=mode,
+            )
 
         bounding_boxes = self._apply_layout(layout, len(panels))
         draw = ImageDraw.Draw(canvas)
+        panel_boxes_meta: list[dict] = []
+        bubble_layouts_meta: list[dict] = []
 
         for panel, (px, py, pw, ph) in zip(panels, bounding_boxes):
             panel_img = Image.open(io.BytesIO(panel.image_data)).convert("RGB")
@@ -117,8 +162,19 @@ class LayoutEngine:
                 width=self.PANEL_BORDER_WIDTH,
             )
 
+            panel_boxes_meta.append(
+                {
+                    "panel_id": panel.panel_id,
+                    "x_pct": round(px / self.PAGE_WIDTH, 4),
+                    "y_pct": round(py / self.PAGE_HEIGHT, 4),
+                    "w_pct": round(pw / self.PAGE_WIDTH, 4),
+                    "h_pct": round(ph / self.PAGE_HEIGHT, 4),
+                }
+            )
+
             if panel.dialogues:
-                self._render_panel_dialogues(canvas, panel, px, py, pw, ph)
+                placed_meta = self._render_panel_dialogues(canvas, panel, px, py, pw, ph, writing_mode=mode)
+                bubble_layouts_meta.extend(placed_meta)
                 draw = ImageDraw.Draw(canvas)
 
         # Subtle manga page number in footer
@@ -136,7 +192,14 @@ class LayoutEngine:
         rgb = canvas.convert("RGB")
         buf = io.BytesIO()
         rgb.save(buf, format="PNG", optimize=True)
-        return ComposedPage(image_data=buf.getvalue(), page_number=page_number, layout=layout)
+        return ComposedPage(
+            image_data=buf.getvalue(),
+            page_number=page_number,
+            layout=layout,
+            writing_mode=mode,
+            panel_boxes=panel_boxes_meta,
+            bubble_layouts=bubble_layouts_meta,
+        )
 
     def _render_panel_dialogues(
         self,
@@ -146,48 +209,79 @@ class LayoutEngine:
         py: int,
         pw: int,
         ph: int,
-    ) -> None:
-        """Place speech/thought/narration/sfx bubbles cleanly inside panel corners without overlapping."""
-        # Adapt font size slightly for compact panels
+        writing_mode: str = "horizontal",
+    ) -> list[dict]:
+        """Place speech/shout/thought/whisper/narration/sfx bubbles cleanly inside panel bounds."""
         scale = min(1.0, max(0.72, min(pw / 950.0, ph / 850.0)))
         base_font_size = max(34, int(self.DEFAULT_FONT_SIZE * scale))
         max_bubble_w = max(280, min(int(pw * self.BUBBLE_MAX_WIDTH_RATIO), pw - 48))
 
         placed_rects: list[tuple[int, int, int, int]] = []
-        valid_dialogues = [d for d in panel.dialogues if (d.get("text") or "").strip()]
+        bubble_meta: list[dict] = []
 
-        for idx, dialogue in enumerate(valid_dialogues):
+        for orig_idx, dialogue in enumerate(panel.dialogues):
             text = str(dialogue.get("text", "")).strip()
-            bubble_type = str(dialogue.get("type", "speech")).lower()
-            raw_hint = str(dialogue.get("speaker_position") or "").strip().lower()
+            if not text:
+                continue
+            custom_box = dialogue.get("custom_box") if isinstance(dialogue.get("custom_box"), dict) else None
+            bubble_type = str(
+                (custom_box.get("style") if custom_box else None) or dialogue.get("type", "speech")
+            ).lower()
+            raw_hint = str(
+                (custom_box.get("tail_dir") if custom_box else None) or dialogue.get("speaker_position") or ""
+            ).strip().lower()
             if not raw_hint or raw_hint == "center":
                 if bubble_type == "narration":
-                    speaker_position = "top-left" if idx == 0 else "bottom-left"
+                    speaker_position = "top-left" if orig_idx == 0 else "bottom-left"
                 elif bubble_type == "sfx":
                     speaker_position = "bottom-right"
                 else:
-                    speaker_position = _CORNER_ROTATION[idx % len(_CORNER_ROTATION)]
+                    speaker_position = _CORNER_ROTATION[orig_idx % len(_CORNER_ROTATION)]
             else:
                 speaker_position = raw_hint
 
+            font_scale = float(custom_box.get("font_scale", 1.0)) if custom_box else 1.0
+            font_scale = max(0.65, min(1.75, font_scale))
+
             if bubble_type == "sfx":
-                font = self._font_manager.get_font(size=int(base_font_size * 1.28), bold=True)
+                font = self._font_manager.get_font(size=int(base_font_size * 1.28 * font_scale), bold=True)
+            elif bubble_type == "shout":
+                font = self._font_manager.get_font(size=int(base_font_size * 1.08 * font_scale), bold=True)
             elif bubble_type == "narration":
-                font = self._font_manager.get_font(size=max(32, int(base_font_size * 0.92)), bold=False)
+                font = self._font_manager.get_font(size=max(30, int(base_font_size * 0.92 * font_scale)), bold=False)
+            elif bubble_type == "whisper":
+                font = self._font_manager.get_font(size=max(28, int(base_font_size * 0.85 * font_scale)), bold=False)
             else:
-                font = self._font_manager.get_font(size=base_font_size, bold=False)
+                font = self._font_manager.get_font(size=max(30, int(base_font_size * font_scale)), bold=False)
 
-            inner_max_w = max(160, max_bubble_w - 2 * self.BUBBLE_PADDING_X)
-            lines = self._wrap_text(text, font, inner_max_w)
-            bubble_w, bubble_h = self._measure_bubble(lines, font)
+            use_vertical = writing_mode == "vertical" and bubble_type != "sfx"
 
-            # Clamp bubble dimensions to fit panel
-            bubble_w = min(bubble_w, pw - 36)
-            bubble_h = min(bubble_h, ph - 36)
+            if use_vertical:
+                max_col_h = max(240, min(int(ph * 0.72), ph - 72))
+                lines = self._wrap_vertical_columns(text, font, max_col_h)
+                bubble_w, bubble_h = self._measure_vertical_bubble(lines, font)
+            else:
+                inner_max_w = max(160, max_bubble_w - 2 * self.BUBBLE_PADDING_X)
+                lines = self._wrap_text(text, font, inner_max_w)
+                bubble_w, bubble_h = self._measure_bubble(lines, font)
 
-            bx, by = self._place_bubble_in_panel(
-                speaker_position, px, py, pw, ph, bubble_w, bubble_h, placed_rects, panel.face_zones
-            )
+            # Extra breathing room for starburst shout spikes
+            if bubble_type == "shout":
+                bubble_w += 34
+                bubble_h += 28
+
+            bubble_w = min(bubble_w, pw - 32)
+            bubble_h = min(bubble_h, ph - 32)
+
+            if custom_box and custom_box.get("x_pct") is not None and custom_box.get("y_pct") is not None:
+                bx = px + int(float(custom_box["x_pct"]) * pw)
+                by = py + int(float(custom_box["y_pct"]) * ph)
+                bx = max(px + 10, min(bx, px + pw - bubble_w - 10))
+                by = max(py + 10, min(by, py + ph - bubble_h - 14))
+            else:
+                bx, by = self._place_bubble_in_panel(
+                    speaker_position, px, py, pw, ph, bubble_w, bubble_h, placed_rects, panel.face_zones
+                )
             placed_rects.append((bx, by, bubble_w, bubble_h))
 
             self._draw_bubble_on_canvas(
@@ -201,7 +295,29 @@ class LayoutEngine:
                 position_hint=speaker_position,
                 font=font,
                 speaker=str(dialogue.get("speaker") or "").strip(),
+                vertical=use_vertical,
             )
+
+            bubble_meta.append(
+                {
+                    "panel_id": panel.panel_id,
+                    "dialogue_index": orig_idx,
+                    "speaker": str(dialogue.get("speaker") or ""),
+                    "text": text,
+                    "style": bubble_type,
+                    "tail_dir": speaker_position,
+                    "font_scale": round(font_scale, 2),
+                    "x_pct": round((bx - px) / max(pw, 1), 4),
+                    "y_pct": round((by - py) / max(ph, 1), 4),
+                    "w_pct": round(bubble_w / max(pw, 1), 4),
+                    "h_pct": round(bubble_h / max(ph, 1), 4),
+                    "page_x_pct": round(bx / self.PAGE_WIDTH, 4),
+                    "page_y_pct": round(by / self.PAGE_HEIGHT, 4),
+                    "page_w_pct": round(bubble_w / self.PAGE_WIDTH, 4),
+                    "page_h_pct": round(bubble_h / self.PAGE_HEIGHT, 4),
+                }
+            )
+        return bubble_meta
 
     def _place_bubble_in_panel(
         self,
@@ -259,7 +375,7 @@ class LayoutEngine:
         by = max(py + 14, min(by, py + ph - bh - 18))
         return bx, by
 
-    def compose_episode(self, pages_data: list[dict]) -> list[ComposedPage]:
+    def compose_episode(self, pages_data: list[dict], writing_mode: str = "horizontal") -> list[ComposedPage]:
         results: list[ComposedPage] = []
         for page_info in pages_data:
             layout = page_info.get("layout", "2x2")
@@ -274,7 +390,7 @@ class LayoutEngine:
                 for p in page_info.get("panels", [])
             ]
             page_number = page_info.get("page_number", 1)
-            results.append(self.compose_page(layout, panels, page_number))
+            results.append(self.compose_page(layout, panels, page_number, writing_mode=writing_mode))
         return results
 
     def _apply_layout(self, layout: str, num_panels: int) -> list[tuple[int, int, int, int]]:
@@ -430,16 +546,21 @@ class LayoutEngine:
         position_hint: str,
         font: ImageFont.FreeTypeFont,
         speaker: str = "",
+        vertical: bool = False,
     ) -> None:
         if bubble_type == "narration":
-            self._draw_narration_bubble(canvas, lines, x, y, bubble_w, bubble_h, font)
+            self._draw_narration_bubble(canvas, lines, x, y, bubble_w, bubble_h, font, vertical=vertical)
         elif bubble_type == "thought":
-            self._draw_thought_bubble(canvas, lines, x, y, bubble_w, bubble_h, position_hint, font)
+            self._draw_thought_bubble(canvas, lines, x, y, bubble_w, bubble_h, position_hint, font, vertical=vertical)
+        elif bubble_type == "shout":
+            self._draw_shout_bubble(canvas, lines, x, y, bubble_w, bubble_h, font, vertical=vertical)
+        elif bubble_type == "whisper":
+            self._draw_whisper_bubble(canvas, lines, x, y, bubble_w, bubble_h, font, vertical=vertical)
         elif bubble_type == "sfx":
             draw = ImageDraw.Draw(canvas)
             self._draw_sfx_text(draw, lines, x, y, bubble_w, bubble_h, font)
         else:
-            self._draw_speech_bubble(canvas, lines, x, y, bubble_w, bubble_h, position_hint, font)
+            self._draw_speech_bubble(canvas, lines, x, y, bubble_w, bubble_h, position_hint, font, vertical=vertical)
 
     def _draw_speech_bubble(
         self,
@@ -451,15 +572,17 @@ class LayoutEngine:
         bubble_h: int,
         position_hint: str,
         font: ImageFont.FreeTypeFont,
+        vertical: bool = False,
     ) -> None:
         """Draw unified speech balloon + tail without a seam line across the tail base."""
         pad = 36
         layer = Image.new("RGBA", (bubble_w + 2 * pad, bubble_h + 2 * pad), (0, 0, 0, 0))
         ldraw = ImageDraw.Draw(layer)
         bx, by = pad, pad
-        radius = min(38, bubble_h // 2, bubble_w // 2)
+        radius = min(56 if vertical else 38, bubble_h // 2, bubble_w // 2)
         ow = self.OUTLINE_WIDTH
 
+        has_tail = position_hint != "none"
         tail_len = 20
         tail_half = 12
         pointing_up = "bottom" in position_hint
@@ -497,23 +620,95 @@ class LayoutEngine:
                 (tx + tip_dx, base_y + tail_len - 2),
             ]
 
-        # Pass 1: outer black stroke shape (balloon + tail)
         ldraw.rounded_rectangle(
             [bx - ow, by - ow, bx + bubble_w + ow, by + bubble_h + ow],
             radius=radius + ow,
             fill=(20, 20, 25, 250),
         )
-        ldraw.polygon(outer_tail, fill=(20, 20, 25, 250))
+        if has_tail:
+            ldraw.polygon(outer_tail, fill=(20, 20, 25, 250))
 
-        # Pass 2: inner crisp white fill (balloon + tail merged seamlessly)
         ldraw.rounded_rectangle(
             [bx, by, bx + bubble_w, by + bubble_h],
             radius=radius,
             fill=(255, 255, 255, 246),
         )
-        ldraw.polygon(inner_tail, fill=(255, 255, 255, 246))
+        if has_tail:
+            ldraw.polygon(inner_tail, fill=(255, 255, 255, 246))
 
-        self._draw_text_lines(ldraw, lines, bx, by, bubble_w, bubble_h, font)
+        if vertical:
+            self._draw_vertical_text_columns(ldraw, lines, bx, by, bubble_w, bubble_h, font)
+        else:
+            self._draw_text_lines(ldraw, lines, bx, by, bubble_w, bubble_h, font)
+        canvas.alpha_composite(layer, (max(0, x - pad), max(0, y - pad)))
+
+    def _draw_shout_bubble(
+        self,
+        canvas: Image.Image,
+        lines: list[str],
+        x: int,
+        y: int,
+        bubble_w: int,
+        bubble_h: int,
+        font: ImageFont.FreeTypeFont,
+        vertical: bool = False,
+    ) -> None:
+        """Draw dramatic spiky starburst shout balloon."""
+        pad = 42
+        layer = Image.new("RGBA", (bubble_w + 2 * pad, bubble_h + 2 * pad), (0, 0, 0, 0))
+        ldraw = ImageDraw.Draw(layer)
+        cx = pad + bubble_w / 2.0
+        cy = pad + bubble_h / 2.0
+        rx_in = bubble_w * 0.48
+        ry_in = bubble_h * 0.48
+        rx_out = bubble_w * 0.56 + 14
+        ry_out = bubble_h * 0.56 + 14
+        spikes = 18
+        pts: list[tuple[float, float]] = []
+        for i in range(spikes * 2):
+            ang = (math.pi * 2.0 * i) / (spikes * 2)
+            rx = rx_out if i % 2 == 0 else rx_in
+            ry = ry_out if i % 2 == 0 else ry_in
+            pts.append((cx + rx * math.cos(ang), cy + ry * math.sin(ang)))
+        ldraw.polygon(pts, fill=(255, 255, 255, 250), outline=(15, 15, 20, 255), width=self.OUTLINE_WIDTH + 1)
+        if vertical:
+            self._draw_vertical_text_columns(ldraw, lines, pad, pad, bubble_w, bubble_h, font)
+        else:
+            self._draw_text_lines(ldraw, lines, pad, pad, bubble_w, bubble_h, font)
+        canvas.alpha_composite(layer, (max(0, x - pad), max(0, y - pad)))
+
+    def _draw_whisper_bubble(
+        self,
+        canvas: Image.Image,
+        lines: list[str],
+        x: int,
+        y: int,
+        bubble_w: int,
+        bubble_h: int,
+        font: ImageFont.FreeTypeFont,
+        vertical: bool = False,
+    ) -> None:
+        """Draw quiet dashed-outline whisper balloon."""
+        pad = 24
+        layer = Image.new("RGBA", (bubble_w + 2 * pad, bubble_h + 2 * pad), (0, 0, 0, 0))
+        ldraw = ImageDraw.Draw(layer)
+        bx, by = pad, pad
+        radius = min(44 if vertical else 34, bubble_h // 2, bubble_w // 2)
+        ldraw.rounded_rectangle([bx, by, bx + bubble_w, by + bubble_h], radius=radius, fill=(255, 255, 255, 232))
+        # Draw crisp dashed ellipse perimeter
+        cx, cy = bx + bubble_w / 2.0, by + bubble_h / 2.0
+        rx, ry = bubble_w / 2.0, bubble_h / 2.0
+        steps = 40
+        for i in range(0, steps, 2):
+            a0 = (math.pi * 2.0 * i) / steps
+            a1 = (math.pi * 2.0 * (i + 1)) / steps
+            p0 = (cx + rx * math.cos(a0), cy + ry * math.sin(a0))
+            p1 = (cx + rx * math.cos(a1), cy + ry * math.sin(a1))
+            ldraw.line([p0, p1], fill=(70, 75, 90, 235), width=3)
+        if vertical:
+            self._draw_vertical_text_columns(ldraw, lines, bx, by, bubble_w, bubble_h, font)
+        else:
+            self._draw_text_lines(ldraw, lines, bx, by, bubble_w, bubble_h, font)
         canvas.alpha_composite(layer, (max(0, x - pad), max(0, y - pad)))
 
     def _draw_thought_bubble(
@@ -526,12 +721,13 @@ class LayoutEngine:
         bubble_h: int,
         position_hint: str,
         font: ImageFont.FreeTypeFont,
+        vertical: bool = False,
     ) -> None:
         pad = 44
         layer = Image.new("RGBA", (bubble_w + 2 * pad, bubble_h + 2 * pad), (0, 0, 0, 0))
         ldraw = ImageDraw.Draw(layer)
         bx, by = pad, pad
-        radius = min(44, bubble_h // 2)
+        radius = min(44, bubble_h // 2, bubble_w // 2)
 
         ldraw.rounded_rectangle(
             [bx, by, bx + bubble_w, by + bubble_h],
@@ -540,7 +736,6 @@ class LayoutEngine:
             outline=(35, 35, 45, 255),
             width=3,
         )
-        # Inner subtle ring for classic manga thought feel
         ldraw.rounded_rectangle(
             [bx + 6, by + 6, bx + bubble_w - 6, by + bubble_h - 6],
             radius=max(12, radius - 6),
@@ -556,7 +751,10 @@ class LayoutEngine:
             [tx - 6, ty + step, tx + 6, ty + step + 11], fill=(255, 255, 255, 245), outline=(35, 35, 45, 255), width=2
         )
 
-        self._draw_text_lines(ldraw, lines, bx, by, bubble_w, bubble_h, font)
+        if vertical:
+            self._draw_vertical_text_columns(ldraw, lines, bx, by, bubble_w, bubble_h, font)
+        else:
+            self._draw_text_lines(ldraw, lines, bx, by, bubble_w, bubble_h, font)
         canvas.alpha_composite(layer, (max(0, x - pad), max(0, y - pad)))
 
     def _draw_narration_bubble(
@@ -568,6 +766,7 @@ class LayoutEngine:
         bubble_w: int,
         bubble_h: int,
         font: ImageFont.FreeTypeFont,
+        vertical: bool = False,
     ) -> None:
         layer = Image.new("RGBA", (bubble_w, bubble_h), (0, 0, 0, 0))
         ldraw = ImageDraw.Draw(layer)
@@ -582,7 +781,10 @@ class LayoutEngine:
             outline=(90, 90, 100, 180),
             width=1,
         )
-        self._draw_text_lines(ldraw, lines, 0, 0, bubble_w, bubble_h, font)
+        if vertical:
+            self._draw_vertical_text_columns(ldraw, lines, 0, 0, bubble_w, bubble_h, font)
+        else:
+            self._draw_text_lines(ldraw, lines, 0, 0, bubble_w, bubble_h, font)
         canvas.alpha_composite(layer, (x, y))
 
     def _draw_sfx_text(
@@ -713,3 +915,109 @@ class LayoutEngine:
         text_w = max(line_widths)
         text_h = sum(line_heights) + 10 * (len(lines) - 1)
         return (text_w + 2 * self.BUBBLE_PADDING_X, text_h + 2 * self.BUBBLE_PADDING_Y)
+
+    def _wrap_vertical_columns(self, text: str, font: ImageFont.FreeTypeFont, max_col_h: int) -> list[str]:
+        """Split text into vertical CJK columns (top-to-bottom, right-to-left) with kinsoku shori
+        so closing punctuation never orphans at the top of a column and short ASCII words stay intact."""
+        transformed = text.translate(_VERTICAL_PUNCT_MAP)
+        sample = font.getbbox("国")
+        char_step = max(26, (sample[3] - sample[1]) + 8)
+        max_chars = max(5, min(13, (max_col_h - 2 * self.BUBBLE_PADDING_Y - 24) // char_step))
+
+        cols: list[str] = []
+        for para in transformed.splitlines() or [transformed]:
+            # Tokenize into CJK single chars and contiguous short ASCII alphanumeric words (e.g. HDMI, 2017)
+            tokens: list[str] = []
+            i = 0
+            while i < len(para):
+                ch = para[i]
+                if ch == " ":
+                    i += 1
+                    continue
+                if ch.isascii() and ch.isalnum():
+                    j = i
+                    while j < len(para) and para[j].isascii() and para[j].isalnum():
+                        j += 1
+                    word = para[i:j]
+                    if len(word) <= 6:
+                        tokens.append(word)
+                    else:
+                        tokens.extend(list(word))
+                    i = j
+                else:
+                    tokens.append(ch)
+                    i += 1
+
+            buf = ""
+            for tok in tokens:
+                if len(tok) == 1 and tok in _KINSOKU_NO_START:
+                    # Kinsoku: never start a new column with closing/trailing punctuation
+                    if buf:
+                        buf += tok
+                    elif cols:
+                        cols[-1] += tok
+                    else:
+                        buf += tok
+                    continue
+
+                if buf and len(buf) + len(tok) > max_chars:
+                    # Kinsoku: don't leave an opening bracket dangling at the bottom of the column
+                    if buf[-1] in _KINSOKU_NO_END and len(buf) > 1:
+                        carry = buf[-1]
+                        cols.append(buf[:-1])
+                        buf = carry + tok
+                    else:
+                        cols.append(buf)
+                        buf = tok
+                else:
+                    buf += tok
+            if buf:
+                cols.append(buf)
+        return cols or [transformed]
+
+    def _measure_vertical_bubble(self, columns: list[str], font: ImageFont.FreeTypeFont) -> tuple[int, int]:
+        if not columns:
+            return (2 * self.BUBBLE_PADDING_X + 36, 2 * self.BUBBLE_PADDING_Y + 72)
+        sample = font.getbbox("国")
+        cell_w = max(26, (sample[2] - sample[0]) + 6)
+        cell_h = max(26, (sample[3] - sample[1]) + 8)
+        col_gap = 10
+        max_len = max(len(c) for c in columns)
+        total_w = len(columns) * cell_w + col_gap * (len(columns) - 1)
+        total_h = max_len * cell_h
+        # Extra oval margin so corner glyphs in curved speech/thought bubbles never clip outlines
+        return (total_w + 2 * self.BUBBLE_PADDING_X + 30, total_h + 2 * self.BUBBLE_PADDING_Y + 34)
+
+    def _draw_vertical_text_columns(
+        self,
+        draw: ImageDraw.Draw,
+        columns: list[str],
+        bubble_x: int,
+        bubble_y: int,
+        bubble_w: int,
+        bubble_h: int,
+        font: ImageFont.FreeTypeFont,
+    ) -> None:
+        if not columns:
+            return
+        sample = font.getbbox("国")
+        sample_top = sample[1]
+        cell_w = max(26, (sample[2] - sample[0]) + 6)
+        cell_h = max(26, (sample[3] - sample[1]) + 8)
+        col_gap = 10
+        total_w = len(columns) * cell_w + col_gap * (len(columns) - 1)
+        start_right_x = bubble_x + (bubble_w + total_w) // 2 - cell_w
+        max_len = max(len(c) for c in columns)
+        start_y = bubble_y + max(self.BUBBLE_PADDING_Y + 12, (bubble_h - max_len * cell_h) // 2)
+
+        for col_idx, col in enumerate(columns):
+            cx = start_right_x - col_idx * (cell_w + col_gap)
+            cy = start_y
+            for ch in col:
+                cb = font.getbbox(ch)
+                cw = cb[2] - cb[0]
+                # Keep authentic TrueType em-box baseline (sample_top) so 一/︵/︶/﹃/﹄/︙ sit naturally
+                draw_x = cx + (cell_w - cw) // 2 - cb[0]
+                draw_y = cy - sample_top
+                draw.text((draw_x, draw_y), ch, fill=(18, 18, 22, 255), font=font)
+                cy += cell_h

@@ -179,21 +179,41 @@ async def save_generated_image(
     panel_id: str | None,
     image_path: str,
     meta: dict | None = None,
+    keep_history: bool = True,
 ) -> GeneratedImage:
     if panel_id:
-        await db.execute(
-            delete(GeneratedImage).where(
-                GeneratedImage.episode_id == episode_id,
-                GeneratedImage.panel_id == panel_id,
+        existing_rows = (
+            (
+                await db.execute(
+                    select(GeneratedImage).where(
+                        GeneratedImage.episode_id == episode_id,
+                        GeneratedImage.panel_id == panel_id,
+                    )
+                )
             )
+            .scalars()
+            .all()
         )
+        if keep_history:
+            for row in existing_rows:
+                row_meta = dict(row.meta or {})
+                row_meta["selected"] = False
+                row.meta = row_meta
+        else:
+            await db.execute(
+                delete(GeneratedImage).where(
+                    GeneratedImage.episode_id == episode_id,
+                    GeneratedImage.panel_id == panel_id,
+                )
+            )
+    final_meta = {**(meta or {}), "selected": True}
     image = GeneratedImage(
         id=str(uuid.uuid4()),
         generation_run_id=generation_run_id,
         episode_id=episode_id,
         panel_id=panel_id,
         image_path=image_path,
-        meta=meta,
+        meta=final_meta,
     )
     db.add(image)
     await db.commit()
@@ -201,20 +221,61 @@ async def save_generated_image(
     return image
 
 
+async def select_generated_image(
+    db: AsyncSession,
+    episode_id: str,
+    panel_id: str,
+    image_id: str,
+) -> GeneratedImage | None:
+    rows = (
+        (
+            await db.execute(
+                select(GeneratedImage).where(
+                    GeneratedImage.episode_id == episode_id,
+                    GeneratedImage.panel_id == panel_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    target: GeneratedImage | None = None
+    for row in rows:
+        m = dict(row.meta or {})
+        if row.id == image_id:
+            m["selected"] = True
+            target = row
+        else:
+            m["selected"] = False
+        row.meta = m
+    if not target:
+        return None
+    await db.commit()
+    await db.refresh(target)
+    return target
+
+
 async def get_generated_images(
     db: AsyncSession,
     episode_id: str,
+    include_candidates: bool = False,
 ) -> list[GeneratedImage]:
     result = await db.execute(
         select(GeneratedImage).where(GeneratedImage.episode_id == episode_id).order_by(GeneratedImage.created_at.asc())
     )
-    # Deduplicate by panel_id keeping latest if historic duplicates exist
     rows = list(result.scalars().all())
+    if include_candidates:
+        return rows
+    # Pick the explicitly selected candidate per panel_id, falling back to latest
     by_panel: dict[str, GeneratedImage] = {}
     unnamed: list[GeneratedImage] = []
     for row in rows:
         if row.panel_id:
-            by_panel[row.panel_id] = row
+            prev = by_panel.get(row.panel_id)
+            row_selected = bool((row.meta or {}).get("selected"))
+            prev_selected = bool((prev.meta or {}).get("selected")) if prev else False
+            if prev is None or row_selected or not prev_selected:
+                by_panel[row.panel_id] = row
         else:
             unnamed.append(row)
     return list(by_panel.values()) + unnamed

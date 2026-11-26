@@ -673,10 +673,164 @@ class AntigravityImageBackend(ImageBackend):
         return await self.generate(prompt=prompt, reference_images=[(image_data, "image/png")], **kwargs)
 
 
+class ComfyUIImageBackend(ImageBackend):
+    """Local ComfyUI workflow backend (`COMFYUI_URL` + optional custom workflow JSON template).
+    Uploads reference images via `/upload/image`, injects prompt/size/seed/ref placeholders,
+    submits via `/prompt`, and polls `/history/{prompt_id}` until output is ready."""
+
+    def __init__(self, model: str | None = None) -> None:
+        self._base_url = (settings.COMFYUI_URL or "http://localhost:8188").rstrip("/")
+        self._model = model or settings.IMAGE_MODEL or "sd_xl_base_1.0.safetensors"
+        self._workflow_path = settings.COMFYUI_WORKFLOW_PATH
+
+    def _build_workflow(
+        self,
+        prompt: str,
+        negative_prompt: str,
+        size: tuple[int, int],
+        seed: int,
+        uploaded_refs: list[str],
+    ) -> dict:
+        import json
+        from pathlib import Path
+
+        if self._workflow_path and Path(self._workflow_path).is_file():
+            raw = Path(self._workflow_path).read_text(encoding="utf-8")
+            raw = (
+                raw.replace("{{PROMPT}}", json.dumps(prompt)[1:-1])
+                .replace("{{NEGATIVE_PROMPT}}", json.dumps(negative_prompt)[1:-1])
+                .replace("{{WIDTH}}", str(size[0]))
+                .replace("{{HEIGHT}}", str(size[1]))
+                .replace("{{SEED}}", str(seed))
+                .replace("{{MODEL}}", json.dumps(self._model)[1:-1])
+            )
+            for idx, name in enumerate(uploaded_refs):
+                raw = raw.replace(f"{{{{REF_IMAGE_{idx}}}}}", json.dumps(name)[1:-1])
+            return json.loads(raw)
+
+        # Standard ComfyUI txt2img graph when no custom workflow template is supplied
+        return {
+            "3": {
+                "class_type": "KSampler",
+                "inputs": {
+                    "seed": seed,
+                    "steps": 24,
+                    "cfg": 7.0,
+                    "sampler_name": "euler",
+                    "scheduler": "normal",
+                    "denoise": 1.0,
+                    "model": ["4", 0],
+                    "positive": ["6", 0],
+                    "negative": ["7", 0],
+                    "latent_image": ["5", 0],
+                },
+            },
+            "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": self._model}},
+            "5": {
+                "class_type": "EmptyLatentImage",
+                "inputs": {"width": size[0], "height": size[1], "batch_size": 1},
+            },
+            "6": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["4", 1]}},
+            "7": {"class_type": "CLIPTextEncode", "inputs": {"text": negative_prompt, "clip": ["4", 1]}},
+            "8": {"class_type": "VAEDecode", "inputs": {"samples": ["3", 0], "vae": ["4", 2]}},
+            "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "mangaforge", "images": ["8", 0]}},
+        }
+
+    async def generate(
+        self,
+        prompt: str,
+        negative_prompt: str | None = None,
+        size: tuple[int, int] = (1024, 1024),
+        seed: int | None = None,
+        reference_images: list[tuple[bytes, str]] | None = None,
+        context: dict | None = None,
+        **kwargs,
+    ) -> ImageResult:
+        import asyncio
+        import random
+        import uuid
+
+        full_prompt = _compose_prompt(prompt, None, context)
+        neg = negative_prompt or "speech bubble, text, watermark, blurry, deformed"
+        actual_seed = seed if seed is not None else random.randint(1, 2**31 - 1)
+        client_id = str(uuid.uuid4())
+
+        async with httpx.AsyncClient(trust_env=False, timeout=300.0) as client:
+            uploaded_refs: list[str] = []
+            for idx, (data, mime) in enumerate(reference_images or []):
+                ext = "png" if "png" in mime else "jpg"
+                up = await client.post(
+                    f"{self._base_url}/upload/image",
+                    files={"image": (f"mf_ref_{client_id[:8]}_{idx}.{ext}", data, mime)},
+                    data={"overwrite": "true"},
+                )
+                up.raise_for_status()
+                uploaded_refs.append(up.json().get("name", ""))
+
+            workflow = self._build_workflow(full_prompt, neg, size, actual_seed, uploaded_refs)
+            resp = await client.post(f"{self._base_url}/prompt", json={"prompt": workflow, "client_id": client_id})
+            resp.raise_for_status()
+            prompt_id = resp.json()["prompt_id"]
+
+            img_info = None
+            for _ in range(240):
+                hist = await client.get(f"{self._base_url}/history/{prompt_id}")
+                hist.raise_for_status()
+                entry = hist.json().get(prompt_id)
+                if entry and entry.get("outputs"):
+                    for node_out in entry["outputs"].values():
+                        imgs = node_out.get("images") or []
+                        if imgs:
+                            img_info = imgs[0]
+                            break
+                    if img_info:
+                        break
+                await asyncio.sleep(1.0)
+
+            if not img_info:
+                raise TimeoutError(f"ComfyUI prompt {prompt_id} timed out")
+
+            view = await client.get(
+                f"{self._base_url}/view",
+                params={
+                    "filename": img_info["filename"],
+                    "subfolder": img_info.get("subfolder", ""),
+                    "type": img_info.get("type", "output"),
+                },
+            )
+            view.raise_for_status()
+            return ImageResult(
+                image_data=view.content,
+                seed=actual_seed,
+                meta={
+                    "model": self._model,
+                    "size": f"{size[0]}x{size[1]}",
+                    "prompt": full_prompt,
+                    "references": len(uploaded_refs),
+                    "prompt_id": prompt_id,
+                },
+            )
+
+    async def inpaint(
+        self,
+        image_data: bytes,
+        mask_data: bytes,
+        prompt: str,
+        **kwargs,
+    ) -> ImageResult:
+        return await self.generate(
+            prompt=prompt,
+            reference_images=[(image_data, "image/png"), (mask_data, "image/png")],
+            **kwargs,
+        )
+
+
 def get_image_backend(backend_name: str | None = None, model: str | None = None) -> ImageBackend:
     backend = backend_name or settings.IMAGE_BACKEND
     if backend == "antigravity":
         return AntigravityImageBackend(model=model)
+    elif backend == "comfyui":
+        return ComfyUIImageBackend(model=model)
     elif backend == "openai":
         return OpenAIImageBackend(model=model)
     elif backend in ("gemini", "nano-banana"):

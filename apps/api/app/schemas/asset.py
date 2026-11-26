@@ -72,3 +72,12 @@ class AssetImageResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class AssetCropFromPageRequest(BaseModel):
+    episode_id: str
+    page_index: int = Field(ge=0, description="0-based page index in the episode")
+    bbox: list[float] = Field(
+        ..., min_length=4, max_length=4, description="Normalized [x1, y1, x2, y2] in 0..1 coordinates"
+    )
+    kind: str = Field(default="reference")

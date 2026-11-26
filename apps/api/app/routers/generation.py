@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
 import io
+import zipfile
 from decimal import Decimal
+from xml.sax.saxutils import escape as xml_escape
 
 from celery import Celery
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +28,8 @@ from app.schemas.generation import (
     GenerationRunResponse,
     LayoutRequest,
     LayoutResponse,
+    PanelInpaintRequest,
+    PanelRerenderRequest,
     RenderRequest,
     RenderResponse,
     ScriptGenerateRequest,
@@ -33,7 +38,7 @@ from app.schemas.generation import (
     UnderstandRequest,
     UnderstandResponse,
 )
-from app.services import episode_service, generation_service
+from app.services import episode_service, generation_service, render_agent, storage_service
 
 router = APIRouter()
 celery_client = Celery(
@@ -337,6 +342,162 @@ async def trigger_render(request: RenderRequest, db: AsyncSession = Depends(get_
     )
 
 
+@router.post("/episodes/{episode_id}/panels/{panel_id}/rerender", response_model=GeneratedImageResponse)
+async def rerender_single_panel(
+    episode_id: str,
+    panel_id: str,
+    request: PanelRerenderRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Synchronously re-render a single panel and keep previous renders as selectable candidates."""
+    episode = await episode_service.get_episode(db, episode_id)
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    storyboard_mem = await generation_service.get_latest_storyboard(db, episode_id)
+    storyboard = storyboard_mem.content if storyboard_mem else None
+
+    run = await generation_service.create_generation_run(
+        db,
+        episode_id=episode.id,
+        stage="render",
+        backend=request.image_backend or settings.IMAGE_BACKEND,
+        model=request.image_model or settings.IMAGE_MODEL,
+        params={"panel_id": panel_id, "single_panel": True, "image_size": request.image_size or "1024x1024"},
+    )
+    await generation_service.update_generation_run(db, run.id, "running")
+    try:
+        gen_image = await render_agent.render_single_panel(
+            db=db,
+            episode=episode,
+            storyboard=storyboard,
+            run_id=run.id,
+            panel_id=panel_id,
+            prompt=request.prompt,
+            negative_prompt=request.negative_prompt,
+            reference_asset_ids=request.reference_asset_ids,
+            image_backend_name=request.image_backend,
+            image_model=request.image_model,
+            image_size=request.image_size or "1024x1024",
+        )
+        if not gen_image:
+            await generation_service.update_generation_run(db, run.id, "failed", error="Single-panel render failed")
+            raise HTTPException(status_code=500, detail="Single-panel render failed")
+        await generation_service.update_generation_run(
+            db, run.id, "succeeded", commit_message=f"Re-rendered panel {panel_id}"
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        await generation_service.update_generation_run(db, run.id, "failed", error=str(exc))
+        raise HTTPException(status_code=500, detail=f"单格重绘失败: {exc}") from exc
+
+    return GeneratedImageResponse(
+        id=gen_image.id,
+        generation_run_id=gen_image.generation_run_id,
+        episode_id=gen_image.episode_id,
+        panel_id=gen_image.panel_id,
+        image_path=gen_image.image_path,
+        meta=gen_image.meta,
+        created_at=gen_image.created_at.isoformat() if gen_image.created_at else None,
+    )
+
+
+@router.post("/episodes/{episode_id}/panels/{panel_id}/select/{image_id}", response_model=GeneratedImageResponse)
+async def select_panel_candidate(
+    episode_id: str,
+    panel_id: str,
+    image_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Switch the active candidate image for a panel."""
+    selected = await generation_service.select_generated_image(db, episode_id, panel_id, image_id)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Candidate image not found for this panel")
+    return GeneratedImageResponse(
+        id=selected.id,
+        generation_run_id=selected.generation_run_id,
+        episode_id=selected.episode_id,
+        panel_id=selected.panel_id,
+        image_path=selected.image_path,
+        meta=selected.meta,
+        created_at=selected.created_at.isoformat() if selected.created_at else None,
+    )
+
+
+@router.post("/episodes/{episode_id}/panels/{panel_id}/inpaint", response_model=GeneratedImageResponse)
+async def inpaint_single_panel(
+    episode_id: str,
+    panel_id: str,
+    request: PanelInpaintRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Run mask-based local inpainting on a panel's current image and save as a new candidate."""
+    from app.core.image_backend import get_image_backend
+
+    episode = await episode_service.get_episode(db, episode_id)
+    if not episode:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    active_images = await generation_service.get_generated_images(db, episode_id, include_candidates=False)
+    current = next((im for im in active_images if im.panel_id == panel_id), None)
+    if not current:
+        raise HTTPException(status_code=404, detail=f"No rendered image found for panel {panel_id}")
+
+    source_bytes = storage_service.get_object_bytes(settings.MINIO_BUCKET, current.image_path)
+    if not source_bytes:
+        raise HTTPException(status_code=404, detail="Original panel image missing from storage")
+
+    raw_b64 = request.mask_base64.split(",", 1)[-1]
+    try:
+        mask_bytes = base64.b64decode(raw_b64)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid mask_base64: {exc}") from exc
+
+    run = await generation_service.create_generation_run(
+        db,
+        episode_id=episode.id,
+        stage="render",
+        backend=request.image_backend or settings.IMAGE_BACKEND,
+        model=request.image_model or settings.IMAGE_MODEL,
+        params={"panel_id": panel_id, "inpaint": True},
+    )
+    await generation_service.update_generation_run(db, run.id, "running")
+    try:
+        backend = get_image_backend(backend_name=request.image_backend, model=request.image_model)
+        result = await backend.inpaint(source_bytes, mask_bytes, request.prompt)
+        object_key = storage_service.generate_object_key(f"generated/{episode.id}", f"{panel_id}_inpaint.png")
+        storage_service.upload_file(settings.MINIO_BUCKET, object_key, result.image_data, content_type="image/png")
+        gen_image = await generation_service.save_generated_image(
+            db,
+            generation_run_id=run.id,
+            episode_id=episode.id,
+            panel_id=panel_id,
+            image_path=object_key,
+            meta={
+                **(current.meta or {}),
+                **result.meta,
+                "inpaint_prompt": request.prompt,
+                "rendered_by": "inpaint",
+            },
+            keep_history=True,
+        )
+        await generation_service.update_generation_run(db, run.id, "succeeded", commit_message=f"Inpainted {panel_id}")
+    except Exception as exc:
+        await generation_service.update_generation_run(db, run.id, "failed", error=str(exc))
+        raise HTTPException(status_code=500, detail=f"局部重绘失败: {exc}") from exc
+
+    return GeneratedImageResponse(
+        id=gen_image.id,
+        generation_run_id=gen_image.generation_run_id,
+        episode_id=gen_image.episode_id,
+        panel_id=gen_image.panel_id,
+        image_path=gen_image.image_path,
+        meta=gen_image.meta,
+        created_at=gen_image.created_at.isoformat() if gen_image.created_at else None,
+    )
+
+
 @router.post("/layout", response_model=LayoutResponse)
 async def trigger_layout(request: LayoutRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Episode).where(Episode.id == request.episode_id).limit(1))
@@ -350,7 +511,31 @@ async def trigger_layout(request: LayoutRequest, db: AsyncSession = Depends(get_
         db,
         episode_id=episode.id,
         stage="layout",
+        params={"writing_mode": request.writing_mode, "sync": request.sync},
     )
+
+    if request.sync:
+        from workers.tasks.layout import _layout_episode_with_db
+
+        try:
+            pages = await _layout_episode_with_db(
+                db=db,
+                self_task=None,
+                run_id=str(run.id),
+                episode_id=episode.id,
+                template_override=request.template_override,
+                trigger_writeback=False,
+                writing_mode=request.writing_mode,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"同步排版失败: {exc}") from exc
+        return LayoutResponse(
+            task_id=str(run.id),
+            episode_id=episode.id,
+            status="succeeded",
+            page_count=len(pages),
+            pages=pages,
+        )
 
     try:
         task = _dispatch_task(
@@ -358,6 +543,8 @@ async def trigger_layout(request: LayoutRequest, db: AsyncSession = Depends(get_
             str(run.id),
             episode.id,
             request.template_override,
+            True,
+            request.writing_mode,
         )
     except Exception as exc:
         await generation_service.update_generation_run(db, str(run.id), "failed", error=str(exc))
@@ -372,8 +559,12 @@ async def trigger_layout(request: LayoutRequest, db: AsyncSession = Depends(get_
 
 
 @router.get("/episodes/{episode_id}/images")
-async def list_generated_images(episode_id: str, db: AsyncSession = Depends(get_db)):
-    images = await generation_service.get_generated_images(db, episode_id)
+async def list_generated_images(
+    episode_id: str,
+    include_candidates: bool = Query(default=False),
+    db: AsyncSession = Depends(get_db),
+):
+    images = await generation_service.get_generated_images(db, episode_id, include_candidates=include_candidates)
     return {
         "items": [
             GeneratedImageResponse(
@@ -398,11 +589,60 @@ async def get_episode_layout(episode_id: str, db: AsyncSession = Depends(get_db)
     return {"pages": layout.content.get("pages", [])}
 
 
+def _build_cbz_bytes(
+    page_blobs: list[tuple[int, bytes]],
+    title: str,
+    number: str,
+    series: str = "MangaForge",
+) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for idx, (page_no, raw) in enumerate(page_blobs, start=1):
+            zf.writestr(f"{idx:03d}_p{page_no:02d}.png", raw)
+        comic_info = (
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            "<ComicInfo>\n"
+            f"  <Series>{xml_escape(series)}</Series>\n"
+            f"  <Title>{xml_escape(title)}</Title>\n"
+            f"  <Number>{xml_escape(number)}</Number>\n"
+            f"  <PageCount>{len(page_blobs)}</PageCount>\n"
+            "  <Manga>YesAndRightToLeft</Manga>\n"
+            "  <Notes>Generated by MangaForge</Notes>\n"
+            "</ComicInfo>\n"
+        )
+        zf.writestr("ComicInfo.xml", comic_info.encode("utf-8"))
+    return buf.getvalue()
+
+
+def _build_webtoon_bytes(images: list) -> bytes:
+    from PIL import Image
+
+    target_w = max(im.width for im in images)
+    gap = 28
+    resized = []
+    for im in images:
+        if im.width != target_w:
+            new_h = max(1, int(im.height * (target_w / im.width)))
+            resized.append(im.resize((target_w, new_h), Image.Resampling.LANCZOS))
+        else:
+            resized.append(im)
+    total_h = sum(im.height for im in resized) + gap * (len(resized) + 1)
+    strip = Image.new("RGB", (target_w, total_h), color=(255, 255, 255))
+    y = gap
+    for im in resized:
+        strip.paste(im, (0, y))
+        y += im.height + gap
+    buf = io.BytesIO()
+    strip.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 @router.get("/episodes/{episode_id}/export")
 async def export_episode(episode_id: str, format: str = "pdf", db: AsyncSession = Depends(get_db)):
-    """Export an episode's composed final pages as a single document (PDF)."""
-    if format != "pdf":
-        raise HTTPException(status_code=400, detail="Only format=pdf is supported")
+    """Export an episode's composed final pages as PDF, CBZ (ComicInfo.xml), or stitched Webtoon PNG."""
+    fmt = format.lower()
+    if fmt not in ("pdf", "cbz", "webtoon"):
+        raise HTTPException(status_code=400, detail="Supported formats: pdf, cbz, webtoon")
 
     episode = await episode_service.get_episode(db, episode_id)
     if not episode:
@@ -414,21 +654,41 @@ async def export_episode(episode_id: str, format: str = "pdf", db: AsyncSession 
 
     from PIL import Image
 
-    from app.services import storage_service
-
     pages = sorted(layout.content.get("pages", []), key=lambda p: p.get("page_number", 0))
+    page_blobs: list[tuple[int, bytes]] = []
     images: list[Image.Image] = []
     for page in pages:
         data = storage_service.get_object_bytes(settings.MINIO_BUCKET, page.get("image_path", ""))
         if data is None:
             continue
+        page_blobs.append((int(page.get("page_number", len(page_blobs) + 1)), data))
         images.append(Image.open(io.BytesIO(data)).convert("RGB"))
     if not images:
         raise HTTPException(status_code=404, detail="Composed page images missing from object storage")
 
+    label = episode.label or str(episode.number)
+    if fmt == "cbz":
+        cbz_bytes = _build_cbz_bytes(
+            page_blobs,
+            title=episode.title or f"Episode {label}",
+            number=str(label),
+        )
+        return Response(
+            content=cbz_bytes,
+            media_type="application/vnd.comicbook+zip",
+            headers={"Content-Disposition": f'attachment; filename="episode_{label}.cbz"'},
+        )
+
+    if fmt == "webtoon":
+        webtoon_bytes = _build_webtoon_bytes(images)
+        return Response(
+            content=webtoon_bytes,
+            media_type="image/png",
+            headers={"Content-Disposition": f'attachment; filename="episode_{label}_webtoon.png"'},
+        )
+
     buf = io.BytesIO()
     images[0].save(buf, format="PDF", save_all=True, append_images=images[1:])
-    label = episode.label or str(episode.number)
     return Response(
         content=buf.getvalue(),
         media_type="application/pdf",

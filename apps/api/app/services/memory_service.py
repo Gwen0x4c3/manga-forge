@@ -308,6 +308,7 @@ async def _compress_long_summary(text: str) -> str | None:
                 {"role": "user", "content": text},
             ],
             response_model=Compressed,
+            max_tokens=settings.OPENAI_MAX_TOKENS,
             max_retries=1,
         )
         compressed = result.summary.strip()
@@ -1147,3 +1148,613 @@ async def vectorize_and_store_episode_memory(
         await vector_store.upsert_vectors(points)
     except Exception:
         logger.warning("Vectorization storage skipped due to vector store error", exc_info=True)
+
+
+async def build_story_graph(
+    db: AsyncSession,
+    project_id: str,
+    branch_id: str | None = None,
+) -> dict | None:
+    """Build full visualization dataset for the Story Atlas UI:
+    - Character co-occurrence & relationship graph (with cropped avatars, outfits, state timelines)
+    - Story Arcs, foundational vs rolling world rules, and Pit swimlane timelines
+    - Multiverse Branch DAG with episode covers and fork pointers
+    """
+    from app.models.asset_image import AssetImage
+    from app.models.branch import Branch
+    from app.models.episode_page import EpisodePage
+
+    project = (await db.execute(select(Project).where(Project.id == project_id).limit(1))).scalar_one_or_none()
+    if not project:
+        return None
+
+    branches = list(
+        (
+            await db.execute(
+                select(Branch)
+                .where(Branch.project_id == project_id)
+                .order_by(Branch.is_default.desc(), Branch.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    active_branch = next((b for b in branches if branch_id and b.id == branch_id), None)
+    if active_branch is None and branches:
+        active_branch = branches[0]
+    active_branch_id = active_branch.id if active_branch else None
+
+    all_eps = list(
+        (
+            await db.execute(
+                select(Episode).where(Episode.project_id == project_id).order_by(Episode.number.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    branch_eps = [ep for ep in all_eps if active_branch_id is None or ep.branch_id == active_branch_id]
+    lineage_ep_ids = await _collect_lineage_episode_ids(db, project_id, branch_eps)
+
+    # Batch load summaries, layout results, and first page covers
+    all_ep_ids = [ep.id for ep in all_eps]
+    summary_map = await _load_latest_memories_map(db, all_ep_ids, "summary")
+    layout_map = await _load_latest_memories_map(db, all_ep_ids, "layout_result")
+
+    first_pages_map: dict[str, str] = {}
+    if all_ep_ids:
+        pg_rows = (
+            (
+                await db.execute(
+                    select(EpisodePage)
+                    .where(EpisodePage.episode_id.in_(all_ep_ids))
+                    .order_by(EpisodePage.page_index.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for pg in pg_rows:
+            if pg.episode_id not in first_pages_map:
+                first_pages_map[pg.episode_id] = pg.image_path
+
+    def _ep_cover(ep_id: str) -> str | None:
+        if ep_id in first_pages_map:
+            return first_pages_map[ep_id]
+        lay = layout_map.get(ep_id) or {}
+        pages = lay.get("pages") or []
+        if pages and isinstance(pages[0], dict):
+            return pages[0].get("image_path")
+        return None
+
+    # Load all assets + primary thumbnails in 2 queries
+    assets = list((await db.execute(select(Asset).where(Asset.project_id == project_id))).scalars().all())
+    asset_ids = [a.id for a in assets]
+    ref_priority = ("reference", "turnaround", "thumbnail", "lora_dataset")
+    asset_images_by_id: dict[str, list[AssetImage]] = {}
+    if asset_ids:
+        img_rows = (
+            (await db.execute(select(AssetImage).where(AssetImage.asset_id.in_(asset_ids)))).scalars().all()
+        )
+        for im in img_rows:
+            asset_images_by_id.setdefault(im.asset_id, []).append(im)
+
+    def _best_asset_image(aid: str) -> str | None:
+        imgs = asset_images_by_id.get(aid) or []
+        if not imgs:
+            return None
+        best = min(imgs, key=lambda i: ref_priority.index(i.kind) if i.kind in ref_priority else 99)
+        return best.image_path
+
+    ep_num_by_id = {ep.id: float(ep.number) for ep in all_eps}
+    ep_label_by_id = {ep.id: str(ep.label or ep.number) for ep in all_eps}
+
+    # Build character alias resolver for event co-occurrence & state timeline matching
+    char_assets = [a for a in assets if a.type == "character"]
+    outfit_assets = [a for a in assets if a.type == "outfit"]
+
+    def _match_char_id(raw_name: str) -> str | None:
+        q = (raw_name or "").strip().lower()
+        if not q:
+            return None
+        # Pass 1: exact name or alias match across all characters
+        for ca in char_assets:
+            names = [ca.name, *((ca.tags or {}).get("aliases") or [])]
+            for nm in names:
+                nl = (nm or "").strip().lower()
+                if nl and nl == q:
+                    return ca.id
+        # Pass 2: substring containment fallback
+        for ca in char_assets:
+            names = [ca.name, *((ca.tags or {}).get("aliases") or [])]
+            for nm in names:
+                nl = (nm or "").strip().lower()
+                if nl and len(nl) >= 2 and len(q) >= 2 and (nl in q or q in nl):
+                    return ca.id
+        return None
+
+    char_state_timeline: dict[str, list[dict]] = {c.id: [] for c in char_assets}
+    pair_moments: dict[tuple[str, str], list[dict]] = {}
+    pair_episodes: dict[tuple[str, str], set[float]] = {}
+
+    ep_summaries_branch: list[tuple[Episode, dict]] = []
+    timeline_episodes: list[dict] = []
+
+    for ep in branch_eps:
+        content = summary_map.get(ep.id) or {}
+        if content:
+            ep_summaries_branch.append((ep, content))
+        ep_num = float(ep.number)
+        ep_lbl = str(ep.label or ep.number)
+
+        events = content.get("events") or []
+        major_events = [
+            {
+                "description": ev.get("description", ""),
+                "significance": ev.get("significance", "normal"),
+                "location": ev.get("location"),
+                "characters": ev.get("characters_involved") or [],
+            }
+            for ev in events
+            if isinstance(ev, dict) and ev.get("description")
+        ]
+
+        timeline_episodes.append(
+            {
+                "id": ep.id,
+                "number": ep_num,
+                "label": ep_lbl,
+                "title": ep.title or f"第 {ep_lbl} 话",
+                "source": ep.source,
+                "status": ep.status,
+                "cover_path": _ep_cover(ep.id),
+                "summary": (content.get("summary") or "")[:300],
+                "event_count": len(major_events),
+                "major_events": major_events[:4],
+                "cliffhanger": (content.get("ending_state") or {}).get("cliffhanger", ""),
+            }
+        )
+
+        # Accumulate character state transitions
+        for sc in content.get("state_changes") or []:
+            if not isinstance(sc, dict):
+                continue
+            cid = _match_char_id(str(sc.get("character") or ""))
+            if cid:
+                char_state_timeline[cid].append(
+                    {
+                        "episode_number": ep_num,
+                        "episode_label": ep_lbl,
+                        "attribute": sc.get("attribute") or "status",
+                        "before": sc.get("before") or "",
+                        "after": sc.get("after") or "",
+                        "reason": sc.get("reason") or "",
+                    }
+                )
+
+        # Accumulate event-level co-occurrence edges
+        ep_char_ids_seen: set[str] = set()
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            involved_ids = list(
+                dict.fromkeys(
+                    cid for nm in (ev.get("characters_involved") or []) if (cid := _match_char_id(str(nm))) is not None
+                )
+            )
+            ep_char_ids_seen.update(involved_ids)
+            for idx_a in range(len(involved_ids)):
+                for idx_b in range(idx_a + 1, len(involved_ids)):
+                    a_id, b_id = sorted((involved_ids[idx_a], involved_ids[idx_b]))
+                    pair_episodes.setdefault((a_id, b_id), set()).add(ep_num)
+                    pair_moments.setdefault((a_id, b_id), []).append(
+                        {
+                            "episode_number": ep_num,
+                            "episode_label": ep_lbl,
+                            "description": str(ev.get("description") or "")[:180],
+                            "location": ev.get("location") or "",
+                            "significance": ev.get("significance") or "normal",
+                        }
+                    )
+
+        # Also connect characters who co-appear in the same episode's sightings or ending_state
+        for c_sight in content.get("characters") or content.get("character_sightings") or []:
+            if isinstance(c_sight, dict):
+                cid = c_sight.get("asset_id") or _match_char_id(str(c_sight.get("name") or ""))
+                if cid and cid in char_state_timeline:
+                    ep_char_ids_seen.add(cid)
+        for nm in (content.get("ending_state") or {}).get("active_characters") or []:
+            cid = _match_char_id(str(nm))
+            if cid and cid in char_state_timeline:
+                ep_char_ids_seen.add(cid)
+        for ca in char_assets:
+            if ep.id in (ca.episode_ids or {}):
+                ep_char_ids_seen.add(ca.id)
+        seen_list = sorted(ep_char_ids_seen)
+        for idx_a in range(len(seen_list)):
+            for idx_b in range(idx_a + 1, len(seen_list)):
+                pair_episodes.setdefault((seen_list[idx_a], seen_list[idx_b]), set()).add(ep_num)
+
+    # Build character nodes
+    char_nodes: list[dict] = []
+    for ca in char_assets:
+        ep_keys = set((ca.episode_ids or {}).keys())
+        matched_nums = sorted({ep_num_by_id[eid] for eid in ep_keys if eid in ep_num_by_id})
+        tags = ca.tags or {}
+        # Match outfits belonging to this character
+        char_outfits = []
+        for oa in outfit_assets:
+            otags = oa.tags or {}
+            owner = str(otags.get("owner_or_context") or "")
+            if oa.parent_asset_id == ca.id or ca.name in oa.name or ca.name in owner:
+                char_outfits.append(
+                    {
+                        "id": oa.id,
+                        "name": oa.name,
+                        "description": (oa.description or "")[:160],
+                        "image_path": _best_asset_image(oa.id),
+                    }
+                )
+
+        char_nodes.append(
+            {
+                "id": ca.id,
+                "name": ca.name,
+                "role": tags.get("role") or "support",
+                "aliases": tags.get("aliases") or [],
+                "description": (ca.description or "")[:360],
+                "speech_style": tags.get("speech_style") or "",
+                "visual_tags": (tags.get("visual_tags") or [])[:10],
+                "avatar_path": _best_asset_image(ca.id),
+                "appearances": max(len(matched_nums), len(ep_keys)),
+                "episode_numbers": matched_nums,
+                "state_timeline": char_state_timeline.get(ca.id, []),
+                "outfits": char_outfits[:6],
+            }
+        )
+    char_nodes.sort(key=lambda n: (-n["appearances"], n["name"]))
+
+    char_edges: list[dict] = []
+    for (a_id, b_id), shared_eps in pair_episodes.items():
+        moments = pair_moments.get((a_id, b_id), [])
+        char_edges.append(
+            {
+                "source": a_id,
+                "target": b_id,
+                "weight": max(len(shared_eps), len(moments)),
+                "shared_episodes": sorted(shared_eps),
+                "moments": moments[:8],
+            }
+        )
+    char_edges.sort(key=lambda e: -e["weight"])
+
+    # Story Bible & Arc summaries
+    story_bible = dict((project.canon_rules or {}).get("story_bible") or {})
+    cached_arcs = story_bible.get("arc_summaries") or []
+    _, computed_arcs = build_hierarchical_history(ep_summaries_branch, cached_arcs=cached_arcs, include_recent_tail=0)
+    # Also include active unsealed arc block so even a 4-6 episode project shows a clear arc block!
+    display_arcs = list(computed_arcs)
+    covered_count = sum(int(a.get("count") or 0) for a in display_arcs)
+    if len(ep_summaries_branch) > covered_count:
+        rem = ep_summaries_branch[covered_count:]
+        start_lbl = str(rem[0][0].label or rem[0][0].number)
+        end_lbl = str(rem[-1][0].label or rem[-1][0].number)
+        display_arcs.append(
+            {
+                "key": f"{start_lbl}-{end_lbl}:{len(rem)}",
+                "start_episode": start_lbl,
+                "end_episode": end_lbl,
+                "count": len(rem),
+                "sealed": False,
+                "summary": _synthesize_arc_summary([(str(e.label or e.number), c) for e, c in rem], max_chars=480),
+            }
+        )
+
+    # Pit swimlanes with numeric episode coordinates + parsed clue episode numbers
+    pits = list(
+        (await db.execute(select(Pit).where(Pit.project_id == project_id).order_by(Pit.priority.desc())))
+        .scalars()
+        .all()
+    )
+    pit_swimlanes: list[dict] = []
+    for pit in pits:
+        if pit.introduced_episode_id and lineage_ep_ids and pit.introduced_episode_id not in lineage_ep_ids:
+            # Keep project-level manual pits (introduced_episode_id is None) and lineage pits
+            if pit.introduced_episode_id in ep_num_by_id:
+                continue
+        clean_desc, raw_clues = _split_pit_clues(pit.description or pit.title)
+        parsed_clues: list[dict] = []
+        for cl in raw_clues:
+            m = re.match(r"\[第([\d.]+)话线索\]\s*(.*)", cl)
+            if m:
+                parsed_clues.append({"episode_number": float(m.group(1)), "text": m.group(2)})
+            else:
+                parsed_clues.append({"episode_number": None, "text": cl})
+        intro_num = ep_num_by_id.get(pit.introduced_episode_id) if pit.introduced_episode_id else None
+        res_num = ep_num_by_id.get(pit.resolved_episode_id) if pit.resolved_episode_id else None
+        pit_swimlanes.append(
+            {
+                "id": pit.id,
+                "title": pit.title or clean_desc[:28],
+                "description": clean_desc or pit.title,
+                "status": pit.status,
+                "priority": pit.priority,
+                "trigger_hint": pit.trigger_hint,
+                "introduced_episode_number": intro_num,
+                "introduced_episode_label": (
+                    ep_label_by_id.get(pit.introduced_episode_id) if pit.introduced_episode_id else None
+                ),
+                "resolved_episode_number": res_num,
+                "resolved_episode_label": (
+                    ep_label_by_id.get(pit.resolved_episode_id) if pit.resolved_episode_id else None
+                ),
+                "clues": parsed_clues,
+            }
+        )
+
+    # Branch multiverse DAG
+    eps_by_branch: dict[str, list[dict]] = {}
+    for ep in all_eps:
+        eps_by_branch.setdefault(ep.branch_id, []).append(
+            {
+                "id": ep.id,
+                "number": float(ep.number),
+                "label": str(ep.label or ep.number),
+                "title": ep.title or f"第 {ep.label or ep.number} 话",
+                "source": ep.source,
+                "status": ep.status,
+                "parent_episode_id": ep.parent_episode_id,
+                "cover_path": _ep_cover(ep.id),
+            }
+        )
+
+    branch_tree = [
+        {
+            "id": b.id,
+            "name": b.name,
+            "description": b.description or "",
+            "is_default": b.is_default,
+            "base_branch_id": b.base_branch_id,
+            "base_episode_id": b.base_episode_id,
+            "episode_count": len(eps_by_branch.get(b.id, [])),
+            "episodes": eps_by_branch.get(b.id, []),
+        }
+        for b in branches
+    ]
+
+    return {
+        "project_id": project.id,
+        "project_title": project.title,
+        "branch_id": active_branch_id,
+        "branch_name": active_branch.name if active_branch else "",
+        "story_bible": {
+            "main_plot": story_bible.get("main_plot") or {},
+            "art_style": story_bible.get("art_style") or "",
+            "core_rules": story_bible.get("core_rules") or [],
+            "discovered_rules": story_bible.get("discovered_rules") or [],
+            "last_updated_episode": story_bible.get("last_updated_episode"),
+        },
+        "character_graph": {
+            "nodes": char_nodes,
+            "edges": char_edges,
+        },
+        "timeline": {
+            "episodes": timeline_episodes,
+            "arcs": display_arcs,
+            "pit_swimlanes": pit_swimlanes,
+        },
+        "branch_tree": branch_tree,
+    }
+
+
+async def ask_story_bible(
+    db: AsyncSession,
+    project_id: str,
+    question: str,
+    branch_id: str | None = None,
+    max_episode_number: Decimal | None = None,
+) -> dict:
+    """Grounded Q&A against the manga's Story Bible, multi-scale history, assets, and pits,
+    returning an LLM answer with visual episode/page citations."""
+    from app.config import settings
+    from app.core.llm import get_raw_openai_client
+    from app.models.asset_image import AssetImage
+    from app.models.branch import Branch
+    from app.models.episode_page import EpisodePage
+
+    project = (await db.execute(select(Project).where(Project.id == project_id).limit(1))).scalar_one_or_none()
+    if not project:
+        raise ValueError("Project not found")
+
+    if not branch_id:
+        b = (
+            await db.execute(
+                select(Branch)
+                .where(Branch.project_id == project_id)
+                .order_by(Branch.is_default.desc(), Branch.created_at.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if not b:
+            raise ValueError("No branch found for project")
+        branch_id = b.id
+
+    if max_episode_number is None:
+        max_ep = (
+            await db.execute(
+                select(Episode.number)
+                .where(Episode.project_id == project_id, Episode.branch_id == branch_id)
+                .order_by(Episode.number.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        max_episode_number = max_ep if max_ep is not None else Decimal("9999")
+
+    ctx = await build_context_for_generation(
+        db,
+        project_id,
+        branch_id,
+        max_episode_number,
+        custom_instructions=question,
+    )
+
+    # Also run a direct question RAG pass across ALL episodes in this branch (including recent ones!)
+    branch_eps = list(
+        (
+            await db.execute(
+                select(Episode)
+                .where(
+                    Episode.project_id == project_id,
+                    Episode.branch_id == branch_id,
+                    Episode.number <= max_episode_number,
+                )
+                .order_by(Episode.number.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    ep_by_id = {ep.id: ep for ep in branch_eps}
+    lineage_ids = await _collect_lineage_episode_ids(db, project_id, branch_eps)
+
+    direct_hits = await search_rag(
+        db,
+        project_id,
+        question,
+        top_k=8,
+        max_episode_number=max_episode_number,
+        episode_ids=lineage_ids,
+    )
+
+    # Load first page or composed layout image for cited episodes
+    cited_ep_ids = list(
+        dict.fromkeys(
+            str((h.get("payload") or {}).get("episode_id") or "")
+            for h in direct_hits
+            if (h.get("payload") or {}).get("episode_id")
+        )
+    )
+    layout_map = await _load_latest_memories_map(db, cited_ep_ids, "layout_result")
+    cover_by_ep: dict[str, str] = {}
+    if cited_ep_ids:
+        pgs = (
+            (
+                await db.execute(
+                    select(EpisodePage)
+                    .where(EpisodePage.episode_id.in_(cited_ep_ids))
+                    .order_by(EpisodePage.page_index.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for pg in pgs:
+            if pg.episode_id not in cover_by_ep:
+                cover_by_ep[pg.episode_id] = pg.image_path
+    for eid in cited_ep_ids:
+        if eid not in cover_by_ep:
+            pages = (layout_map.get(eid) or {}).get("pages") or []
+            if pages and isinstance(pages[0], dict) and pages[0].get("image_path"):
+                cover_by_ep[eid] = pages[0]["image_path"]
+
+    citations: list[dict] = []
+    seen_cites: set[str] = set()
+    for h in direct_hits:
+        pl = h.get("payload") or {}
+        eid = str(pl.get("episode_id") or "")
+        ep_obj = ep_by_id.get(eid)
+        ep_num = pl.get("episode_number")
+        excerpt = str(pl.get("content") or "")[:220]
+        sig = f"{eid}:{excerpt[:40]}"
+        if sig in seen_cites:
+            continue
+        seen_cites.add(sig)
+        citations.append(
+            {
+                "episode_id": eid,
+                "episode_number": ep_num,
+                "episode_label": str(ep_obj.label or ep_obj.number) if ep_obj else str(ep_num or ""),
+                "title": ep_obj.title if ep_obj else "",
+                "type": pl.get("type") or "memory",
+                "excerpt": excerpt,
+                "page_image_path": cover_by_ep.get(eid),
+                "score": h.get("score", 0.0),
+            }
+        )
+
+    # Match relevant characters mentioned in the question or citations
+    q_lower = question.lower()
+    matched_chars: list[dict] = []
+    char_ids = [c["id"] for c in (ctx.get("character_dossier") or [])[:12]]
+    avatar_by_asset: dict[str, str] = {}
+    if char_ids:
+        aims = (await db.execute(select(AssetImage).where(AssetImage.asset_id.in_(char_ids)))).scalars().all()
+        for im in aims:
+            if im.asset_id not in avatar_by_asset:
+                avatar_by_asset[im.asset_id] = im.image_path
+    for c in (ctx.get("character_dossier") or [])[:8]:
+        if c["name"].lower() in q_lower or any(c["name"] in ci["excerpt"] for ci in citations[:5]):
+            matched_chars.append(
+                {
+                    "id": c["id"],
+                    "name": c["name"],
+                    "role": c.get("role", ""),
+                    "avatar_path": avatar_by_asset.get(c["id"]),
+                }
+            )
+
+    # Assemble crisp grounded context for the LLM
+    context_sections = [
+        f"作品：{ctx.get('project_title', '')}",
+        f"主线设定：{json.dumps((ctx.get('story_bible') or {}).get('main_plot') or {}, ensure_ascii=False)}",
+        f"世界观法则：{ctx.get('canon_rules', '')[:2500]}",
+        f"历史剧情纪要：\n{ctx.get('long_summary', '')[:3200]}",
+        "最近章节摘要：\n"
+        + "\n".join(
+            f"- 第{r.get('label') or r.get('number')}话 ({r.get('title') or ''}): {r.get('summary', '')}"
+            for r in (ctx.get("recent_episodes") or [])
+        ),
+        "核心角色档案：\n"
+        + "\n".join(
+            f"- {c['name']}: {c.get('description', '')[:160]} | 当前状态: {c.get('current_state', '')}"
+            for c in (ctx.get("character_dossier") or [])[:12]
+        ),
+        "未回收伏笔：\n"
+        + "\n".join(
+            f"- [{p.get('priority_label')}] {p.get('description', '')[:180]}"
+            for p in (ctx.get("active_pits") or [])[:12]
+        ),
+        "本次精准检索到的相关剧情片段：\n"
+        + "\n".join(f"- [第{ci['episode_label']}话 · {ci['type']}] {ci['excerpt']}" for ci in citations[:8]),
+    ]
+
+    system_prompt = (
+        "You are MangaForge Story Detective — a deeply knowledgeable manga archivist answering questions "
+        "strictly based on the ingested manga chapters, Story Bible, character dossiers, and open plot threads.\n"
+        "Rules:\n"
+        "- Answer concisely and accurately in the same language as the user's question.\n"
+        "- Cite exact episode numbers (e.g. 第3话, 第5话) whenever referencing events, quotes, or foreshadowing.\n"
+        "- Never hallucinate chapters or facts that are not present in the provided manga context."
+    )
+
+    client = get_raw_openai_client()
+    resp = await client.chat.completions.create(
+        model=settings.OPENAI_MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": "\n\n".join(context_sections) + f"\n\n用户问题：{question}"},
+        ],
+        max_tokens=settings.OPENAI_MAX_TOKENS,
+    )
+    msg = resp.choices[0].message
+    answer = (msg.content or "").strip()
+    if not answer and getattr(msg, "reasoning_content", None):
+        answer = str(msg.reasoning_content).strip()
+
+    return {
+        "question": question,
+        "answer": answer or "暂未能从已导入的章节记忆中归纳出明确答案。",
+        "model": settings.OPENAI_MODEL,
+        "citations": citations[:6],
+        "matched_characters": matched_chars[:6],
+    }

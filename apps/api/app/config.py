@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     LLM_BACKEND: str = "openai"
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o"
+    OPENAI_MAX_TOKENS: int = 16384
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
     OPENAI_BASE_URL: str | None = None
     QDRANT_API_KEY: str = ""
@@ -34,6 +35,8 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = ""
     AGY_CLI_BIN: str = "agy"
     AGY_BRIDGE_DIR: str = ""
+    COMFYUI_URL: str = "http://localhost:8188"
+    COMFYUI_WORKFLOW_PATH: str = ""
 
     CELERY_BROKER_URL: str = "redis://localhost:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"

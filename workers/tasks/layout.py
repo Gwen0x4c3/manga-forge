@@ -20,8 +20,18 @@ def layout_episode(
     episode_id: str,
     template_override: dict | None = None,
     trigger_writeback: bool = True,
+    writing_mode: str = "horizontal",
 ):
-    asyncio.run(_layout_episode(self, run_id, episode_id, template_override, trigger_writeback=trigger_writeback))
+    asyncio.run(
+        _layout_episode(
+            self,
+            run_id,
+            episode_id,
+            template_override,
+            trigger_writeback=trigger_writeback,
+            writing_mode=writing_mode,
+        )
+    )
 
 
 async def _layout_episode_with_db(
@@ -31,6 +41,7 @@ async def _layout_episode_with_db(
     episode_id: str,
     template_override: dict | None,
     trigger_writeback: bool = True,
+    writing_mode: str = "horizontal",
 ) -> list[dict]:
     from app.config import settings
     from app.core.layout_engine import LayoutEngine, PanelImage
@@ -103,6 +114,7 @@ async def _layout_episode_with_db(
                         "text": d.get("text", ""),
                         "type": d.get("type", "speech"),
                         "speaker_position": d.get("speaker_position", ""),
+                        "custom_box": d.get("custom_box"),
                     }
                     for d in panel.get("dialogue", [])
                 ]
@@ -117,7 +129,7 @@ async def _layout_episode_with_db(
                     )
                 )
 
-            composed = engine.compose_page(layout, panel_images, page_number)
+            composed = engine.compose_page(layout, panel_images, page_number, writing_mode=writing_mode)
 
             object_key = storage_service.generate_object_key(f"layout/{episode_id}", f"page_{page_number}.png")
             storage_service.upload_file(
@@ -128,7 +140,10 @@ async def _layout_episode_with_db(
                 {
                     "page_number": page_number,
                     "layout": layout,
+                    "writing_mode": composed.writing_mode,
                     "image_path": object_key,
+                    "panel_boxes": composed.panel_boxes,
+                    "bubble_layouts": composed.bubble_layouts,
                 }
             )
 
@@ -195,10 +210,17 @@ async def _layout_episode(
     episode_id: str,
     template_override: dict | None,
     trigger_writeback: bool = True,
+    writing_mode: str = "horizontal",
 ):
     from app.database import worker_session
 
     async with worker_session() as db:
         await _layout_episode_with_db(
-            db, self, run_id, episode_id, template_override, trigger_writeback=trigger_writeback
+            db,
+            self,
+            run_id,
+            episode_id,
+            template_override,
+            trigger_writeback=trigger_writeback,
+            writing_mode=writing_mode,
         )

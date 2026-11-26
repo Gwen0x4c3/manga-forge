@@ -663,6 +663,7 @@ async def run_multimodal_understanding(
                 {"role": "user", "content": content},
             ],
             response_model=EpisodeUnderstanding,
+            max_tokens=settings.OPENAI_MAX_TOKENS,
             max_retries=2,
         )
         chunk_dict = chunk_model.model_dump()

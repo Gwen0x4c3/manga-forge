@@ -5,6 +5,7 @@ from app.dependencies import get_db
 from app.schemas.asset import (
     AssetClusterResponse,
     AssetCreate,
+    AssetCropFromPageRequest,
     AssetImageResponse,
     AssetMergeRequest,
     AssetResponse,
@@ -129,6 +130,31 @@ async def upload_asset_image(
             kind=kind,
             content_type=file.content_type or "image/png",
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return AssetImageResponse.model_validate(image)
+
+
+@router.post("/assets/{asset_id}/crop-from-page", response_model=AssetImageResponse, status_code=201)
+async def crop_asset_from_page(
+    asset_id: str,
+    request: AssetCropFromPageRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    asset = await asset_service.get_asset(db, asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    try:
+        image = await asset_service.crop_asset_image_from_page(
+            db=db,
+            asset=asset,
+            episode_id=request.episode_id,
+            page_index=request.page_index,
+            bbox=request.bbox,
+            kind=request.kind,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return AssetImageResponse.model_validate(image)

@@ -376,3 +376,74 @@ async def delete_asset_image(db: AsyncSession, image: AssetImage) -> None:
         storage_service.get_minio_client().remove_object(settings.MINIO_BUCKET, image.image_path)
     except Exception:
         pass
+
+
+async def crop_asset_image_from_page(
+    db: AsyncSession,
+    asset: Asset,
+    episode_id: str,
+    page_index: int,
+    bbox: list[float],
+    kind: str = "reference",
+) -> AssetImage:
+    """Crop a normalized [x1, y1, x2, y2] region from an EpisodePage and attach it to an Asset."""
+    import io
+
+    from PIL import Image
+
+    from app.config import settings
+    from app.models.episode_page import EpisodePage
+    from app.services import storage_service
+
+    if kind not in ASSET_IMAGE_KINDS:
+        raise ValueError(f"kind must be one of {ASSET_IMAGE_KINDS}")
+    if len(bbox) != 4:
+        raise ValueError("bbox must contain 4 normalized coordinates [x1, y1, x2, y2]")
+
+    x1, y1, x2, y2 = [max(0.0, min(1.0, float(v))) for v in bbox]
+    if x2 <= x1 + 0.01 or y2 <= y1 + 0.01:
+        raise ValueError("Crop rectangle is too small")
+
+    page = (
+        await db.execute(
+            select(EpisodePage)
+            .where(EpisodePage.episode_id == episode_id, EpisodePage.page_index == page_index)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if not page:
+        raise LookupError(f"Page index {page_index} not found for episode {episode_id}")
+
+    raw = storage_service.get_object_bytes(settings.MINIO_BUCKET, page.image_path)
+    if not raw:
+        raise LookupError("Original page image not found in storage")
+
+    img = Image.open(io.BytesIO(raw)).convert("RGB")
+    w, h = img.size
+    left, top = int(round(x1 * w)), int(round(y1 * h))
+    right, bottom = max(left + 8, int(round(x2 * w))), max(top + 8, int(round(y2 * h)))
+    cropped = img.crop((left, top, min(w, right), min(h, bottom)))
+
+    buf = io.BytesIO()
+    cropped.save(buf, format="PNG")
+    crop_bytes = buf.getvalue()
+
+    object_key = storage_service.generate_object_key(f"assets/{asset.id}", f"crop_p{page_index}.png")
+    storage_service.upload_file(settings.MINIO_BUCKET, object_key, crop_bytes, content_type="image/png")
+    image = AssetImage(
+        id=str(uuid.uuid4()),
+        asset_id=asset.id,
+        kind=kind,
+        image_path=object_key,
+        meta={
+            "source_episode_id": episode_id,
+            "page_index": page_index,
+            "bbox": [round(x1, 4), round(y1, 4), round(x2, 4), round(y2, 4)],
+            "cropped_manually": True,
+        },
+    )
+    db.add(image)
+    asset.episode_ids = {**(asset.episode_ids or {}), episode_id: True}
+    await db.commit()
+    await db.refresh(image)
+    return image

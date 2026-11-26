@@ -14,6 +14,12 @@ class SummaryUpdatePayload(BaseModel):
     long_summary: str
 
 
+class StoryAskPayload(BaseModel):
+    question: str
+    branch_id: str | None = None
+    max_episode_number: Decimal | None = None
+
+
 @router.get("/{project_id}/memory/canon")
 async def get_canon_rules(project_id: str, db: AsyncSession = Depends(get_db)):
     canon = await memory_service.get_canon_rules(db, project_id)
@@ -92,3 +98,38 @@ async def get_generation_context(
         custom_instructions=custom_instructions,
     )
     return context
+
+
+@router.get("/{project_id}/memory/graph")
+async def get_story_graph(
+    project_id: str,
+    branch_id: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    graph = await memory_service.build_story_graph(db, project_id, branch_id=branch_id)
+    if graph is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return graph
+
+
+@router.post("/{project_id}/memory/ask")
+async def ask_story_bible(
+    project_id: str,
+    payload: StoryAskPayload,
+    db: AsyncSession = Depends(get_db),
+):
+    from app.core.llm import ensure_llm_configured
+
+    if not payload.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
+    ensure_llm_configured()
+    try:
+        return await memory_service.ask_story_bible(
+            db,
+            project_id,
+            payload.question.strip(),
+            branch_id=payload.branch_id,
+            max_episode_number=payload.max_episode_number,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

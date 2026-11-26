@@ -51,6 +51,7 @@ async def _generate_script_with_feedback(
             {"role": "user", "content": prompt},
         ],
         response_model=Storyboard,
+        max_tokens=settings.OPENAI_MAX_TOKENS,
         max_retries=2,
     )
 
@@ -81,6 +82,7 @@ async def _check_consistency(client, context: dict, storyboard_dict: dict):
             {"role": "user", "content": user_prompt},
         ],
         response_model=ConsistencyReport,
+        max_tokens=settings.OPENAI_MAX_TOKENS,
         max_retries=1,
     )
 

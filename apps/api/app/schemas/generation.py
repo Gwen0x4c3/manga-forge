@@ -68,10 +68,41 @@ class RenderResponse(BaseModel):
     panel_count: int = Field(default=0, description="Total number of panels to render")
 
 
+class PanelRerenderRequest(BaseModel):
+    prompt: str | None = Field(
+        default=None, description="Override prompt for this panel; defaults to storyboard prompt"
+    )
+    negative_prompt: str | None = None
+    reference_asset_ids: list[str] | None = Field(
+        default=None, description="Explicit asset IDs to attach as visual references"
+    )
+    image_backend: str | None = Field(
+        default=None, description="Override image backend: openai|gemini|comfyui|antigravity|custom|mock"
+    )
+    image_model: str | None = None
+    image_size: str | None = Field(default="1024x1024")
+
+
+class PanelInpaintRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, description="Inpaint prompt describing the edited region")
+    mask_base64: str = Field(..., min_length=8, description="Base64-encoded PNG mask (white=edit, black=keep)")
+    image_backend: str | None = None
+    image_model: str | None = None
+
+
 class LayoutRequest(BaseModel):
     episode_id: str
     template_override: dict[int, str] | None = Field(
         default=None, description="Override layout template per page: {page_number: layout}"
+    )
+    writing_mode: str = Field(
+        default="horizontal",
+        pattern="^(horizontal|vertical)$",
+        description="Speech bubble lettering mode: horizontal or vertical (traditional CJK manga)",
+    )
+    sync: bool = Field(
+        default=False,
+        description="Execute layout composition synchronously in-process and return composed pages immediately",
     )
 
 
@@ -80,6 +111,7 @@ class LayoutResponse(BaseModel):
     episode_id: str
     status: str = "queued"
     page_count: int = Field(default=0, description="Total number of pages to compose")
+    pages: list[dict] | None = None
 
 
 class GeneratedImageResponse(BaseModel):

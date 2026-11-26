@@ -3,10 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import uuid
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from app.config import settings
 from app.core.image_backend import get_image_backend
@@ -16,7 +15,7 @@ from app.models.asset_image import AssetImage
 from app.models.generated_image import GeneratedImage
 from app.models.pit import Pit
 from app.models.project import Project
-from app.services import memory_service, storage_service
+from app.services import generation_service, memory_service, storage_service
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -169,6 +168,7 @@ class RenderAgent:
         self.size = (int(w), int(h))
         self.panel_sizes: dict[str, tuple[int, int]] = {}
         self.rendered: dict[str, str] = {}
+        self.last_generated_image: GeneratedImage | None = None
         self.trace: list[dict] = []
         self.art_style: str = ""
         self.style_asset_id: str | None = None
@@ -236,6 +236,7 @@ class RenderAgent:
                     model=settings.OPENAI_MODEL,
                     messages=messages,
                     tools=TOOL_DEFINITIONS,
+                    max_tokens=settings.OPENAI_MAX_TOKENS,
                 )
                 message = response.choices[0].message
                 tool_calls = getattr(message, "tool_calls", None) or []
@@ -464,6 +465,7 @@ class RenderAgent:
         negative_prompt: str | None = None,
         reference_asset_ids: list[str] | None = None,
         mechanical: bool = False,
+        keep_history: bool = False,
     ) -> bool:
         if not prompt.strip() or not panel_id:
             return False
@@ -560,14 +562,8 @@ class RenderAgent:
             storage_service.upload_file(settings.MINIO_BUCKET, object_key, result.image_data, content_type="image/png")
 
         async with self._db_lock:
-            await self.db.execute(
-                delete(GeneratedImage).where(
-                    GeneratedImage.episode_id == self.episode.id,
-                    GeneratedImage.panel_id == panel_id,
-                )
-            )
-            gen_image = GeneratedImage(
-                id=str(uuid.uuid4()),
+            gen_image = await generation_service.save_generated_image(
+                self.db,
                 generation_run_id=self.run_id,
                 episode_id=self.episode.id,
                 panel_id=panel_id,
@@ -575,13 +571,15 @@ class RenderAgent:
                 meta={
                     **result.meta,
                     "prompt": prompt,
+                    "negative_prompt": neg,
                     "seed": result.seed,
                     "reference_assets": ref_names,
+                    "reference_asset_ids": effective_ids,
                     "rendered_by": "fallback" if mechanical else "agent",
                 },
+                keep_history=keep_history,
             )
-            self.db.add(gen_image)
-            await self.db.commit()
+            self.last_generated_image = gen_image
             self.rendered[panel_id] = object_key
         return True
 
@@ -626,3 +624,52 @@ async def run_render_agent(
 ) -> dict:
     agent = RenderAgent(db, episode, run_id, image_backend_name, image_model, image_size)
     return await agent.run(storyboard)
+
+
+async def render_single_panel(
+    db: AsyncSession,
+    episode: Episode,
+    storyboard: dict | None,
+    run_id: str,
+    panel_id: str,
+    prompt: str | None = None,
+    negative_prompt: str | None = None,
+    reference_asset_ids: list[str] | None = None,
+    image_backend_name: str | None = None,
+    image_model: str | None = None,
+    image_size: str = "1024x1024",
+) -> GeneratedImage | None:
+    """Re-render a single panel synchronously while keeping prior candidate versions."""
+    agent = RenderAgent(db, episode, run_id, image_backend_name, image_model, image_size)
+    await agent._load_style_context()
+
+    panel_dict: dict | None = None
+    if storyboard:
+        agent._compute_panel_sizes(storyboard)
+        for page in storyboard.get("pages", []):
+            for p in page.get("panels", []):
+                if str(p.get("panel_id", "")) == panel_id:
+                    panel_dict = p
+                    break
+            if panel_dict:
+                break
+
+    final_prompt = (prompt or "").strip()
+    if not final_prompt and panel_dict:
+        final_prompt = agent._mechanical_prompt(panel_dict)
+    if not final_prompt:
+        final_prompt = f"manga panel {panel_id}, black and white ink lineart"
+
+    ref_ids = reference_asset_ids
+    if ref_ids is None and panel_dict:
+        ref_ids = await agent._auto_assets(panel_dict)
+
+    ok = await agent._generate_panel(
+        panel_id=panel_id,
+        prompt=final_prompt,
+        negative_prompt=negative_prompt,
+        reference_asset_ids=ref_ids,
+        mechanical=False,
+        keep_history=True,
+    )
+    return agent.last_generated_image if ok else None
