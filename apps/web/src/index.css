@@ -1,203 +1,303 @@
 @import "tailwindcss";
 
-:root {
-  --mf-bg: #f6f8fc;
-  --mf-surface: #ffffff;
-  --mf-surface-soft: #f8fafd;
-  --mf-border: #e5eaf2;
-  --mf-border-strong: #d0d9e6;
-  --mf-text: #0f172a;
-  --mf-text-muted: #64748b;
-  --mf-brand: #ff5a36;
-  --mf-brand-pink: #ff2e63;
-  --mf-primary: #2563eb;
-  font-family:
-    "Plus Jakarta Sans", "Inter", "Hiragino Sans", "PingFang SC", "Noto Sans CJK SC",
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  color: var(--mf-text);
-  background-color: var(--mf-bg);
+/* ============================================================================
+ * MangaForge — Ink & Paper Design System
+ * Inspired by Linear restraint, Figma workbench precision, Obsidian graphs,
+ * and Japanese manga editorial print craftsmanship.
+ * ============================================================================ */
+
+:root,
+[data-theme="dark"] {
+  --bg-app: #18181b;
+  --bg-panel: #222225;
+  --bg-elevated: #29292d;
+  --bg-hover: #2e2e33;
+  --bg-canvas: #303034;
+  --paper: #f5f3ef;
+  --paper-ink: #18181b;
+  --accent: #e64b35;
+  --accent-hover: #cf3d28;
+  --accent-subtle: rgba(230, 75, 53, 0.14);
+  --accent-soft: rgba(230, 75, 53, 0.14);
+  --text-primary: #f4f4f5;
+  --text-secondary: #a1a1aa;
+  --text-muted: #8b8b96;
+  --border: #38383d;
+  --border-subtle: #2b2b30;
+  --status-ok: #4ade80;
+  --status-warn: #f59e0b;
+  --status-danger: #e64b35;
+  --radius-sm: 4px;
+  --radius-md: 6px;
 }
 
-body {
+[data-theme="light"] {
+  --bg-app: #f5f3ef;
+  --bg-panel: #ffffff;
+  --bg-elevated: #faf9f6;
+  --bg-hover: #eeebe4;
+  --bg-canvas: #e6e2da;
+  --paper: #f5f3ef;
+  --paper-ink: #18181b;
+  --accent: #e64b35;
+  --accent-hover: #c93a26;
+  --accent-subtle: rgba(230, 75, 53, 0.10);
+  --accent-soft: rgba(230, 75, 53, 0.10);
+  --text-primary: #18181b;
+  --text-secondary: #52525b;
+  --text-muted: #71717a;
+  --border: #ddd8ce;
+  --border-subtle: #ebe7df;
+  --status-ok: #16a34a;
+  --status-warn: #d97706;
+  --status-danger: #dc2626;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+}
+
+html,
+body,
+#root {
   margin: 0;
+  padding: 0;
   min-height: 100vh;
-  background-color: var(--mf-bg);
-  background-image:
-    radial-gradient(ellipse 75% 40% at 15% -5%, rgba(56, 189, 248, 0.14), transparent 60%),
-    radial-gradient(ellipse 65% 35% at 88% -8%, rgba(255, 90, 54, 0.11), transparent 58%);
-  background-attachment: fixed;
-  color: var(--mf-text);
+  background-color: var(--bg-app);
+  color: var(--text-primary);
+  font-family:
+    "Inter", "Geist", "Noto Sans SC", "Source Han Sans SC", "PingFang SC",
+    -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-/* Crisp Figma / Pixiv style airy studio dot canvas */
-.manga-paper-bg {
-  background-color: #f1f5fb;
-  background-image: radial-gradient(rgba(37, 99, 235, 0.14) 1px, transparent 1px);
-  background-size: 18px 18px;
+/* Editorial serif for manga series titles & chapter headings */
+.font-editorial {
+  font-family:
+    "Noto Serif SC", "Source Han Serif SC", "Songti SC", "Hiragino Mincho ProN",
+    Georgia, "Times New Roman", serif;
 }
 
-/* Luminous Pop Daylight Hero Surface (Shonen Jump+ × Figma Light) */
-.pop-hero-surface {
-  background-color: #ffffff;
+/* Precision studio surfaces (no gradients, no glow, no card soup) */
+.mf-panel {
+  background-color: var(--bg-panel);
+  border-color: var(--border);
+}
+
+.mf-canvas-grid {
+  background-color: var(--bg-canvas);
   background-image:
-    radial-gradient(circle at 92% 14%, rgba(255, 90, 54, 0.14), transparent 36%),
-    radial-gradient(circle at 76% 92%, rgba(37, 99, 235, 0.12), transparent 40%),
-    radial-gradient(circle at 8% 8%, rgba(16, 185, 129, 0.08), transparent 34%);
-  border: 1px solid #e2e8f0;
-  box-shadow:
-    0 2px 6px rgba(15, 23, 42, 0.03),
-    0 18px 38px -18px rgba(37, 99, 235, 0.14);
+    linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+[data-theme="light"] .mf-canvas-grid {
+  background-image:
+    linear-gradient(to right, rgba(24, 24, 27, 0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(24, 24, 27, 0.045) 1px, transparent 1px);
+}
+
+/* Archival manga manuscript paper sheet */
+.mf-paper-sheet {
+  background-color: var(--paper);
+  color: var(--paper-ink);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(0, 0, 0, 0.2);
+}
+
+[data-theme="light"] .mf-paper-sheet {
+  box-shadow: 0 2px 10px rgba(24, 24, 27, 0.1), 0 0 0 1px rgba(24, 24, 27, 0.12);
+}
+
+/* Legacy utility fallback for untouched sub-views */
+.manga-paper-bg {
+  background-color: var(--bg-canvas);
 }
 
 .studio-card {
-  background: var(--mf-surface);
-  border: 1px solid var(--mf-border);
-  border-radius: 20px;
-  box-shadow:
-    0 1px 3px rgba(15, 23, 42, 0.03),
-    0 10px 26px -14px rgba(15, 23, 42, 0.08);
-  transition: box-shadow 0.22s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.2s ease, transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
 }
 
-.studio-card-hover:hover {
-  border-color: #93c5fd;
-  box-shadow:
-    0 4px 12px rgba(37, 99, 235, 0.08),
-    0 18px 34px -12px rgba(37, 99, 235, 0.16);
-  transform: translateY(-2px);
+/* Clean custom scrollbars for dark/light workbenches */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
 }
 
-.brand-gradient-btn {
-  background: linear-gradient(135deg, #ff5e3a 0%, #ff2e63 100%) !important;
-  border: none !important;
-  color: #ffffff !important;
-  box-shadow: 0 6px 16px -4px rgba(255, 58, 76, 0.42) !important;
-  transition: transform 0.18s ease, box-shadow 0.18s ease, filter 0.18s ease !important;
+/* ============================================================================
+ * Semi-UI Harmonization — 4-6px precision radii, crisp Ink & Paper surfaces
+ * ============================================================================ */
+body[theme-mode="dark"] {
+  --semi-color-bg-0: #18181b;
+  --semi-color-bg-1: #222225;
+  --semi-color-bg-2: #29292d;
+  --semi-color-bg-3: #303034;
+  --semi-color-bg-4: #38383d;
+  --semi-color-text-0: #f4f4f5;
+  --semi-color-text-1: #d4d4d8;
+  --semi-color-text-2: #a1a1aa;
+  --semi-color-text-3: #71717a;
+  --semi-color-border: #38383d;
+  --semi-color-fill-0: #29292d;
+  --semi-color-fill-1: #303034;
+  --semi-color-fill-2: #38383d;
+  --semi-color-primary: #e64b35;
+  --semi-color-primary-hover: #cf3d28;
+  --semi-color-primary-active: #b83320;
+  --semi-color-primary-light-default: rgba(230, 75, 53, 0.14);
+  --semi-color-primary-light-hover: rgba(230, 75, 53, 0.22);
 }
 
-.brand-gradient-btn:hover {
-  filter: brightness(1.05);
-  box-shadow: 0 10px 22px -4px rgba(255, 58, 76, 0.5) !important;
-  transform: translateY(-1px);
+[data-theme="light"] body,
+body:not([theme-mode="dark"]) {
+  --semi-color-primary: #e64b35;
+  --semi-color-primary-hover: #cf3d28;
+  --semi-color-primary-active: #b83320;
+  --semi-color-primary-light-default: rgba(230, 75, 53, 0.10);
+  --semi-color-primary-light-hover: rgba(230, 75, 53, 0.16);
+  --semi-color-border: #ddd8ce;
 }
 
-.brand-gradient-btn:active {
-  transform: translateY(0) scale(0.98);
-}
-
-/* Tactile US/JP Modern Component Polish (Semi-UI overrides) */
 .semi-button {
-  border-radius: 12px !important;
-  font-weight: 600 !important;
-  transition: transform 0.15s ease, box-shadow 0.18s ease, background-color 0.18s ease !important;
-}
-
-.semi-button:active:not(:disabled) {
-  transform: scale(0.98);
+  border-radius: var(--radius-sm) !important;
+  font-weight: 500 !important;
+  box-shadow: none !important;
 }
 
 .semi-button-primary.semi-button-solid {
-  background: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%) !important;
-  border-color: transparent !important;
-  box-shadow: 0 4px 12px -3px rgba(37, 99, 235, 0.38) !important;
+  background-color: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: #ffffff !important;
 }
 
 .semi-button-primary.semi-button-solid:hover {
-  background: linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%) !important;
-  box-shadow: 0 6px 16px -3px rgba(37, 99, 235, 0.48) !important;
+  background-color: var(--accent-hover) !important;
+  border-color: var(--accent-hover) !important;
 }
 
 .semi-button-light:not(.semi-button-danger) {
-  background-color: #f1f5f9 !important;
-  color: #1e293b !important;
-  border: 1px solid #e2e8f0 !important;
+  background-color: var(--bg-elevated) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border) !important;
 }
 
 .semi-button-light:not(.semi-button-danger):hover {
-  background-color: #e2e8f0 !important;
-  border-color: #cbd5e1 !important;
+  background-color: var(--bg-hover) !important;
 }
 
 .semi-button-borderless:not(.semi-button-danger) {
-  color: #2563eb !important;
+  color: var(--text-secondary) !important;
 }
 
-/* Crisp Pill Tabs */
+.semi-button-borderless:not(.semi-button-danger):hover {
+  color: var(--text-primary) !important;
+  background-color: var(--bg-hover) !important;
+}
+
+.semi-input-wrapper,
+.semi-select,
+.semi-input-textarea-wrapper,
+.semi-modal-content {
+  border-radius: var(--radius-md) !important;
+}
+
+.semi-tag {
+  border-radius: var(--radius-sm) !important;
+  font-weight: 500 !important;
+}
+
+.semi-radioGroup-buttonRadio {
+  background: var(--bg-app) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-sm) !important;
+  padding: 2px !important;
+}
+
+.semi-radio-addon-buttonRadio {
+  border-radius: 3px !important;
+  font-weight: 500 !important;
+  color: var(--text-secondary) !important;
+}
+
+.semi-radio-addon-buttonRadio-checked {
+  background: var(--bg-elevated) !important;
+  color: var(--text-primary) !important;
+  box-shadow: none !important;
+}
+
 .semi-tabs-bar-line {
-  border-bottom: 1px solid #e5eaf2 !important;
-  gap: 8px;
+  border-bottom: 1px solid var(--border) !important;
 }
 
 .semi-tabs-tab {
-  font-weight: 600 !important;
-  color: #64748b !important;
-  padding: 10px 14px !important;
-  border-radius: 12px 12px 0 0 !important;
-  transition: color 0.18s ease, background-color 0.18s ease !important;
-}
-
-.semi-tabs-tab:hover {
-  color: #0f172a !important;
-  background-color: #f8fafc !important;
+  color: var(--text-secondary) !important;
+  font-weight: 500 !important;
 }
 
 .semi-tabs-tab-active {
-  color: #2563eb !important;
-  font-weight: 700 !important;
+  color: var(--text-primary) !important;
+  font-weight: 600 !important;
 }
 
 .semi-tabs-bar-line .semi-tabs-tab-active::after,
 .semi-tabs-bar-line .semi-tabs-tab-active {
-  border-bottom-color: #2563eb !important;
-  border-bottom-width: 2.5px !important;
-}
-
-/* Apple / Figma Pill Segmented Controls */
-.semi-radioGroup-buttonRadio {
-  background: #edf2f8 !important;
-  border-radius: 9999px !important;
-  padding: 4px !important;
-  gap: 2px;
-}
-
-.semi-radio-addon-buttonRadio {
-  border-radius: 9999px !important;
-  font-weight: 600 !important;
-  color: #475569 !important;
-  transition: all 0.18s ease !important;
-}
-
-.semi-radio-addon-buttonRadio-checked {
-  background: #ffffff !important;
-  color: #2563eb !important;
-  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08), 0 0 0 1px rgba(37, 99, 235, 0.12) !important;
-}
-
-/* Inputs, Selects & Sliders */
-.semi-input-wrapper,
-.semi-select,
-.semi-input-textarea-wrapper {
-  border-radius: 12px !important;
-}
-
-.semi-tag {
-  border-radius: 9999px !important;
-  font-weight: 600 !important;
-}
-
-.semi-slider-track {
-  background: linear-gradient(90deg, #2563eb, #38bdf8) !important;
-}
-
-.semi-slider-handle {
-  border-color: #2563eb !important;
-  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.35) !important;
+  border-bottom-color: var(--accent) !important;
 }
 
 .semi-table-thead > .semi-table-row > .semi-table-row-head {
-  background-color: #f8fafd !important;
-  color: #475569 !important;
-  font-weight: 700 !important;
-  border-bottom-color: #e5eaf2 !important;
+  background-color: var(--bg-elevated) !important;
+  color: var(--text-secondary) !important;
+  border-bottom-color: var(--border) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+}
+
+.semi-table-tbody > .semi-table-row > .semi-table-row-cell {
+  border-bottom-color: var(--border-subtle) !important;
+}
+
+.semi-slider-track {
+  background-color: var(--accent) !important;
+}
+
+.semi-slider-handle {
+  border-color: var(--accent) !important;
+}
+
+/* Semi-UI <Image> responsive fit for manga pages & thumbnails */
+.mf-manga-img.semi-image,
+.mf-manga-img .semi-image-img {
+  width: 100% !important;
+  height: auto !important;
+  display: block;
+}
+
+.mf-manga-thumb.semi-image {
+  width: 100% !important;
+  height: 100% !important;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+}
+
+.mf-manga-thumb .semi-image-img {
+  max-width: 100% !important;
+  max-height: 100% !important;
+  width: auto !important;
+  height: auto !important;
+  object-fit: contain !important;
+  display: block;
 }

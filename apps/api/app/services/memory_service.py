@@ -313,9 +313,10 @@ def build_hierarchical_history(
     ep_summaries: list[tuple[Episode, dict]],
     cached_arcs: list[dict] | None = None,
     include_recent_tail: int = 0,
+    per_arc_budget_override: int | None = None,
 ) -> tuple[str, list[dict]]:
     """Build multi-scale story history (immutable 10-episode Arc Summaries + recent tail)
-    so 60~150+ episode series keep Chapter 1~10 intact without repeated compression decay."""
+    so 60~500+ episode series keep Chapter 1~10 intact without repeated compression decay."""
     if not ep_summaries:
         return "", list(cached_arcs or [])
 
@@ -339,11 +340,16 @@ def build_hierarchical_history(
         ep_sig = ",".join(ep.id for ep, _ in chunk)
         arc_key = f"{start_lbl}-{end_lbl}:{len(chunk)}"
 
-        if is_sealed and arc_key in cache_by_key and cache_by_key[arc_key].get("ep_sig") == ep_sig:
+        if (
+            is_sealed
+            and per_arc_budget_override is None
+            and arc_key in cache_by_key
+            and cache_by_key[arc_key].get("ep_sig") == ep_sig
+        ):
             record = cache_by_key[arc_key]
         else:
             arc_items = [(str(ep.label or ep.number), c) for ep, c in chunk]
-            per_arc_budget = 520 if len(older_pairs) <= 80 else 360
+            per_arc_budget = per_arc_budget_override or (520 if len(older_pairs) <= 80 else 360)
             digest = _synthesize_arc_summary(arc_items, max_chars=per_arc_budget)
             record = {
                 "key": arc_key,
@@ -470,16 +476,19 @@ async def _compress_long_summary(text: str) -> str | None:
         class Compressed(BaseModel):
             summary: str
 
-        result = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": text},
-            ],
-            response_model=Compressed,
-            max_tokens=settings.OPENAI_MAX_TOKENS,
-            max_retries=1,
-        )
+        from app.core.telemetry import usage_context
+
+        with usage_context(operation="summarize_compress"):
+            result = await client.chat.completions.create(
+                model=settings.OPENAI_MODEL,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": text},
+                ],
+                response_model=Compressed,
+                max_tokens=settings.OPENAI_MAX_TOKENS,
+                max_retries=1,
+            )
         compressed = result.summary.strip()
         return compressed if len(compressed) >= 50 else None
     except Exception:
@@ -901,8 +910,17 @@ async def build_context_for_generation(
     branch_id: str,
     base_episode_number: Decimal,
     custom_instructions: str | None = None,
+    context_profile: str | None = None,
+    max_context_tokens: int | None = None,
 ) -> dict:
-    """Assemble branch-isolated, multi-scale continuity context capable of 60~150+ episodes."""
+    """Assemble branch-isolated, multi-scale continuity context capable of 60~500+ episodes,
+    shaped by the chosen ContextProfile (quality / balanced / cost) and hard dynamic token budget."""
+    from app.config import settings
+    from app.core.context_budget import apply_dynamic_context_budget, resolve_context_profile
+
+    profile = resolve_context_profile(context_profile, default_name=settings.DEFAULT_CONTEXT_PROFILE)
+    effective_max_tokens = max_context_tokens if max_context_tokens is not None else settings.MAX_CONTEXT_TOKENS
+
     project = (await db.execute(select(Project).where(Project.id == project_id).limit(1))).scalar_one_or_none()
 
     raw_canon = dict((project.canon_rules or {}) if project else {})
@@ -962,8 +980,8 @@ async def build_context_for_generation(
                     if txt not in samples:
                         samples.append(txt[:80])
 
-    # Recent window (last 5 understood episodes <= base_episode_number)
-    recent_pairs = ep_summaries[-5:]
+    # Recent window sized by active ContextProfile (quality=10, balanced=5, cost=3)
+    recent_pairs = ep_summaries[-profile.recent_window :]
     recent_min_number = recent_pairs[0][0].number if recent_pairs else base_episode_number
 
     # Collect IDs (including pre-fork parent_episode_id) for recency scoring
@@ -1014,11 +1032,12 @@ async def build_context_for_generation(
     # Build multi-scale long_summary (immutable 10-episode Arc Summaries + pre-window episodes)
     # No more [-4000:] front-truncation or 10x repeated lossy compression!
     cached_arcs = story_bible.get("arc_summaries") or []
-    if len(ep_summaries) > 5:
+    if len(ep_summaries) > profile.recent_window:
         older_history, arc_records = build_hierarchical_history(
-            ep_summaries[:-5],
+            ep_summaries[: -profile.recent_window],
             cached_arcs=cached_arcs,
             include_recent_tail=0,
+            per_arc_budget_override=profile.arc_char_budget,
         )
         effective_long_summary = older_history
         story_bible["arc_summaries"] = arc_records
@@ -1076,8 +1095,8 @@ async def build_context_for_generation(
         return (-score, -intro_ep)
 
     active_pits_candidates.sort(key=_pit_score)
-    # Reserve slots so both foundational high-priority mysteries AND recent arc hooks survive at 60+ chapters
-    active_pits_filtered = active_pits_candidates[:20]
+    # Reserve slots according to profile (quality=40, balanced=22, cost=12)
+    active_pits_filtered = active_pits_candidates[: profile.max_pits]
 
     pit_focus_lower = " ".join((p.description or p.title or "") for p in active_pits_filtered[:8]).lower()
     combined_focus_lower = f"{focus_lower} {pit_focus_lower}"
@@ -1138,6 +1157,8 @@ async def build_context_for_generation(
             v_ep = vs_info.get("vital_status_episode")
             v_note = str(vs_info.get("vital_status_note") or "")
 
+            # Keep most recently updated N state attributes so 150+ chapters never bloat one character
+            recent_state_pairs = list(state_items.items())[-profile.max_char_state_attrs :]
             entry = {
                 "id": asset.id,
                 "name": asset.name,
@@ -1147,9 +1168,9 @@ async def build_context_for_generation(
                 "vital_status_note": v_note,
                 "description": asset.description or tags.get("latest_appearance", ""),
                 "visual_tags": vtags[:10],
-                "current_state": "; ".join(f"{k}={v}" for k, v in state_items.items()),
+                "current_state": "; ".join(f"{k}={v}" for k, v in recent_state_pairs),
                 "speech_style": tags.get("speech_style", ""),
-                "speech_samples": samples[-3:],
+                "speech_samples": samples[-profile.max_speech_samples :],
             }
             character_dossier.append(entry)
             if v_status in ("deceased", "missing", "sealed"):
@@ -1191,7 +1212,7 @@ async def build_context_for_generation(
             (1.3, pits_q),
             (0.9, cast_q),
         ],
-        top_k=8,
+        top_k=profile.rag_top_k,
         max_episode_number=base_episode_number,
         prefer_before_number=recent_min_number,
         episode_ids=lineage_ep_ids,
@@ -1221,11 +1242,11 @@ async def build_context_for_generation(
                 "priority": pit.priority,
                 "priority_label": prio_label,
                 "trigger_hint": pit.trigger_hint,
-                "clues": clues[-4:],
+                "clues": clues[-profile.max_pit_clues :],
             }
         )
 
-    return {
+    assembled = {
         "project_title": project.title if project else "",
         "language": lang,
         "language_label": _LANGUAGE_LABELS.get(lang, lang),
@@ -1245,9 +1266,9 @@ async def build_context_for_generation(
             }
             for ep, c in recent_pairs
         ],
-        "character_dossier": character_dossier[:20],
-        "unavailable_characters": unavailable_characters,
-        "world_assets": world_assets[:25],
+        "character_dossier": character_dossier[: profile.max_characters],
+        "unavailable_characters": unavailable_characters[: profile.max_unavailable],
+        "world_assets": world_assets[: profile.max_world_assets],
         "rag_memories": [
             {
                 "content": m["payload"].get("content", ""),
@@ -1268,6 +1289,12 @@ async def build_context_for_generation(
             for asset in assets[:40]
         ],
     }
+
+    return apply_dynamic_context_budget(
+        assembled,
+        profile=profile,
+        max_context_tokens=effective_max_tokens,
+    )
 
 
 async def vectorize_and_store_episode_memory(
@@ -1936,15 +1963,18 @@ async def ask_story_bible(
         "- Never hallucinate chapters or facts that are not present in the provided manga context."
     )
 
+    from app.core.telemetry import usage_context
+
     client = get_raw_openai_client()
-    resp = await client.chat.completions.create(
-        model=settings.OPENAI_MODEL,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": "\n\n".join(context_sections) + f"\n\n用户问题：{question}"},
-        ],
-        max_tokens=settings.OPENAI_MAX_TOKENS,
-    )
+    with usage_context(project_id=project_id, operation="story_qa"):
+        resp = await client.chat.completions.create(
+            model=settings.OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": "\n\n".join(context_sections) + f"\n\n用户问题：{question}"},
+            ],
+            max_tokens=settings.OPENAI_MAX_TOKENS,
+        )
     msg = resp.choices[0].message
     answer = (msg.content or "").strip()
     if not answer and getattr(msg, "reasoning_content", None):

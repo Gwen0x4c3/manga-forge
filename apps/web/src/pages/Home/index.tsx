@@ -1,186 +1,213 @@
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Button, Tag, Spin } from '@douyinfe/semi-ui'
-import { IconPlus, IconFolder, IconForward, IconBolt } from '@douyinfe/semi-icons'
+import { Button, Spin } from '@douyinfe/semi-ui'
 import { useQuery } from '@tanstack/react-query'
-import { projectService } from '@/services/project'
+import { projectService, storageFileUrl } from '@/services/project'
+import { IconPlus, IconBook, IconGraph, IconTimeline, IconResearch } from '@/components/StudioIcons'
 
-const PIPELINE_STEPS = [
+const WORKFLOW_STAGES = [
     {
-        step: '01',
-        title: '连载导入与解析',
-        desc: '支持本地图片、ZIP 压缩包或 MangaDex 整部连载抓取，自动维护话数与平行分支。',
-        badge: 'ZIP / 图片 / MangaDex',
+        code: '01',
+        title: '原稿导入与归档',
+        desc: '导入本地图片、ZIP 或 MangaDex 连载，按分支维护章节谱系。',
     },
     {
-        step: '02',
-        title: '多模态剧情与视觉识别',
-        desc: '直接阅读原画页面，提取逐页台词、关键角色/物品/场景资产，并自动裁切参考图锚点。',
-        badge: '人脸匹配 · 自动截框',
+        code: '02',
+        title: '多模态剧情解析',
+        desc: '提取事件、角色生命状态迭代、逐页对白并裁切视觉参考图。',
     },
     {
-        step: '03',
-        title: '主线脉络与伏笔生命周期',
-        desc: '动态维护核心矛盾、当前篇章、结尾悬念桥接，追踪伏笔“埋设 → 线索推进 → 回收”闭环。',
-        badge: '三层记忆 + 语义检索',
+        code: '03',
+        title: '知识图谱与伏笔账本',
+        desc: '通过人物关系图、伏笔甘特轨道与三栏考据工作台管理长程记忆。',
     },
     {
-        step: '04',
-        title: '高可靠分镜脚本与审校',
-        desc: '注入角色累积状态与原声台词样本生成新分镜，经过连续性编辑审校自动修正逻辑冲突。',
-        badge: '严格防剧透上下文',
+        code: '04',
+        title: '分镜审校与参考生图',
+        desc: '按分支隔离上下文生成分镜、自动校验一致性并单格精修渲染。',
     },
     {
-        step: '05',
-        title: '参考图一致生图与漫画排版',
-        desc: 'Render Agent 自动挂载角色设定图与原作画风参考，合成专业漫画分格、对白气泡并导出 PDF。',
-        badge: '多后端渲染 + 回写',
+        code: '05',
+        title: '画布嵌字与出版导出',
+        desc: '在无限画布中调整竖排/横排气泡，输出 PDF、CBZ 与条漫。',
     },
 ]
 
-const LANG_MAP: Record<string, string> = {
-    zh: '中文连载',
-    ja: '日漫原版',
-    en: '英文连载',
-}
-
 export default function HomePage() {
     const navigate = useNavigate()
+    const [brokenCovers, setBrokenCovers] = useState<Record<string, boolean>>({})
     const { data, isLoading } = useQuery({
-        queryKey: ['projects', '', 1, 6],
-        queryFn: () => projectService.list(undefined, { page: 1, page_size: 6 }),
+        queryKey: ['projects', '', 1, 8],
+        queryFn: () => projectService.list(undefined, { page: 1, page_size: 8 }),
     })
 
     const projects = data?.items || []
 
     return (
-        <div className="space-y-8">
-            <section className="relative overflow-hidden rounded-3xl pop-hero-surface p-8 md:p-11">
-                <div className="relative z-10 max-w-3xl space-y-4">
-                    <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-gradient-to-r from-orange-50 to-rose-50 border border-orange-200/80 text-[#ff4d36] text-xs font-bold tracking-wide">
-                        <IconBolt size="small" />
-                        MANGAFORGE STUDIO · AI 连载漫画图谱与续画工作台
+        <div className="space-y-10">
+            {/* Restrained Editorial Masthead */}
+            <section className="pb-7 border-b flex flex-col md:flex-row md:items-end justify-between gap-6" style={{ borderColor: 'var(--border)' }}>
+                <div className="space-y-2.5 max-w-2xl">
+                    <div className="font-mono text-[11px] uppercase tracking-widest" style={{ color: 'var(--accent)' }}>
+                        MANGAFORGE EDITORIAL STUDIO
                     </div>
-                    <h1 className="text-3xl md:text-4xl font-black tracking-tight leading-tight text-slate-900 m-0">
-                        读懂整部连载的人物命运与伏笔，
-                        <br />
-                        <span className="bg-gradient-to-r from-[#ff5a36] via-[#ff2e63] to-[#2563eb] bg-clip-text text-transparent">
-                            创作真正忠于原作的下一话漫画
-                        </span>
+                    <h1 className="font-editorial text-3xl font-bold tracking-tight leading-snug m-0" style={{ color: 'var(--text-primary)' }}>
+                        长篇连载漫画的知识图谱、分镜编辑与续画工作台
                     </h1>
-                    <p className="text-slate-600 text-sm md:text-base leading-relaxed m-0 max-w-2xl">
-                        从原画多模态理解、视觉参考图自动裁剪、角色生死与状态跨话迭代，到交互式故事宇宙图谱、单格精修渲染与传统日漫竖排嵌字，让每一话续作都保持饱满的原作灵魂。
+                    <p className="text-xs leading-relaxed m-0" style={{ color: 'var(--text-secondary)' }}>
+                        围绕人物命运演进、伏笔跨话闭环与参考图一致渲染构建的专业创作环境。选择下方连载进入章节目录、人物星图、伏笔时间线或漫画画布。
                     </p>
-                    <div className="pt-2 flex flex-wrap gap-3">
-                        <Button
-                            size="large"
-                            theme="solid"
-                            className="brand-gradient-btn"
-                            icon={<IconPlus />}
-                            onClick={() => navigate('/projects?create=1')}
-                        >
-                            新建连载漫画项目
-                        </Button>
-                        <Button
-                            size="large"
-                            theme="light"
-                            icon={<IconFolder />}
-                            onClick={() => navigate('/projects')}
-                        >
-                            浏览全部作品 ({data?.total ?? 0})
-                        </Button>
-                    </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                    <Button theme="light" icon={<IconBook size={14} />} onClick={() => navigate('/projects')}>
+                        全部作品 ({data?.total ?? 0})
+                    </Button>
+                    <Button theme="solid" icon={<IconPlus size={14} />} onClick={() => navigate('/projects?create=1')}>
+                        新建连载工程
+                    </Button>
                 </div>
             </section>
 
-            <section className="space-y-3">
-                <div className="flex items-center justify-between">
-                    <h2 className="text-lg font-bold text-slate-900 m-0">五步全闭环续画架构</h2>
-                    <span className="text-xs text-slate-500">支持按序批量理解全书 · 支持任意章节平行世界线 Fork</span>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
-                    {PIPELINE_STEPS.map((s) => (
-                        <div key={s.step} className="studio-card p-5 flex flex-col justify-between space-y-3">
-                            <div className="space-y-2">
-                                <div className="flex items-center justify-between">
-                                    <span className="text-xs font-mono font-bold px-2 py-0.5 rounded bg-indigo-50 text-indigo-600">
-                                        STEP {s.step}
-                                    </span>
-                                </div>
-                                <div className="font-bold text-slate-900 text-sm">{s.title}</div>
-                                <p className="text-xs text-slate-500 leading-relaxed m-0">{s.desc}</p>
-                            </div>
-                            <div className="pt-2 border-t border-slate-100">
-                                <span className="text-[11px] font-medium text-indigo-600">{s.badge}</span>
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            </section>
-
+            {/* Recent Works Editorial Gallery */}
             <section className="space-y-4">
                 <div className="flex items-center justify-between">
-                    <h2 className="text-lg font-bold text-slate-900 m-0">最近活跃的连载工程</h2>
-                    <Button theme="borderless" icon={<IconForward />} iconPosition="right" onClick={() => navigate('/projects')}>
-                        查看全部作品
-                    </Button>
+                    <h2 className="text-xs font-semibold uppercase tracking-wider m-0" style={{ color: 'var(--text-muted)' }}>
+                        最近编辑的连载作品
+                    </h2>
+                    <button
+                        type="button"
+                        onClick={() => navigate('/projects')}
+                        className="text-xs bg-transparent border-0 cursor-pointer hover:underline"
+                        style={{ color: 'var(--text-secondary)' }}
+                    >
+                        进入作品库 →
+                    </button>
                 </div>
 
                 {isLoading ? (
-                    <div className="py-10 flex justify-center">
-                        <Spin size="large" />
+                    <div className="py-12 flex justify-center">
+                        <Spin />
                     </div>
                 ) : projects.length === 0 ? (
-                    <div className="studio-card p-10 text-center space-y-3">
-                        <div className="text-base font-semibold text-slate-700">还没有创建连载作品</div>
-                        <p className="text-sm text-slate-500 m-0">
-                            创建一个新项目，上传几话漫画图片或通过 MangaDex 导入，即可体验自动剧情理解与续画。
-                        </p>
-                        <div className="pt-2">
-                            <Button theme="solid" icon={<IconPlus />} onClick={() => navigate('/projects?create=1')}>
-                                立即创建第一部作品
-                            </Button>
+                    <div className="py-14 border rounded-md text-center space-y-3" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--bg-panel)' }}>
+                        <div className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
+                            尚无连载工程
                         </div>
+                        <Button size="small" theme="solid" onClick={() => navigate('/projects?create=1')}>
+                            创建第一部作品
+                        </Button>
                     </div>
                 ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         {projects.map((p) => {
                             const mainPlot = p.canon_rules?.story_bible?.main_plot
+                            const epTotal = p.episode_count ?? 0
+                            const epDone = p.understood_count ?? 0
                             return (
                                 <div
                                     key={p.id}
-                                    onClick={() => navigate(`/projects/${p.id}`)}
-                                    className="studio-card studio-card-hover p-5 cursor-pointer flex flex-col justify-between space-y-4"
+                                    onClick={() => navigate(`/projects/${p.id}?view=episodes`)}
+                                    className="rounded-md border p-4 flex gap-4 cursor-pointer transition-colors hover:border-[var(--accent)]"
+                                    style={{ backgroundColor: 'var(--bg-panel)', borderColor: 'var(--border)' }}
                                 >
-                                    <div className="space-y-2">
-                                        <div className="flex items-start justify-between gap-2">
-                                            <h3 className="text-base font-bold text-slate-900 m-0 line-clamp-1">{p.title}</h3>
-                                            <Tag color="indigo" size="small">
-                                                {LANG_MAP[p.language] || p.language.toUpperCase()}
-                                            </Tag>
-                                        </div>
-                                        <p className="text-xs text-slate-500 line-clamp-2 m-0">
-                                            {p.description || '暂无作品简介'}
-                                        </p>
-                                        {mainPlot?.core_conflict ? (
-                                            <div className="rounded-lg bg-indigo-50/70 border border-indigo-100 p-2.5 text-xs text-indigo-950">
-                                                <span className="font-semibold text-indigo-700">主线脉络：</span>
-                                                <span className="line-clamp-2">{mainPlot.core_conflict}</span>
+                                    <div
+                                        className="w-20 h-28 rounded-[4px] border overflow-hidden shrink-0"
+                                        style={{ backgroundColor: 'var(--bg-elevated)', borderColor: 'var(--border)' }}
+                                    >
+                                        {p.cover_image_path && !brokenCovers[p.id] ? (
+                                            <img
+                                                src={storageFileUrl(p.cover_image_path)}
+                                                alt={p.title}
+                                                onError={() =>
+                                                    setBrokenCovers((prev) => ({ ...prev, [p.id]: true }))
+                                                }
+                                                className="w-full h-full object-cover object-top"
+                                            />
+                                        ) : (
+                                            <div
+                                                className="w-full h-full flex items-center justify-center font-editorial text-xs p-2 text-center"
+                                                style={{ color: 'var(--text-primary)' }}
+                                            >
+                                                {p.title.slice(0, 6)}
                                             </div>
-                                        ) : p.long_summary ? (
-                                            <div className="rounded-lg bg-slate-50 border border-slate-100 p-2.5 text-xs text-slate-600 line-clamp-2">
-                                                {p.long_summary}
-                                            </div>
-                                        ) : null}
+                                        )}
                                     </div>
-                                    <div className="flex items-center justify-between text-xs text-slate-400 pt-2 border-t border-slate-100">
-                                        <span>更新于 {new Date(p.updated_at).toLocaleDateString()}</span>
-                                        <span className="text-indigo-600 font-medium">进入创作台 →</span>
+
+                                    <div className="min-w-0 flex-1 flex flex-col justify-between">
+                                        <div className="space-y-1">
+                                            <div className="flex items-center justify-between gap-2">
+                                                <h3 className="font-editorial text-base font-bold m-0 truncate" style={{ color: 'var(--text-primary)' }}>
+                                                    {p.title}
+                                                </h3>
+                                                <span className="font-mono text-[10px] shrink-0" style={{ color: 'var(--text-muted)' }}>
+                                                    {epDone}/{epTotal} 话
+                                                </span>
+                                            </div>
+                                            <p className="text-xs m-0 line-clamp-2 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                                                {mainPlot?.current_arc || p.description || '点击进入章节目录与设定工作台'}
+                                            </p>
+                                        </div>
+
+                                        {/* Quick Direct Workspace Jumps */}
+                                        <div
+                                            className="flex flex-wrap items-center gap-3 pt-2 border-t text-[11px]"
+                                            style={{ borderColor: 'var(--border-subtle)' }}
+                                            onClick={(e) => e.stopPropagation()}
+                                        >
+                                            <button
+                                                type="button"
+                                                onClick={() => navigate(`/projects/${p.id}?view=characters`)}
+                                                className="bg-transparent border-0 p-0 cursor-pointer flex items-center gap-1 hover:text-[var(--accent)]"
+                                                style={{ color: 'var(--text-secondary)' }}
+                                            >
+                                                <IconGraph size={12} /> 人物图谱
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => navigate(`/projects/${p.id}?view=pits`)}
+                                                className="bg-transparent border-0 p-0 cursor-pointer flex items-center gap-1 hover:text-[var(--accent)]"
+                                                style={{ color: 'var(--text-secondary)' }}
+                                            >
+                                                <IconTimeline size={12} /> 伏笔轨道
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => navigate(`/projects/${p.id}?view=qa`)}
+                                                className="bg-transparent border-0 p-0 cursor-pointer flex items-center gap-1 hover:text-[var(--accent)]"
+                                                style={{ color: 'var(--text-secondary)' }}
+                                            >
+                                                <IconResearch size={12} /> 剧情考据
+                                            </button>
+                                        </div>
                                     </div>
                                 </div>
                             )
                         })}
                     </div>
                 )}
+            </section>
+
+            {/* Hairline 5-Stage Editorial Pipeline Strip (no card soup) */}
+            <section className="pt-6 border-t space-y-4" style={{ borderColor: 'var(--border)' }}>
+                <div className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+                    创作流水线
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
+                    {WORKFLOW_STAGES.map((s) => (
+                        <div key={s.code} className="space-y-1.5">
+                            <div className="font-mono text-[11px] font-semibold" style={{ color: 'var(--accent)' }}>
+                                {s.code}
+                            </div>
+                            <div className="text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
+                                {s.title}
+                            </div>
+                            <p className="text-xs leading-relaxed m-0" style={{ color: 'var(--text-muted)' }}>
+                                {s.desc}
+                            </p>
+                        </div>
+                    ))}
+                </div>
             </section>
         </div>
     )

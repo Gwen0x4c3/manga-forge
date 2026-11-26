@@ -13,10 +13,12 @@ from app.models.panel import Panel
 from app.models.pit import Pit
 from app.models.project import Project
 from app.models.source_binding import SourceBinding
+from app.models.usage_record import UsageRecord
 
 __all__ = [
     "Project", "Branch", "Episode", "EpisodePage", "Panel",
     "EpisodeMemory", "Asset", "AssetImage", "Pit",
     "GenerationRun", "GeneratedImage", "SourceBinding",
     "ImportJob", "ImportJobItem", "EpisodeExternalRef",
+    "UsageRecord",
 ]

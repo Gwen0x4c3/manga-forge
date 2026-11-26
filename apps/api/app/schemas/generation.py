@@ -43,6 +43,11 @@ class ScriptGenerateRequest(BaseModel):
     base_episode_number: Decimal = Field(description="Generate the next episode after this number")
     tone: str = Field(default="main", description="main|daily|climax|filler|pit_resolve")
     custom_instructions: str | None = Field(default=None, description="Additional user instructions")
+    context_profile: str | None = Field(
+        default=None,
+        pattern="^(quality|balanced|cost)$",
+        description="Context budget profile: quality (200K+) | balanced (128K) | cost (32K)",
+    )
 
 
 class ScriptGenerateResponse(BaseModel):
@@ -144,6 +149,11 @@ class ContinueFromEpisodeRequest(BaseModel):
     image_backend: str | None = Field(default=None, description="Override image backend")
     image_model: str | None = Field(default=None, description="Override image model")
     image_size: str = Field(default="1024x1024", description="Image size for generation")
+    context_profile: str | None = Field(
+        default=None,
+        pattern="^(quality|balanced|cost)$",
+        description="Context budget profile: quality (200K+) | balanced (128K) | cost (32K)",
+    )
 
 
 class ContinueFromEpisodeResponse(BaseModel):

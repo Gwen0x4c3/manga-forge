@@ -88,6 +88,7 @@ async def get_generation_context(
     branch_id: str = Query(...),
     base_episode_number: Decimal = Query(...),
     custom_instructions: str | None = Query(default=None),
+    context_profile: str | None = Query(default=None, pattern="^(quality|balanced|cost)$"),
     db: AsyncSession = Depends(get_db),
 ):
     context = await memory_service.build_context_for_generation(
@@ -96,6 +97,7 @@ async def get_generation_context(
         branch_id,
         base_episode_number,
         custom_instructions=custom_instructions,
+        context_profile=context_profile,
     )
     return context
 

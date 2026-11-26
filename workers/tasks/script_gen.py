@@ -24,8 +24,20 @@ def generate_script(
     base_episode_number: float,
     tone: str = "main",
     custom_instructions: str | None = None,
+    context_profile: str | None = None,
 ):
-    asyncio.run(_generate_script(self, run_id, episode_id, branch_id, base_episode_number, tone, custom_instructions))
+    asyncio.run(
+        _generate_script(
+            self,
+            run_id,
+            episode_id,
+            branch_id,
+            base_episode_number,
+            tone,
+            custom_instructions,
+            context_profile,
+        )
+    )
 
 
 async def _generate_script_with_feedback(
@@ -97,6 +109,7 @@ async def _generate_script_with_db(
     base_episode_number: float,
     tone: str,
     custom_instructions: str | None,
+    context_profile: str | None = None,
 ) -> dict:
     from app.config import settings
     from app.core.llm import get_llm_client
@@ -130,6 +143,7 @@ async def _generate_script_with_db(
             branch_id,
             cutoff,
             custom_instructions=custom_instructions,
+            context_profile=context_profile,
         )
 
         target_ep_label = episode.label or str(
@@ -161,11 +175,25 @@ async def _generate_script_with_db(
             run.prompt = user_prompt[:16000]
             await db.commit()
 
+        from app.core.telemetry import usage_context
+
         client = get_llm_client()
-        storyboard = await _generate_script_with_feedback(client, SCRIPT_GENERATE_SYSTEM_PROMPT, user_prompt, None)
+        with usage_context(
+            project_id=episode.project_id,
+            episode_id=episode_id,
+            generation_run_id=run_id,
+            operation="script",
+        ):
+            storyboard = await _generate_script_with_feedback(client, SCRIPT_GENERATE_SYSTEM_PROMPT, user_prompt, None)
 
         # Consistency check + one auto-fix retry on critical issues
-        report = await _check_consistency(client, context, storyboard.model_dump())
+        with usage_context(
+            project_id=episode.project_id,
+            episode_id=episode_id,
+            generation_run_id=run_id,
+            operation="consistency_check",
+        ):
+            report = await _check_consistency(client, context, storyboard.model_dump())
         critical = [i for i in report.issues if i.severity == "critical"]
         if critical:
             feedback = "\n".join(
@@ -173,10 +201,22 @@ async def _generate_script_with_db(
                 for i in critical
             )
             logger.info("Consistency check found %d critical issues, regenerating", len(critical))
-            storyboard = await _generate_script_with_feedback(
-                client, SCRIPT_GENERATE_SYSTEM_PROMPT, user_prompt, feedback
-            )
-            report = await _check_consistency(client, context, storyboard.model_dump())
+            with usage_context(
+                project_id=episode.project_id,
+                episode_id=episode_id,
+                generation_run_id=run_id,
+                operation="script_retry",
+            ):
+                storyboard = await _generate_script_with_feedback(
+                    client, SCRIPT_GENERATE_SYSTEM_PROMPT, user_prompt, feedback
+                )
+            with usage_context(
+                project_id=episode.project_id,
+                episode_id=episode_id,
+                generation_run_id=run_id,
+                operation="consistency_check",
+            ):
+                report = await _check_consistency(client, context, storyboard.model_dump())
 
         storyboard_dict = storyboard.model_dump()
 
@@ -237,10 +277,19 @@ async def _generate_script(
     base_episode_number: float,
     tone: str,
     custom_instructions: str | None,
+    context_profile: str | None = None,
 ):
     from app.database import worker_session
 
     async with worker_session() as db:
         await _generate_script_with_db(
-            db, self, run_id, episode_id, branch_id, base_episode_number, tone, custom_instructions
+            db,
+            self,
+            run_id,
+            episode_id,
+            branch_id,
+            base_episode_number,
+            tone,
+            custom_instructions,
+            context_profile=context_profile,
         )

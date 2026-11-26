@@ -20,6 +20,7 @@ def run_continue(
     image_backend: str | None = None,
     image_model: str | None = None,
     image_size: str = "1024x1024",
+    context_profile: str | None = None,
 ):
     asyncio.run(
         _run_continue(
@@ -33,6 +34,7 @@ def run_continue(
             image_backend,
             image_model,
             image_size,
+            context_profile,
         )
     )
 
@@ -48,6 +50,7 @@ async def _run_continue(
     image_backend: str | None,
     image_model: str | None,
     image_size: str,
+    context_profile: str | None = None,
 ):
     """Execute script -> consistency check -> render -> layout -> writeback in a single event loop."""
     from app.config import settings
@@ -84,7 +87,15 @@ async def _run_continue(
             layout_run = await generation_service.create_generation_run(db, episode_id=episode_id, stage="layout")
 
             await _generate_script_with_db(
-                db, self, str(script_run.id), episode_id, branch_id, base_episode_number, tone, custom_instructions
+                db,
+                self,
+                str(script_run.id),
+                episode_id,
+                branch_id,
+                base_episode_number,
+                tone,
+                custom_instructions,
+                context_profile=context_profile,
             )
             await _render_episode_with_db(
                 db, self, str(render_run.id), episode_id, image_backend, image_model, image_size

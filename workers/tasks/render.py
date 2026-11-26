@@ -70,11 +70,19 @@ async def _render_panel(
     size_parts = (image_size or "1024x1024").split("x")
     size = (int(size_parts[0]), int(size_parts[1]))
 
-    result = await backend.generate(
-        prompt=prompt,
-        negative_prompt=negative_prompt,
-        size=size,
-    )
+    from app.core.telemetry import usage_context
+
+    with usage_context(
+        episode_id=episode_id,
+        generation_run_id=run_id,
+        operation="image_generate",
+        panel_id=panel_data.get("panel_id"),
+    ):
+        result = await backend.generate(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            size=size,
+        )
 
     object_key = storage_service.generate_object_key(
         f"generated/{episode_id}",

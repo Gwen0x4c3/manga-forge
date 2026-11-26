@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from functools import lru_cache
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
@@ -11,6 +12,7 @@ from fastapi import HTTPException
 from openai import AsyncOpenAI
 
 from app.config import settings
+from app.core.telemetry import extract_llm_usage, instrument_openai_client, record_usage_event
 
 if TYPE_CHECKING:
     pass
@@ -22,11 +24,12 @@ def _build_openai_client() -> AsyncOpenAI:
     # httpx's default trust_env=True crashes when no_proxy contains bare IPv6
     # literals (e.g. "::1"); build the transport explicitly instead.
     base_url = _normalize_openai_base_url(settings.OPENAI_BASE_URL)
-    return AsyncOpenAI(
+    client = AsyncOpenAI(
         api_key=settings.OPENAI_API_KEY,
         base_url=base_url,
         http_client=httpx.AsyncClient(trust_env=False, timeout=600.0),
     )
+    return instrument_openai_client(client, provider=settings.LLM_BACKEND or "openai")
 
 
 @lru_cache
@@ -62,13 +65,41 @@ async def get_embeddings(texts: list[str]) -> list[list[float]]:
     if config_error:
         raise RuntimeError(config_error)
     client = _build_openai_client()
+    t0 = time.perf_counter()
     try:
         response = await client.embeddings.create(
             model=settings.OPENAI_EMBEDDING_MODEL,
             input=texts,
         )
     except Exception as e:
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        await record_usage_event(
+            kind="embedding",
+            operation="embedding",
+            provider=settings.LLM_BACKEND or "openai",
+            model=settings.OPENAI_EMBEDDING_MODEL,
+            duration_ms=elapsed_ms,
+            status="failed",
+            error=f"{type(e).__name__}: {e}",
+            meta={"batch_size": len(texts)},
+        )
         _raise_llm_error(e)
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+    parsed = extract_llm_usage(response, fallback_model=settings.OPENAI_EMBEDDING_MODEL)
+    await record_usage_event(
+        kind="embedding",
+        operation="embedding",
+        provider=settings.LLM_BACKEND or "openai",
+        model=parsed["model"],
+        input_tokens=parsed["input_tokens"],
+        output_tokens=0,
+        cache_read_tokens=parsed["cache_read_tokens"],
+        cache_write_tokens=parsed["cache_write_tokens"],
+        total_tokens=parsed["total_tokens"],
+        duration_ms=elapsed_ms,
+        status="succeeded",
+        meta={"batch_size": len(texts)},
+    )
     return [item.embedding for item in response.data]
 
 

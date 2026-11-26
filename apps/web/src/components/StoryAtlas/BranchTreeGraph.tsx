@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom'
-import { Tag, Button, Empty } from '@douyinfe/semi-ui'
+import { Button, Empty } from '@douyinfe/semi-ui'
 import { storageFileUrl } from '@/services/project'
 import type { StoryBranchTreeNode } from '@/services/project'
 
@@ -9,8 +9,6 @@ interface Props {
     activeBranchId: string
     onSelectBranch: (branchId: string) => void
 }
-
-const LANE_COLORS = ['#4f46e5', '#7c3aed', '#0d9488', '#e11d48', '#d97706']
 
 export default function BranchTreeGraph({ projectId, branches, activeBranchId, onSelectBranch }: Props) {
     const navigate = useNavigate()
@@ -27,19 +25,22 @@ export default function BranchTreeGraph({ projectId, branches, activeBranchId, o
 
     return (
         <div className="space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center justify-between pb-3 border-b" style={{ borderColor: 'var(--border)' }}>
                 <div>
-                    <h3 className="text-base font-bold text-slate-900 m-0">平行世界线分支树 (Multiverse DAG)</h3>
-                    <p className="text-xs text-slate-500 m-0 mt-0.5">
-                        支持从任意章节 Fork 平行剧情线；每条世界线独立演化角色状态、伏笔与记忆，点击任意节点进入阅读
+                    <h3 className="font-editorial text-base font-bold m-0" style={{ color: 'var(--text-primary)' }}>
+                        平行世界线分支树
+                    </h3>
+                    <p className="text-xs m-0 mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                        从任意章节分叉出的平行剧情线独立演化角色状态、伏笔与记忆
                     </p>
                 </div>
-                <Tag color="indigo">共 {branches.length} 条世界线</Tag>
+                <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>
+                    {branches.length} 条分支
+                </span>
             </div>
 
             <div className="space-y-3">
-                {branches.map((branch, bIdx) => {
-                    const color = LANE_COLORS[bIdx % LANE_COLORS.length]
+                {branches.map((branch) => {
                     const isActive = branch.id === activeBranchId
                     const parentBranch = branch.base_branch_id ? branchById.get(branch.base_branch_id) : null
                     const baseEpNo = branch.base_episode_id ? epNumberById.get(branch.base_episode_id) : null
@@ -47,72 +48,99 @@ export default function BranchTreeGraph({ projectId, branches, activeBranchId, o
                     return (
                         <div
                             key={branch.id}
-                            className={`rounded-2xl border p-4 transition ${
-                                isActive
-                                    ? 'border-indigo-400 bg-indigo-50/35 shadow-sm'
-                                    : 'border-slate-200 bg-white hover:border-slate-300'
-                            }`}
+                            className="rounded-md border p-4 space-y-3"
+                            style={{
+                                backgroundColor: 'var(--bg-panel)',
+                                borderColor: isActive ? 'var(--accent)' : 'var(--border)',
+                            }}
                         >
-                            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                    <span className="w-3 h-3 rounded-full inline-block" style={{ background: color }} />
-                                    <span className="font-bold text-sm text-slate-900">{branch.name}</span>
-                                    {branch.is_default && <Tag size="small" color="indigo">默认主线</Tag>}
-                                    {parentBranch && (
-                                        <Tag size="small" color="violet">
-                                            Fork 自 {parentBranch.name}
-                                            {baseEpNo !== null ? ` · 第 ${baseEpNo} 话` : ''}
-                                        </Tag>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex items-center gap-2.5">
+                                    <span
+                                        className="w-2 h-2 rounded-full"
+                                        style={{ backgroundColor: isActive ? 'var(--accent)' : 'var(--text-muted)' }}
+                                    />
+                                    <span className="font-mono text-xs font-semibold" style={{ color: 'var(--text-primary)' }}>
+                                        {branch.name}
+                                    </span>
+                                    {branch.is_default && (
+                                        <span
+                                            className="text-[10px] font-mono px-1.5 py-0.5 rounded-[3px] border"
+                                            style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+                                        >
+                                            MAIN
+                                        </span>
                                     )}
-                                    <span className="text-xs text-slate-500">{branch.episode_count} 话</span>
+                                    {parentBranch && (
+                                        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                                            Fork 自 {parentBranch.name}
+                                            {baseEpNo !== null ? ` · Ep.${baseEpNo}` : ''}
+                                        </span>
+                                    )}
+                                    <span className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>
+                                        {branch.episode_count} 话
+                                    </span>
                                 </div>
                                 {!isActive && (
-                                    <Button size="small" onClick={() => onSelectBranch(branch.id)}>
-                                        切换图谱至此分支
+                                    <Button size="small" theme="light" onClick={() => onSelectBranch(branch.id)}>
+                                        切换至此分支
                                     </Button>
                                 )}
                             </div>
 
                             {branch.episodes.length === 0 ? (
-                                <div className="text-xs text-slate-400 py-2">该分支暂无章节</div>
+                                <div className="text-xs py-1" style={{ color: 'var(--text-muted)' }}>
+                                    该分支暂无章节
+                                </div>
                             ) : (
                                 <div className="flex items-center gap-2 overflow-x-auto pb-1">
                                     {branch.episodes.map((ep, idx) => (
                                         <div key={ep.id} className="flex items-center gap-2 shrink-0">
                                             {idx > 0 && (
-                                                <div className="w-6 h-0.5 rounded" style={{ background: color, opacity: 0.55 }} />
+                                                <div className="w-5 h-px" style={{ backgroundColor: 'var(--border)' }} />
                                             )}
-                                            <div
+                                            <button
+                                                type="button"
                                                 onClick={() => navigate(`/projects/${projectId}/episodes/${ep.id}`)}
-                                                className="w-40 rounded-xl border border-slate-200 bg-white hover:border-indigo-400 hover:shadow transition cursor-pointer p-2 flex items-center gap-2.5"
+                                                className="w-40 rounded border p-2 flex items-center gap-2.5 text-left cursor-pointer transition-colors hover:border-[var(--accent)]"
+                                                style={{
+                                                    backgroundColor: 'var(--bg-app)',
+                                                    borderColor: 'var(--border-subtle)',
+                                                }}
                                             >
-                                                {ep.cover_path ? (
-                                                    <img
-                                                        src={storageFileUrl(ep.cover_path)}
-                                                        alt={ep.title}
-                                                        className="w-10 h-14 rounded-md object-cover shrink-0 border border-slate-100"
-                                                    />
-                                                ) : (
-                                                    <div
-                                                        className="w-10 h-14 rounded-md flex items-center justify-center text-[11px] font-bold text-white shrink-0"
-                                                        style={{ background: color }}
-                                                    >
-                                                        {ep.label}
-                                                    </div>
-                                                )}
+                                                <div
+                                                    className="w-9 h-12 rounded-[3px] border overflow-hidden shrink-0"
+                                                    style={{ backgroundColor: 'var(--paper)', borderColor: 'var(--border)' }}
+                                                >
+                                                    {ep.cover_path ? (
+                                                        <img
+                                                            src={storageFileUrl(ep.cover_path)}
+                                                            alt={ep.title}
+                                                            className="w-full h-full object-cover"
+                                                        />
+                                                    ) : (
+                                                        <div className="w-full h-full flex items-center justify-center font-mono text-[10px] text-[#18181B]">
+                                                            {ep.label}
+                                                        </div>
+                                                    )}
+                                                </div>
                                                 <div className="min-w-0 flex-1 space-y-0.5">
-                                                    <div className="flex items-center gap-1">
-                                                        <span className="text-xs font-bold text-slate-900">第 {ep.label} 话</span>
+                                                    <div className="flex items-center gap-1 font-mono text-[11px]">
+                                                        <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
+                                                            Ep.{ep.label}
+                                                        </span>
                                                         {ep.source === 'generated' && (
-                                                            <span className="text-[9px] px-1 py-0.5 rounded bg-purple-100 text-purple-700 font-bold">
-                                                                AI
-                                                            </span>
+                                                            <span style={{ color: 'var(--accent)', fontSize: 9 }}>续画</span>
                                                         )}
                                                     </div>
-                                                    <div className="text-[11px] text-slate-600 truncate">{ep.title}</div>
-                                                    <div className="text-[10px] text-slate-400">{ep.status}</div>
+                                                    <div className="text-[11px] truncate" style={{ color: 'var(--text-secondary)' }}>
+                                                        {ep.title}
+                                                    </div>
+                                                    <div className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
+                                                        {ep.status}
+                                                    </div>
                                                 </div>
-                                            </div>
+                                            </button>
                                         </div>
                                     ))}
                                 </div>

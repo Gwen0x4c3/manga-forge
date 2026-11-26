@@ -1,23 +1,22 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Spin, Empty, Select, RadioGroup, Button } from '@douyinfe/semi-ui'
-import { IconRefresh } from '@douyinfe/semi-icons'
+import { Spin, Empty, Select } from '@douyinfe/semi-ui'
 import { memoryService } from '@/services/project'
 import CharacterGraph from './CharacterGraph'
 import PitSwimlaneTimeline from './PitSwimlaneTimeline'
 import BranchTreeGraph from './BranchTreeGraph'
 import StoryDetectivePanel from './StoryDetectivePanel'
 
+export type AtlasMode = 'characters' | 'pits' | 'qa' | 'branches'
+
 interface Props {
     projectId: string
     defaultBranchId?: string
+    mode: AtlasMode
 }
 
-type AtlasSection = 'all' | 'characters' | 'timeline' | 'branches' | 'detective'
-
-export default function StoryAtlas({ projectId, defaultBranchId }: Props) {
+export default function StoryAtlas({ projectId, defaultBranchId, mode }: Props) {
     const [branchId, setBranchId] = useState<string | undefined>(defaultBranchId)
-    const [section, setSection] = useState<AtlasSection>('all')
 
     const { data, isLoading, refetch, isFetching } = useQuery({
         queryKey: ['story-graph', projectId, branchId],
@@ -27,83 +26,77 @@ export default function StoryAtlas({ projectId, defaultBranchId }: Props) {
 
     if (isLoading) {
         return (
-            <div className="py-16 flex justify-center">
+            <div className="flex-1 flex items-center justify-center py-20">
                 <Spin size="large" />
             </div>
         )
     }
 
     if (!data) {
-        return <Empty description="无法加载故事宇宙图谱" />
+        return (
+            <div className="flex-1 flex items-center justify-center py-20">
+                <Empty description="无法加载故事数据" />
+            </div>
+        )
     }
 
-    const openPits = data.timeline.pit_swimlanes.filter((p) => p.status === 'open').length
+    const openPits = data.timeline.pit_swimlanes.filter((p) => p.status !== 'resolved').length
     const resolvedPits = data.timeline.pit_swimlanes.filter((p) => p.status === 'resolved').length
 
     return (
-        <div className="space-y-6 pt-2">
-            {/* Top Controls & Pill Segmented Bar */}
-            <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50/90 rounded-2xl p-3 border border-slate-200/80">
-                <div className="flex flex-wrap items-center gap-3">
-                    <RadioGroup
-                        type="button"
-                        value={section}
-                        onChange={(e) => setSection(e.target.value as AtlasSection)}
-                        options={[
-                            { label: '全景图谱', value: 'all' },
-                            { label: `人物星图 (${data.character_graph.nodes.length})`, value: 'characters' },
-                            { label: `篇章与伏笔 (${data.timeline.pit_swimlanes.length})`, value: 'timeline' },
-                            { label: `世界线树 (${data.branch_tree.length})`, value: 'branches' },
-                            { label: '剧情侦探 QA', value: 'detective' },
-                        ]}
-                    />
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+            {/* Compact Editorial Summary Strip (replaces KPI cards) */}
+            <div
+                className="h-10 shrink-0 px-4 border-b flex items-center justify-between gap-4 text-[13px]"
+                style={{ backgroundColor: 'var(--bg-app)', borderColor: 'var(--border)' }}
+            >
+                <div className="flex items-center gap-3 font-mono truncate" style={{ color: 'var(--text-secondary)' }}>
+                    <span className="font-sans font-semibold" style={{ color: 'var(--text-primary)' }}>
+                        {data.project_title}
+                    </span>
+                    <span style={{ color: 'var(--border)' }}>|</span>
+                    <span>{data.character_graph.nodes.length} 人物</span>
+                    <span>·</span>
+                    <span>{data.character_graph.edges.length} 关系</span>
+                    <span>·</span>
+                    <span>{data.timeline.episodes.length} 章节</span>
+                    <span>·</span>
+                    <span>
+                        伏笔 {openPits} 待填 / {resolvedPits} 已填
+                    </span>
                 </div>
-                <div className="flex items-center gap-2">
+
+                <div className="flex items-center gap-2 shrink-0">
                     <Select
                         size="small"
                         value={branchId || data.branch_id}
                         onChange={(v) => setBranchId(v ? String(v) : undefined)}
-                        style={{ width: 170 }}
+                        style={{ width: 150 }}
                     >
                         {data.branch_tree.map((b) => (
                             <Select.Option key={b.id} value={b.id}>
-                                {b.name} {b.is_default ? '(主线)' : ''}
+                                {b.name}
+                                {b.is_default ? ' (main)' : ''}
                             </Select.Option>
                         ))}
                     </Select>
-                    <Button size="small" theme="light" icon={<IconRefresh />} loading={isFetching} onClick={() => refetch()}>
-                        刷新图谱
-                    </Button>
+                    <button
+                        type="button"
+                        onClick={() => refetch()}
+                        disabled={isFetching}
+                        className="h-6 px-2 rounded border text-[11px] cursor-pointer hover:bg-[var(--bg-hover)]"
+                        style={{
+                            backgroundColor: 'transparent',
+                            borderColor: 'var(--border)',
+                            color: 'var(--text-secondary)',
+                        }}
+                    >
+                        {isFetching ? '刷新中' : '刷新'}
+                    </button>
                 </div>
             </div>
 
-            {/* Bright Pop Telemetry KPI Strip */}
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                <div className="rounded-2xl bg-gradient-to-br from-blue-50/70 to-white border border-blue-100 px-4 py-3">
-                    <div className="text-[11px] font-bold text-blue-600">人物实体节点</div>
-                    <div className="text-xl font-black text-slate-900 mt-0.5">{data.character_graph.nodes.length}</div>
-                </div>
-                <div className="rounded-2xl bg-gradient-to-br from-violet-50/70 to-white border border-violet-100 px-4 py-3">
-                    <div className="text-[11px] font-bold text-violet-600">共现关系连线</div>
-                    <div className="text-xl font-black text-slate-900 mt-0.5">{data.character_graph.edges.length}</div>
-                </div>
-                <div className="rounded-2xl bg-gradient-to-br from-sky-50/70 to-white border border-sky-100 px-4 py-3">
-                    <div className="text-[11px] font-bold text-sky-600">分支连载章节</div>
-                    <div className="text-xl font-black text-slate-900 mt-0.5">{data.timeline.episodes.length}</div>
-                </div>
-                <div className="rounded-2xl bg-gradient-to-br from-orange-50/80 to-white border border-orange-100 px-4 py-3">
-                    <div className="text-[11px] font-bold text-[#ff5a36]">伏笔待填 / 已填</div>
-                    <div className="text-xl font-black text-[#ff5a36] mt-0.5">
-                        {openPits} <span className="text-xs font-bold text-emerald-600">/ {resolvedPits}</span>
-                    </div>
-                </div>
-                <div className="rounded-2xl bg-gradient-to-br from-emerald-50/70 to-white border border-emerald-100 px-4 py-3">
-                    <div className="text-[11px] font-bold text-emerald-600">平行世界线</div>
-                    <div className="text-xl font-black text-slate-900 mt-0.5">{data.branch_tree.length}</div>
-                </div>
-            </div>
-
-            {(section === 'all' || section === 'characters') && (
+            {mode === 'characters' && (
                 <CharacterGraph
                     nodes={data.character_graph.nodes}
                     edges={data.character_graph.edges}
@@ -111,7 +104,7 @@ export default function StoryAtlas({ projectId, defaultBranchId }: Props) {
                 />
             )}
 
-            {(section === 'all' || section === 'timeline') && (
+            {mode === 'pits' && (
                 <PitSwimlaneTimeline
                     projectId={projectId}
                     episodes={data.timeline.episodes}
@@ -121,21 +114,25 @@ export default function StoryAtlas({ projectId, defaultBranchId }: Props) {
                 />
             )}
 
-            {(section === 'all' || section === 'branches') && (
-                <BranchTreeGraph
-                    projectId={projectId}
-                    branches={data.branch_tree}
-                    activeBranchId={data.branch_id}
-                    onSelectBranch={(bid) => setBranchId(bid)}
-                />
-            )}
-
-            {(section === 'all' || section === 'detective') && (
+            {mode === 'qa' && (
                 <StoryDetectivePanel
                     projectId={projectId}
                     branchId={data.branch_id}
                     characters={data.character_graph.nodes}
                 />
+            )}
+
+            {mode === 'branches' && (
+                <div className="flex-1 overflow-y-auto p-6">
+                    <div className="max-w-[1280px] mx-auto">
+                        <BranchTreeGraph
+                            projectId={projectId}
+                            branches={data.branch_tree}
+                            activeBranchId={data.branch_id}
+                            onSelectBranch={(bid) => setBranchId(bid)}
+                        />
+                    </div>
+                </div>
             )}
         </div>
     )

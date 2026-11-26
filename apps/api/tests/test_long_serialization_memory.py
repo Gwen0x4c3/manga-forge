@@ -214,9 +214,12 @@ def test_65_episode_hierarchical_memory_and_targeted_recall(monkeypatch: pytest.
         )
 
         # Ep 1~10 arc digest survives intact inside long_summary without front-slicing
+        # Default 'quality' profile keeps Ep 56~65 in full recent_episodes (10-ep window) and Ep 1~55 in arc blocks
         assert "【第1~10话篇章纪要】" in ctx["long_summary"]
         assert "苍蓝星痕" in ctx["long_summary"]
-        assert "【第51~60话篇章纪要】" in ctx["long_summary"]
+        assert "【第51~55话篇章纪要】" in ctx["long_summary"]
+        assert len(ctx["recent_episodes"]) == 10
+        assert ctx["context_budget"]["profile"] == "quality"
 
         # Both brand-new Ep 65 heroine AND Ep 7 callback blacksmith beat the 30 3-episode minor characters!
         dossier_names = [c["name"] for c in ctx["character_dossier"]]

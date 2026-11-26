@@ -658,16 +658,19 @@ async def run_multimodal_understanding(
             len(reference_blocks),
         )
 
-        chunk_model = await client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT},
-                {"role": "user", "content": content},
-            ],
-            response_model=EpisodeUnderstanding,
-            max_tokens=settings.OPENAI_MAX_TOKENS,
-            max_retries=2,
-        )
+        from app.core.telemetry import usage_context
+
+        with usage_context(project_id=episode.project_id, episode_id=episode.id, operation="understand"):
+            chunk_model = await client.chat.completions.create(
+                model=settings.OPENAI_MODEL,
+                messages=[
+                    {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT},
+                    {"role": "user", "content": content},
+                ],
+                response_model=EpisodeUnderstanding,
+                max_tokens=settings.OPENAI_MAX_TOKENS,
+                max_retries=2,
+            )
         chunk_dict = chunk_model.model_dump()
         chunk_results.append(chunk_dict)
         if len(windows) > 1 and chunk_dict.get("summary"):

@@ -825,17 +825,150 @@ class ComfyUIImageBackend(ImageBackend):
         )
 
 
+class InstrumentedImageBackend(ImageBackend):
+    """Transparent telemetry proxy wrapping any ImageBackend to record every image generation/inpaint call."""
+
+    def __init__(self, inner: ImageBackend, backend_name: str, default_model: str | None = None) -> None:
+        self._inner = inner
+        self._backend_name = backend_name
+        self._default_model = default_model or getattr(inner, "_model", None) or backend_name
+
+    async def generate(
+        self,
+        prompt: str,
+        negative_prompt: str | None = None,
+        size: tuple[int, int] = (1024, 1024),
+        seed: int | None = None,
+        reference_images: list[tuple[bytes, str]] | None = None,
+        context: dict | None = None,
+        **kwargs,
+    ) -> ImageResult:
+        import time
+
+        from app.core.telemetry import record_usage_event
+
+        t0 = time.perf_counter()
+        requested_model = str(kwargs.get("model") or self._default_model or self._backend_name)
+        size_str = f"{size[0]}x{size[1]}"
+        try:
+            result = await self._inner.generate(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                size=size,
+                seed=seed,
+                reference_images=reference_images,
+                context=context,
+                **kwargs,
+            )
+        except Exception as exc:
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            await record_usage_event(
+                kind="image",
+                operation="image_generate",
+                provider=self._backend_name,
+                model=requested_model,
+                image_count=0,
+                image_size=size_str,
+                duration_ms=elapsed_ms,
+                status="failed",
+                error=f"{type(exc).__name__}: {exc}",
+                meta={
+                    "references": len(reference_images or []),
+                    "prompt_preview": (prompt or "")[:240],
+                },
+            )
+            raise
+
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        res_meta = result.meta or {}
+        await record_usage_event(
+            kind="image",
+            operation="image_generate",
+            provider=self._backend_name,
+            model=str(res_meta.get("model") or requested_model),
+            image_count=1,
+            image_size=str(res_meta.get("size") or size_str),
+            duration_ms=elapsed_ms,
+            status="succeeded",
+            meta={
+                "references": res_meta.get("references", len(reference_images or [])),
+                "endpoint": res_meta.get("endpoint", "generate"),
+                "seed": result.seed,
+                "prompt_preview": (prompt or "")[:240],
+            },
+        )
+        return result
+
+    async def inpaint(
+        self,
+        image_data: bytes,
+        mask_data: bytes,
+        prompt: str,
+        **kwargs,
+    ) -> ImageResult:
+        import time
+
+        from app.core.telemetry import record_usage_event
+
+        t0 = time.perf_counter()
+        requested_model = str(kwargs.get("model") or self._default_model or self._backend_name)
+        size_val = kwargs.get("size")
+        size_str = f"{size_val[0]}x{size_val[1]}" if isinstance(size_val, tuple) and len(size_val) == 2 else None
+        try:
+            result = await self._inner.inpaint(
+                image_data=image_data,
+                mask_data=mask_data,
+                prompt=prompt,
+                **kwargs,
+            )
+        except Exception as exc:
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            await record_usage_event(
+                kind="image",
+                operation="image_inpaint",
+                provider=self._backend_name,
+                model=requested_model,
+                image_count=0,
+                image_size=size_str,
+                duration_ms=elapsed_ms,
+                status="failed",
+                error=f"{type(exc).__name__}: {exc}",
+                meta={"prompt_preview": (prompt or "")[:240]},
+            )
+            raise
+
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        res_meta = result.meta or {}
+        await record_usage_event(
+            kind="image",
+            operation="image_inpaint",
+            provider=self._backend_name,
+            model=str(res_meta.get("model") or requested_model),
+            image_count=1,
+            image_size=str(res_meta.get("size") or size_str or ""),
+            duration_ms=elapsed_ms,
+            status="succeeded",
+            meta={
+                "endpoint": "inpaint",
+                "seed": result.seed,
+                "prompt_preview": (prompt or "")[:240],
+            },
+        )
+        return result
+
+
 def get_image_backend(backend_name: str | None = None, model: str | None = None) -> ImageBackend:
     backend = backend_name or settings.IMAGE_BACKEND
     if backend == "antigravity":
-        return AntigravityImageBackend(model=model)
+        inner: ImageBackend = AntigravityImageBackend(model=model)
     elif backend == "comfyui":
-        return ComfyUIImageBackend(model=model)
+        inner = ComfyUIImageBackend(model=model)
     elif backend == "openai":
-        return OpenAIImageBackend(model=model)
+        inner = OpenAIImageBackend(model=model)
     elif backend in ("gemini", "nano-banana"):
-        return GeminiImageBackend(model=model)
+        inner = GeminiImageBackend(model=model)
     elif backend == "custom":
-        return CustomHttpBackend(model=model)
+        inner = CustomHttpBackend(model=model)
     else:
-        return MockImageBackend()
+        inner = MockImageBackend()
+    return InstrumentedImageBackend(inner, backend_name=backend, default_model=model)

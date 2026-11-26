@@ -24,6 +24,9 @@ class ProjectResponse(BaseModel):
     language: str
     canon_rules: dict | None
     long_summary: str | None
+    cover_image_path: str | None = None
+    episode_count: int = 0
+    understood_count: int = 0
     created_at: datetime
     updated_at: datetime
 

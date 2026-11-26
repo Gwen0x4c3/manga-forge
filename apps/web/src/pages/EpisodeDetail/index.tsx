@@ -69,6 +69,7 @@ export default function EpisodeDetail() {
     const [continueInstructions, setContinueInstructions] = useState('')
     const [readerMode, setReaderMode] = useState<'scroll' | 'spread' | 'grid'>('scroll')
     const [spreadIndex, setSpreadIndex] = useState(0)
+    const [activeTab, setActiveTab] = useState<string | null>(null)
     const [cropPage, setCropPage] = useState<EpisodePage | null>(null)
     const [inspectRun, setInspectRun] = useState<GenerationRun | null>(null)
     const prevActiveCountRef = useRef(0)
@@ -179,6 +180,44 @@ export default function EpisodeDetail() {
         onError: () => {},
     })
 
+    const hasComposedPages = (layoutResult?.pages || []).length > 0
+    const defaultTab = hasComposedPages ? 'layout' : (pages && pages.length > 0 ? 'pages' : 'summary')
+    const currentTab = activeTab ?? defaultTab
+    const activeSpreadPageCount =
+        currentTab === 'layout' ? (layoutResult?.pages?.length || 0) : (pages?.length || 0)
+    const totalSpreads = Math.max(1, Math.ceil(activeSpreadPageCount / 2))
+
+    useEffect(() => {
+        if (readerMode !== 'spread') return
+        if (currentTab !== 'layout' && currentTab !== 'pages') return
+        if (showContinue || Boolean(cropPage) || Boolean(inspectRun)) return
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+            const target = e.target as HTMLElement | null
+            if (target) {
+                const isTextInput =
+                    target.tagName === 'TEXTAREA' ||
+                    target.tagName === 'SELECT' ||
+                    target.isContentEditable ||
+                    (target.tagName === 'INPUT' &&
+                        !['radio', 'checkbox', 'button', 'submit'].includes((target as HTMLInputElement).type))
+                if (isTextInput) return
+            }
+            // Capture-phase intercept so focused Semi-UI RadioGroup doesn't hijack Left/Right arrows
+            e.preventDefault()
+            e.stopPropagation()
+            if (e.key === 'ArrowLeft') {
+                // RTL Japanese manga: Left Arrow flips to NEXT spread
+                setSpreadIndex((s) => Math.min(totalSpreads - 1, s + 1))
+            } else if (e.key === 'ArrowRight') {
+                // RTL Japanese manga: Right Arrow flips to PREVIOUS spread
+                setSpreadIndex((s) => Math.max(0, s - 1))
+            }
+        }
+        window.addEventListener('keydown', onKeyDown, true)
+        return () => window.removeEventListener('keydown', onKeyDown, true)
+    }, [readerMode, currentTab, totalSpreads, showContinue, cropPage, inspectRun])
+
     if (episodeLoading) {
         return (
             <div className="py-20 flex justify-center">
@@ -210,15 +249,12 @@ export default function EpisodeDetail() {
     const consistencyMemory = (memories?.filter((m: EpisodeMemory) => m.type === 'consistency_report') || []).pop()
     const storyboardMemories = memories?.filter((m: EpisodeMemory) => m.type === 'storyboard_json') || []
     const storyboardMemory = storyboardMemories[storyboardMemories.length - 1]
-
-    const hasComposedPages = (layoutResult?.pages || []).length > 0
-    const defaultTab = hasComposedPages ? 'layout' : (pages && pages.length > 0 ? 'pages' : 'summary')
     const statusInfo = STATUS_META[episode.status] || { label: episode.status, color: 'grey' as TagColor }
 
     return (
         <div className="space-y-6">
             {/* Header Bar */}
-            <div className="studio-card p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <header className="pb-4 border-b border-[var(--border)] flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                 <div className="space-y-1.5">
                     <div className="flex items-center gap-2">
                         <Button
@@ -231,12 +267,12 @@ export default function EpisodeDetail() {
                         </Button>
                     </div>
                     <div className="flex flex-wrap items-center gap-2.5">
-                        <h1 className="text-xl font-extrabold text-slate-900 m-0">
+                        <h1 className="font-editorial text-xl font-bold text-[var(--text-primary)] m-0">
                             第 {episode.label || episode.number} 话{episode.title ? ` · ${episode.title}` : ''}
                         </h1>
                         <Tag color={statusInfo.color}>{statusInfo.label}</Tag>
                         <Tag color={episode.source === 'generated' ? 'violet' : 'grey'}>
-                            {episode.source === 'generated' ? 'AI 续画章节' : '原作导入章节'}
+                            {episode.source === 'generated' ? '续画成稿' : '原作导入'}
                         </Tag>
                     </div>
                 </div>
@@ -244,6 +280,7 @@ export default function EpisodeDetail() {
                 <div className="flex flex-wrap gap-2">
                     {pages && pages.length > 0 && (
                         <Button
+                            size="small"
                             icon={summaryMemory ? <IconRefresh /> : <IconBolt />}
                             theme={episode.status === 'imported' ? 'solid' : 'light'}
                             loading={understandMutation.isPending || activeStages.has('understand')}
@@ -255,15 +292,17 @@ export default function EpisodeDetail() {
                     )}
 
                     <Button
+                        size="small"
                         icon={<IconEdit />}
                         theme={episode.source === 'generated' ? 'solid' : 'light'}
                         onClick={() => navigate(`/projects/${projectId}/episodes/${episodeId}/generate`)}
                     >
-                        进入分镜与创作工坊
+                        进入漫画编辑器
                     </Button>
 
                     {storyboardMemory && (
                         <Button
+                            size="small"
                             icon={<IconBolt />}
                             loading={renderMutation.isPending || activeStages.has('render')}
                             disabled={activeStages.has('render')}
@@ -275,6 +314,7 @@ export default function EpisodeDetail() {
 
                     {(generatedImages?.items || []).length > 0 && (
                         <Button
+                            size="small"
                             icon={<IconBolt />}
                             loading={layoutMutation.isPending || activeStages.has('layout')}
                             disabled={activeStages.has('layout')}
@@ -286,6 +326,7 @@ export default function EpisodeDetail() {
 
                     {hasComposedPages && (
                         <Button
+                            size="small"
                             onClick={() =>
                                 window.open(`/api/v1/generation/episodes/${episodeId}/export?format=pdf`, '_blank')
                             }
@@ -296,8 +337,8 @@ export default function EpisodeDetail() {
 
                     {['understood', 'published'].includes(episode.status) && (
                         <Button
+                            size="small"
                             theme="solid"
-                            style={{ backgroundColor: '#4f46e5', color: '#fff' }}
                             icon={<IconForward />}
                             onClick={() => setShowContinue(true)}
                         >
@@ -305,10 +346,10 @@ export default function EpisodeDetail() {
                         </Button>
                     )}
                 </div>
-            </div>
+            </header>
 
             {activeRuns.length > 0 && (
-                <div className="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 flex items-center gap-3 text-sm text-indigo-900">
+                <div className="rounded-[6px] border border-[var(--border)] bg-[var(--bg-panel)] px-4 py-3 flex items-center gap-3 text-sm text-[var(--text-primary)]">
                     <Spin size="small" />
                     <span>
                         正在执行：{activeRuns.map((r) => RUN_STAGE_LABELS[r.stage] || r.stage).join(' / ')}（页面将自动实时刷新）
@@ -317,16 +358,22 @@ export default function EpisodeDetail() {
             )}
 
             {latestRun?.status === 'failed' && activeRuns.length === 0 && (
-                <div className="rounded-xl border border-red-200 bg-red-50 p-4">
-                    <div className="font-semibold text-red-800 text-sm">
+                <div className="rounded-[6px] border border-[var(--accent)] bg-[var(--accent-soft)] p-4">
+                    <div className="font-semibold text-[var(--accent)] text-sm">
                         最近一次任务失败：{RUN_STAGE_LABELS[latestRun.stage] || latestRun.stage}
                     </div>
-                    <div className="mt-1 text-xs text-red-700">{formatRunError(latestRun.error)}</div>
+                    <div className="mt-1 text-xs text-[var(--text-secondary)]">{formatRunError(latestRun.error)}</div>
                 </div>
             )}
 
-            <div className="studio-card p-6">
-                <Tabs defaultActiveKey={defaultTab}>
+            <div className="rounded-[6px] border border-[var(--border)] bg-[var(--bg-panel)] p-5">
+                <Tabs
+                    activeKey={currentTab}
+                    onChange={(k) => {
+                        setActiveTab(k)
+                        setSpreadIndex(0)
+                    }}
+                >
                     {/* FINAL COMPOSED PAGES */}
                     {hasComposedPages && (
                         <TabPane tab={`成稿阅读 (${layoutResult?.pages?.length || 0} 页)`} itemKey="layout">
@@ -373,13 +420,15 @@ export default function EpisodeDetail() {
                             {layoutLoading ? (
                                 <Spin />
                             ) : readerMode === 'scroll' ? (
-                                <div className="manga-paper-bg rounded-2xl p-4 md:p-8 flex flex-col items-center gap-6">
+                                <div className="mf-canvas-grid rounded-[6px] border border-[var(--border)] p-4 md:p-8 flex flex-col items-center gap-6">
                                     {(layoutResult?.pages || []).map((page) => (
-                                        <div key={page.page_number} className="w-full max-w-3xl bg-white shadow-lg rounded-lg overflow-hidden border border-slate-200">
+                                        <div key={page.page_number} className="w-full max-w-3xl mf-paper-sheet rounded-[4px] overflow-hidden">
                                             <Image
                                                 src={storageFileUrl(page.image_path)}
                                                 alt={`第 ${page.page_number} 页`}
-                                                className="w-full"
+                                                width="100%"
+                                                className="w-full mf-manga-img"
+                                                imgStyle={{ width: '100%', height: 'auto', display: 'block' }}
                                             />
                                         </div>
                                     ))}
@@ -389,14 +438,13 @@ export default function EpisodeDetail() {
                                     const list = layoutResult?.pages || []
                                     const spreads: Array<[typeof list[number] | null, typeof list[number] | null]> = []
                                     for (let i = 0; i < list.length; i += 2) {
-                                        // Right-to-left tankobon: right page is earlier (i), left page is next (i + 1)
                                         spreads.push([list[i + 1] || null, list[i] || null])
                                     }
                                     const safeIdx = Math.min(spreadIndex, Math.max(0, spreads.length - 1))
                                     const [leftP, rightP] = spreads[safeIdx] || [null, null]
                                     return (
-                                        <div className="manga-paper-bg rounded-2xl p-4 md:p-6 space-y-4">
-                                            <div className="flex items-center justify-between text-xs text-slate-600">
+                                        <div className="mf-canvas-grid rounded-[6px] border border-[var(--border)] p-4 md:p-6 space-y-4">
+                                            <div className="flex items-center justify-between text-xs text-[var(--text-secondary)]">
                                                 <Button
                                                     size="small"
                                                     disabled={safeIdx >= spreads.length - 1}
@@ -404,8 +452,11 @@ export default function EpisodeDetail() {
                                                 >
                                                     ← 下一页 (左翻)
                                                 </Button>
-                                                <span className="font-semibold">
-                                                    右开单行本视图 · 跨页 {safeIdx + 1} / {Math.max(1, spreads.length)}
+                                                <span className="font-mono font-semibold text-[var(--text-primary)]">
+                                                    RTL 跨页 {safeIdx + 1} / {Math.max(1, spreads.length)}
+                                                    <span className="ml-2 font-sans font-normal text-[11px] text-[var(--text-muted)]">
+                                                        (支持 ← / → 键翻页)
+                                                    </span>
                                                 </span>
                                                 <Button
                                                     size="small"
@@ -415,24 +466,24 @@ export default function EpisodeDetail() {
                                                     上一页 (右翻) →
                                                 </Button>
                                             </div>
-                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-w-5xl mx-auto bg-slate-900/10 p-2.5 rounded-xl">
-                                                <div className="bg-white rounded-l-lg overflow-hidden flex flex-col items-center justify-center p-1">
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5 max-w-5xl mx-auto">
+                                                <div className="mf-paper-sheet rounded-[4px] overflow-hidden flex flex-col items-center justify-center p-1">
                                                     {leftP ? (
                                                         <img
                                                             src={storageFileUrl(leftP.image_path)}
                                                             alt={`第 ${leftP.page_number} 页`}
-                                                            className="w-full max-h-[74vh] object-contain block"
+                                                            className="w-full max-h-[76vh] object-contain block"
                                                         />
                                                     ) : (
-                                                        <span className="text-xs text-slate-400 py-24">本话完</span>
+                                                        <span className="text-xs text-[#71717A] py-24">本话完</span>
                                                     )}
                                                 </div>
-                                                <div className="bg-white rounded-r-lg overflow-hidden flex flex-col items-center justify-center p-1">
+                                                <div className="mf-paper-sheet rounded-[4px] overflow-hidden flex flex-col items-center justify-center p-1">
                                                     {rightP && (
                                                         <img
                                                             src={storageFileUrl(rightP.image_path)}
                                                             alt={`第 ${rightP.page_number} 页`}
-                                                            className="w-full max-h-[74vh] object-contain block"
+                                                            className="w-full max-h-[76vh] object-contain block"
                                                         />
                                                     )}
                                                 </div>
@@ -441,18 +492,22 @@ export default function EpisodeDetail() {
                                     )
                                 })()
                             ) : (
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                                     {(layoutResult?.pages || []).map((page) => (
-                                        <div key={page.page_number} className="border border-slate-200 rounded-xl p-3 space-y-2">
-                                            <div className="flex items-center justify-between text-xs text-slate-500">
-                                                <span className="font-semibold text-slate-800">第 {page.page_number} 页</span>
+                                        <div key={page.page_number} className="border border-[var(--border)] bg-[var(--bg-elevated)] rounded-[6px] p-3 space-y-2">
+                                            <div className="flex items-center justify-between text-xs text-[var(--text-muted)]">
+                                                <span className="font-mono font-semibold text-[var(--text-primary)]">第 {page.page_number} 页</span>
                                                 <Tag size="small">{page.layout}</Tag>
                                             </div>
-                                            <Image
-                                                src={storageFileUrl(page.image_path)}
-                                                alt={`Page ${page.page_number}`}
-                                                className="w-full"
-                                            />
+                                            <div className="mf-paper-sheet rounded-[4px] overflow-hidden">
+                                                <Image
+                                                    src={storageFileUrl(page.image_path)}
+                                                    alt={`Page ${page.page_number}`}
+                                                    width="100%"
+                                                    className="w-full mf-manga-img"
+                                                    imgStyle={{ width: '100%', height: 'auto', display: 'block' }}
+                                                />
+                                            </div>
                                         </div>
                                     ))}
                                 </div>
@@ -482,21 +537,23 @@ export default function EpisodeDetail() {
                                             { label: '缩略网格模式', value: 'grid' },
                                         ]}
                                     />
-                                    <span className="text-xs text-slate-500">
+                                    <span className="text-xs text-[var(--text-muted)]">
                                         提示：点击任意页下方的「框选裁图入库」可直接从原作截取角色/道具参考图
                                     </span>
                                 </div>
                                 {readerMode === 'scroll' ? (
-                                    <div className="manga-paper-bg rounded-2xl p-4 md:p-8 flex flex-col items-center gap-5">
+                                    <div className="mf-canvas-grid rounded-[6px] border border-[var(--border)] p-4 md:p-8 flex flex-col items-center gap-5">
                                         {pages.map((page) => (
-                                            <div key={page.id} className="w-full max-w-2xl bg-white shadow rounded-lg overflow-hidden border border-slate-200">
+                                            <div key={page.id} className="w-full max-w-2xl mf-paper-sheet rounded-[4px] overflow-hidden">
                                                 <Image
                                                     src={storageFileUrl(page.image_path)}
                                                     alt={`第 ${page.page_index + 1} 页`}
-                                                    className="w-full"
+                                                    width="100%"
+                                                    className="w-full mf-manga-img"
+                                                    imgStyle={{ width: '100%', height: 'auto', display: 'block' }}
                                                 />
-                                                <div className="flex items-center justify-between px-3 py-1.5 bg-slate-50 text-xs text-slate-500">
-                                                    <span>第 {page.page_index + 1} 页</span>
+                                                <div className="flex items-center justify-between px-3 py-1.5 bg-[var(--bg-elevated)] border-t border-[var(--border)] text-xs text-[var(--text-secondary)]">
+                                                    <span className="font-mono">P.{String(page.page_index + 1).padStart(2, '0')}</span>
                                                     <Button
                                                         size="small"
                                                         theme="borderless"
@@ -518,8 +575,8 @@ export default function EpisodeDetail() {
                                         const safeIdx = Math.min(spreadIndex, Math.max(0, spreads.length - 1))
                                         const [leftP, rightP] = spreads[safeIdx] || [null, null]
                                         return (
-                                            <div className="manga-paper-bg rounded-2xl p-4 md:p-6 space-y-4">
-                                                <div className="flex items-center justify-between text-xs text-slate-600">
+                                            <div className="mf-canvas-grid rounded-[6px] border border-[var(--border)] p-4 md:p-6 space-y-4">
+                                                <div className="flex items-center justify-between text-xs text-[var(--text-secondary)]">
                                                     <Button
                                                         size="small"
                                                         disabled={safeIdx >= spreads.length - 1}
@@ -527,8 +584,11 @@ export default function EpisodeDetail() {
                                                     >
                                                         ← 下一页 (左翻)
                                                     </Button>
-                                                    <span className="font-semibold">
-                                                        右开单行本视图 · 跨页 {safeIdx + 1} / {Math.max(1, spreads.length)}
+                                                    <span className="font-mono font-semibold text-[var(--text-primary)]">
+                                                        RTL 跨页 {safeIdx + 1} / {Math.max(1, spreads.length)}
+                                                        <span className="ml-2 font-sans font-normal text-[11px] text-[var(--text-muted)]">
+                                                            (支持 ← / → 键翻页)
+                                                        </span>
                                                     </span>
                                                     <Button
                                                         size="small"
@@ -538,21 +598,21 @@ export default function EpisodeDetail() {
                                                         上一页 (右翻) →
                                                     </Button>
                                                 </div>
-                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-w-5xl mx-auto bg-slate-900/10 p-2.5 rounded-xl">
+                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5 max-w-5xl mx-auto">
                                                     {[leftP, rightP].map((pg, idx) => (
                                                         <div
                                                             key={idx}
-                                                            className="bg-white rounded overflow-hidden flex flex-col justify-between"
+                                                            className="mf-paper-sheet rounded-[4px] overflow-hidden flex flex-col justify-between"
                                                         >
                                                             {pg ? (
                                                                 <>
                                                                     <img
                                                                         src={storageFileUrl(pg.image_path)}
                                                                         alt={`第 ${pg.page_index + 1} 页`}
-                                                                        className="w-full max-h-[74vh] object-contain block"
+                                                                        className="w-full max-h-[76vh] object-contain block"
                                                                     />
-                                                                    <div className="flex items-center justify-between px-3 py-1 bg-slate-50 text-[11px] text-slate-500">
-                                                                        <span>第 {pg.page_index + 1} 页</span>
+                                                                    <div className="flex items-center justify-between px-3 py-1 bg-[var(--bg-elevated)] border-t border-[var(--border)] text-[11px] text-[var(--text-secondary)]">
+                                                                        <span className="font-mono">P.{String(pg.page_index + 1).padStart(2, '0')}</span>
                                                                         <Button
                                                                             size="small"
                                                                             theme="borderless"
@@ -564,7 +624,7 @@ export default function EpisodeDetail() {
                                                                     </div>
                                                                 </>
                                                             ) : (
-                                                                <div className="flex-1 flex items-center justify-center text-xs text-slate-400 py-24">
+                                                                <div className="flex-1 flex items-center justify-center text-xs text-[#71717A] py-24">
                                                                     空白页
                                                                 </div>
                                                             )}
@@ -575,18 +635,19 @@ export default function EpisodeDetail() {
                                         )
                                     })()
                                 ) : (
-                                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5">
                                         {pages.map((page) => (
-                                            <div key={page.id} className="border border-slate-200 rounded-xl p-2 bg-white space-y-1.5">
-                                                <div className="w-full h-72 overflow-hidden flex items-center justify-center bg-slate-50 rounded-lg">
+                                            <div key={page.id} className="border border-[var(--border)] rounded-[6px] p-2 bg-[var(--bg-elevated)] space-y-1.5">
+                                                <div className="w-full aspect-[3/4] overflow-hidden flex items-center justify-center mf-paper-sheet rounded-[4px] p-1">
                                                     <Image
                                                         src={storageFileUrl(page.image_path)}
                                                         alt={`Page ${page.page_index + 1}`}
-                                                        className="max-w-full max-h-full object-contain"
+                                                        className="mf-manga-thumb"
+                                                        imgStyle={{ maxWidth: '100%', maxHeight: '100%', width: 'auto', height: 'auto', objectFit: 'contain' }}
                                                     />
                                                 </div>
-                                                <div className="flex items-center justify-between text-xs text-slate-500 px-1">
-                                                    <span>第 {page.page_index + 1} 页</span>
+                                                <div className="flex items-center justify-between text-xs text-[var(--text-muted)] px-1">
+                                                    <span className="font-mono">P.{String(page.page_index + 1).padStart(2, '0')}</span>
                                                     <Button
                                                         size="small"
                                                         theme="borderless"
@@ -611,53 +672,53 @@ export default function EpisodeDetail() {
                             <Empty description="尚未生成剧情解析。请点击右上角「执行多模态理解」。" />
                         ) : (
                             <div className="space-y-6 pt-3 max-w-5xl">
-                                <div className="rounded-xl bg-slate-50 border border-slate-200 p-5 space-y-2">
-                                    <div className="text-xs font-bold text-indigo-600 uppercase">本话梗概 (Synopsis)</div>
-                                    <p className="text-sm text-slate-800 leading-relaxed m-0">
+                                <div className="rounded-[6px] bg-[var(--bg-elevated)] border border-[var(--border)] p-4 space-y-1.5">
+                                    <div className="text-[11px] font-mono text-[var(--accent)] uppercase tracking-wider">Synopsis · 本话梗概</div>
+                                    <p className="text-sm text-[var(--text-primary)] leading-relaxed m-0">
                                         {String(understanding.summary || '')}
                                     </p>
                                 </div>
 
                                 {(mainPlot.core_conflict || mainPlot.arc_progress || Boolean(endingState.cliffhanger)) && (
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                        <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-4 space-y-2">
-                                            <div className="text-xs font-bold text-indigo-800">本话主线推进</div>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                                        <div className="rounded-[6px] border border-[var(--border)] bg-[var(--bg-elevated)] p-4 space-y-2">
+                                            <div className="text-xs font-semibold text-[var(--text-primary)]">本话主线推进</div>
                                             {mainPlot.current_arc && (
-                                                <div className="text-xs text-slate-700">
-                                                    <span className="font-semibold">所属篇章：</span>
+                                                <div className="text-xs text-[var(--text-secondary)]">
+                                                    <span className="font-semibold text-[var(--text-primary)]">所属篇章：</span>
                                                     {mainPlot.current_arc}
                                                 </div>
                                             )}
                                             {mainPlot.arc_progress && (
-                                                <div className="text-xs text-slate-700 leading-relaxed">
-                                                    <span className="font-semibold">关键进展：</span>
+                                                <div className="text-xs text-[var(--text-secondary)] leading-relaxed">
+                                                    <span className="font-semibold text-[var(--text-primary)]">关键进展：</span>
                                                     {mainPlot.arc_progress}
                                                 </div>
                                             )}
                                             {mainPlot.next_hook && (
-                                                <div className="text-xs text-indigo-900 leading-relaxed">
+                                                <div className="text-xs text-[var(--accent)] leading-relaxed">
                                                     <span className="font-semibold">下话钩子：</span>
                                                     {mainPlot.next_hook}
                                                 </div>
                                             )}
                                         </div>
 
-                                        <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-4 space-y-2">
-                                            <div className="text-xs font-bold text-amber-900">结尾现场桥接 (Ending Bridge)</div>
+                                        <div className="rounded-[6px] border border-[var(--border)] bg-[var(--bg-elevated)] p-4 space-y-2">
+                                            <div className="text-xs font-semibold text-[var(--text-primary)]">结尾现场桥接 (Ending Bridge)</div>
                                             {Boolean(endingState.location) && (
-                                                <div className="text-xs text-slate-700">
-                                                    <span className="font-semibold">落幕地点：</span>
+                                                <div className="text-xs text-[var(--text-secondary)]">
+                                                    <span className="font-semibold text-[var(--text-primary)]">落幕地点：</span>
                                                     {String(endingState.location)}
                                                 </div>
                                             )}
                                             {Array.isArray(endingState.active_characters) && endingState.active_characters.length > 0 && (
-                                                <div className="text-xs text-slate-700">
-                                                    <span className="font-semibold">在场人物：</span>
+                                                <div className="text-xs text-[var(--text-secondary)]">
+                                                    <span className="font-semibold text-[var(--text-primary)]">在场人物：</span>
                                                     {(endingState.active_characters as string[]).join('、')}
                                                 </div>
                                             )}
                                             {Boolean(endingState.cliffhanger) && (
-                                                <div className="text-xs text-amber-950 leading-relaxed">
+                                                <div className="text-xs text-[var(--text-primary)] leading-relaxed">
                                                     <span className="font-semibold">定格悬念：</span>
                                                     {String(endingState.cliffhanger)}
                                                 </div>
@@ -668,12 +729,14 @@ export default function EpisodeDetail() {
 
                                 {understandingEvents.length > 0 && (
                                     <div className="space-y-2.5">
-                                        <h3 className="text-sm font-bold text-slate-900 m-0">关键剧情时间线 ({understandingEvents.length})</h3>
+                                        <h3 className="text-xs font-mono uppercase tracking-wider text-[var(--text-muted)] m-0">
+                                            关键剧情时间线 ({understandingEvents.length})
+                                        </h3>
                                         <div className="space-y-2">
                                             {understandingEvents.map((event, i) => (
-                                                <div key={i} className="rounded-xl border border-slate-200 bg-white p-3.5 space-y-1.5">
+                                                <div key={i} className="rounded-[6px] border border-[var(--border)] bg-[var(--bg-elevated)] p-3.5 space-y-1.5">
                                                     <div className="flex items-center gap-2 flex-wrap">
-                                                        <span className="text-xs font-mono text-slate-400">#{i + 1}</span>
+                                                        <span className="text-xs font-mono text-[var(--text-muted)]">#{i + 1}</span>
                                                         {event.significance && event.significance !== 'normal' ? (
                                                             <Tag
                                                                 size="small"
@@ -694,7 +757,7 @@ export default function EpisodeDetail() {
                                                                 </Tag>
                                                             ))}
                                                     </div>
-                                                    <div className="text-sm text-slate-800">{String(event.description || '')}</div>
+                                                    <div className="text-sm text-[var(--text-primary)]">{String(event.description || '')}</div>
                                                 </div>
                                             ))}
                                         </div>
@@ -703,23 +766,25 @@ export default function EpisodeDetail() {
 
                                 {understandingChanges.length > 0 && (
                                     <div className="space-y-2.5">
-                                        <h3 className="text-sm font-bold text-slate-900 m-0">人物与物品状态变更 ({understandingChanges.length})</h3>
+                                        <h3 className="text-xs font-mono uppercase tracking-wider text-[var(--text-muted)] m-0">
+                                            人物与物品状态变更 ({understandingChanges.length})
+                                        </h3>
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                                             {understandingChanges.map((change, i) => (
-                                                <div key={i} className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs space-y-1">
+                                                <div key={i} className="rounded-[6px] border border-[var(--border)] bg-[var(--bg-elevated)] p-3 text-xs space-y-1">
                                                     <div className="flex items-center gap-2">
                                                         <Tag color="blue" size="small">
                                                             {String(change.character || '')}
                                                         </Tag>
                                                         <Tag size="small">{String(change.attribute || '')}</Tag>
                                                     </div>
-                                                    <div className="text-slate-700">
-                                                        <span className="text-slate-400">{String(change.before || '初始')}</span>
-                                                        <span className="mx-1.5 text-indigo-500 font-bold">→</span>
-                                                        <span className="font-semibold text-slate-900">{String(change.after || '')}</span>
+                                                    <div className="text-[var(--text-secondary)]">
+                                                        <span className="text-[var(--text-muted)]">{String(change.before || '初始')}</span>
+                                                        <span className="mx-1.5 text-[var(--accent)] font-bold">→</span>
+                                                        <span className="font-semibold text-[var(--text-primary)]">{String(change.after || '')}</span>
                                                     </div>
                                                     {Boolean(change.reason) && (
-                                                        <div className="text-slate-400">原因：{String(change.reason)}</div>
+                                                        <div className="text-[var(--text-muted)]">原因：{String(change.reason)}</div>
                                                     )}
                                                 </div>
                                             ))}
@@ -729,10 +794,12 @@ export default function EpisodeDetail() {
 
                                 {worldRules.length > 0 && (
                                     <div className="space-y-2">
-                                        <h3 className="text-sm font-bold text-slate-900 m-0">本话揭示的世界观细节</h3>
+                                        <h3 className="text-xs font-mono uppercase tracking-wider text-[var(--text-muted)] m-0">
+                                            本话揭示的世界观细节
+                                        </h3>
                                         <div className="space-y-1.5">
                                             {worldRules.map((r, i) => (
-                                                <div key={i} className="text-xs text-slate-700 bg-slate-50 rounded-lg px-3 py-2 border border-slate-200">
+                                                <div key={i} className="text-xs text-[var(--text-secondary)] bg-[var(--bg-elevated)] rounded-[4px] px-3 py-2 border border-[var(--border)]">
                                                     • {r}
                                                 </div>
                                             ))}
@@ -747,15 +814,15 @@ export default function EpisodeDetail() {
                     <TabPane tab={`登场人物与资产 (${understandingCharacters.length + newAssetsDiscovered.length})`} itemKey="characters">
                         <div className="space-y-6 pt-3 max-w-5xl">
                             <div className="space-y-2.5">
-                                <h3 className="text-sm font-bold text-slate-900 m-0">登场人物识别记录</h3>
+                                <h3 className="text-xs font-mono uppercase tracking-wider text-[var(--text-muted)] m-0">登场人物识别记录</h3>
                                 {understandingCharacters.length === 0 ? (
                                     <Empty description="暂无人物识别记录" />
                                 ) : (
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                         {understandingCharacters.map((c, i) => (
-                                            <div key={i} className="border border-slate-200 rounded-xl p-4 space-y-2">
+                                            <div key={i} className="border border-[var(--border)] bg-[var(--bg-elevated)] rounded-[6px] p-4 space-y-2">
                                                 <div className="flex items-center gap-2 flex-wrap">
-                                                    <span className="font-bold text-slate-900">{String(c.name || '')}</span>
+                                                    <span className="font-semibold text-[var(--text-primary)]">{String(c.name || '')}</span>
                                                     {Boolean(c.role) && (
                                                         <Tag size="small" color="cyan">
                                                             {String(c.role)}
@@ -772,12 +839,12 @@ export default function EpisodeDetail() {
                                                     )}
                                                 </div>
                                                 {Boolean(c.appearance) && (
-                                                    <div className="text-xs text-slate-600 leading-relaxed">
+                                                    <div className="text-xs text-[var(--text-secondary)] leading-relaxed">
                                                         外貌服饰：{String(c.appearance)}
                                                     </div>
                                                 )}
                                                 {Boolean(c.speech_style) && (
-                                                    <div className="text-xs text-indigo-700 bg-indigo-50/70 rounded px-2.5 py-1">
+                                                    <div className="text-xs text-[var(--text-secondary)] bg-[var(--bg-panel)] border border-[var(--border)] rounded-[4px] px-2.5 py-1">
                                                         说话语气：{String(c.speech_style)}
                                                     </div>
                                                 )}
@@ -789,17 +856,19 @@ export default function EpisodeDetail() {
 
                             {newAssetsDiscovered.length > 0 && (
                                 <div className="space-y-2.5">
-                                    <h3 className="text-sm font-bold text-slate-900 m-0">本话新发现物品 / 场景 / 角色资产</h3>
+                                    <h3 className="text-xs font-mono uppercase tracking-wider text-[var(--text-muted)] m-0">
+                                        本话新发现物品 / 场景 / 角色资产
+                                    </h3>
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                         {newAssetsDiscovered.map((na, idx) => (
-                                            <div key={idx} className="border border-slate-200 rounded-xl p-3.5 bg-slate-50 space-y-1.5">
+                                            <div key={idx} className="border border-[var(--border)] rounded-[6px] p-3.5 bg-[var(--bg-elevated)] space-y-1.5">
                                                 <div className="flex items-center gap-2">
-                                                    <Tag size="small" color="indigo">
+                                                    <Tag size="small">
                                                         {String(na.asset_type || 'item')}
                                                     </Tag>
-                                                    <span className="font-semibold text-sm text-slate-900">{String(na.name || '')}</span>
+                                                    <span className="font-semibold text-sm text-[var(--text-primary)]">{String(na.name || '')}</span>
                                                 </div>
-                                                <div className="text-xs text-slate-600 leading-relaxed">{String(na.description || '')}</div>
+                                                <div className="text-xs text-[var(--text-secondary)] leading-relaxed">{String(na.description || '')}</div>
                                             </div>
                                         ))}
                                     </div>
@@ -817,8 +886,8 @@ export default function EpisodeDetail() {
                                 {Array.isArray((ocrMemory.content as Record<string, unknown>)?.pages) ? (
                                     ((ocrMemory.content as Record<string, unknown>).pages as Array<Record<string, unknown>>).map(
                                         (page, i) => (
-                                            <div key={i} className="border border-slate-200 rounded-xl p-4 space-y-1.5">
-                                                <div className="font-bold text-xs text-slate-500">
+                                            <div key={i} className="border border-[var(--border)] bg-[var(--bg-elevated)] rounded-[6px] p-4 space-y-1.5">
+                                                <div className="font-mono font-semibold text-xs text-[var(--text-muted)]">
                                                     第 {String(page.page_number || i + 1)} 页
                                                 </div>
                                                 {Array.isArray(page.lines) &&
@@ -830,14 +899,14 @@ export default function EpisodeDetail() {
                                                             >
                                                                 {String(line.speaker || line.line_type || '旁白')}
                                                             </Tag>
-                                                            <span className="text-slate-800">{String(line.text || '')}</span>
+                                                            <span className="text-[var(--text-primary)]">{String(line.text || '')}</span>
                                                         </div>
                                                     ))}
                                             </div>
                                         ),
                                     )
                                 ) : (
-                                    <pre className="text-xs bg-slate-50 p-4 rounded-xl whitespace-pre-wrap">
+                                    <pre className="text-xs bg-[var(--bg-elevated)] border border-[var(--border)] text-[var(--text-secondary)] p-4 rounded-[6px] whitespace-pre-wrap">
                                         {String((ocrMemory.content as Record<string, unknown>)?.text || '')}
                                     </pre>
                                 )}
@@ -853,15 +922,15 @@ export default function EpisodeDetail() {
                                 const issues = (report.issues || []) as Array<Record<string, unknown>>
                                 const overall = String(report.overall || 'pass')
                                 return (
-                                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">
+                                    <div className="rounded-[6px] border border-[var(--border)] bg-[var(--bg-elevated)] p-4 space-y-2">
                                         <div className="flex items-center gap-2">
-                                            <span className="text-sm font-bold text-slate-900">连续性编辑审校报告：</span>
+                                            <span className="text-sm font-semibold text-[var(--text-primary)]">连续性编辑审校报告：</span>
                                             <Tag color={overall === 'pass' ? 'green' : overall === 'warning' ? 'orange' : 'red'}>
                                                 {overall.toUpperCase()} ({issues.length} 条建议)
                                             </Tag>
                                         </div>
                                         {issues.map((issue, idx) => (
-                                            <div key={idx} className="text-xs bg-white border border-slate-200 rounded-lg p-2.5">
+                                            <div key={idx} className="text-xs bg-[var(--bg-panel)] border border-[var(--border)] rounded-[4px] p-2.5 text-[var(--text-secondary)]">
                                                 <Tag
                                                     size="small"
                                                     color={
@@ -874,7 +943,7 @@ export default function EpisodeDetail() {
                                                 >
                                                     {String(issue.severity)}
                                                 </Tag>{' '}
-                                                <span className="font-medium">[{String(issue.category)}]</span>{' '}
+                                                <span className="font-medium text-[var(--text-primary)]">[{String(issue.category)}]</span>{' '}
                                                 {String(issue.description)}
                                             </div>
                                         ))}
@@ -883,15 +952,15 @@ export default function EpisodeDetail() {
                             })()}
 
                             {!storyboardMemory ? (
-                                <Empty description="尚未生成分镜脚本。可前往「进入分镜与创作工坊」生成或编辑分镜。" />
+                                <Empty description="尚未生成分镜脚本。可前往「进入漫画编辑器」生成或编辑分镜。" />
                             ) : (
                                 <div className="space-y-4">
                                     <div className="flex items-center justify-between">
                                         <div>
-                                            <h3 className="text-base font-bold text-slate-900 m-0">
+                                            <h3 className="text-base font-bold text-[var(--text-primary)] m-0">
                                                 {String((storyboardMemory.content as Record<string, unknown>)?.title || '')}
                                             </h3>
-                                            <p className="text-xs text-slate-600 m-0 mt-1">
+                                            <p className="text-xs text-[var(--text-secondary)] m-0 mt-1">
                                                 {String((storyboardMemory.content as Record<string, unknown>)?.synopsis || '')}
                                             </p>
                                         </div>
@@ -900,7 +969,7 @@ export default function EpisodeDetail() {
                                             icon={<IconEdit />}
                                             onClick={() => navigate(`/projects/${projectId}/episodes/${episodeId}/generate`)}
                                         >
-                                            在工坊中编辑分镜
+                                            在编辑器中修改分镜
                                         </Button>
                                     </div>
                                     <Collapse>
@@ -917,22 +986,22 @@ export default function EpisodeDetail() {
                                                                 (page.panels as Array<Record<string, unknown>>).map((panel, j) => (
                                                                     <div
                                                                         key={j}
-                                                                        className="border-l-4 border-indigo-400 bg-slate-50 rounded-r-lg p-3 space-y-1.5"
+                                                                        className="border-l-2 border-l-[var(--accent)] border border-[var(--border)] bg-[var(--bg-elevated)] rounded-[4px] p-3 space-y-1.5"
                                                                     >
-                                                                        <div className="font-bold text-xs text-indigo-900">
+                                                                        <div className="font-mono font-semibold text-xs text-[var(--text-primary)]">
                                                                             分格 {String(panel.panel_id || j + 1)} · 景别 {String(panel.camera || 'medium')}
                                                                         </div>
-                                                                        <div className="text-xs text-slate-700">{String(panel.scene || '')}</div>
+                                                                        <div className="text-xs text-[var(--text-secondary)]">{String(panel.scene || '')}</div>
                                                                         {Array.isArray(panel.dialogue) &&
                                                                             (panel.dialogue as Array<Record<string, unknown>>).map((d, k) => (
-                                                                                <div key={k} className="text-xs">
+                                                                                <div key={k} className="text-xs text-[var(--text-primary)]">
                                                                                     <Tag size="small" color="blue">
                                                                                         {String(d.speaker || '旁白')}
                                                                                     </Tag>{' '}
                                                                                     {String(d.text || '')}
                                                                                 </div>
                                                                             ))}
-                                                                        <div className="text-[11px] text-slate-400 font-mono">
+                                                                        <div className="text-[11px] text-[var(--text-muted)] font-mono">
                                                                             Prompt: {String(panel.prompt || '')}
                                                                         </div>
                                                                     </div>
@@ -958,16 +1027,17 @@ export default function EpisodeDetail() {
                                 {generatedImages.items.map((img) => {
                                     const refs = (img.meta?.reference_assets as string[] | undefined) || []
                                     return (
-                                        <div key={img.id} className="border border-slate-200 rounded-xl p-2.5 space-y-2">
-                                            <div className="w-full h-64 overflow-hidden flex items-center justify-center bg-slate-50 rounded-lg">
+                                        <div key={img.id} className="border border-[var(--border)] bg-[var(--bg-elevated)] rounded-[6px] p-2.5 space-y-2">
+                                            <div className="w-full h-64 overflow-hidden flex items-center justify-center bg-[var(--bg-canvas)] rounded-[4px] p-1">
                                                 <Image
                                                     src={storageFileUrl(img.image_path)}
                                                     alt={img.panel_id || ''}
-                                                    className="max-w-full max-h-full object-contain"
+                                                    className="mf-manga-thumb"
+                                                    imgStyle={{ maxWidth: '100%', maxHeight: '100%', width: 'auto', height: 'auto', objectFit: 'contain' }}
                                                 />
                                             </div>
                                             <div className="flex items-center justify-between text-xs">
-                                                <span className="font-bold text-slate-800">Panel {img.panel_id || '-'}</span>
+                                                <span className="font-mono font-semibold text-[var(--text-primary)]">Panel {img.panel_id || '-'}</span>
                                                 {refs.length > 0 && (
                                                     <Tag size="small" color="green">
                                                         锚定: {refs.join(', ')}
@@ -990,7 +1060,7 @@ export default function EpisodeDetail() {
                         ) : (
                             <div className="space-y-3 pt-3">
                                 {runsData.items.map((run: GenerationRun) => (
-                                    <div key={run.id} className="border border-slate-200 rounded-xl p-4 space-y-2">
+                                    <div key={run.id} className="border border-[var(--border)] bg-[var(--bg-elevated)] rounded-[6px] p-4 space-y-2">
                                         <div className="flex items-center gap-2.5 flex-wrap">
                                             <Tag
                                                 color={
@@ -1005,7 +1075,7 @@ export default function EpisodeDetail() {
                                             >
                                                 {RUN_STATUS_LABELS[run.status] || run.status}
                                             </Tag>
-                                            <span className="font-semibold text-sm text-slate-900">
+                                            <span className="font-semibold text-sm text-[var(--text-primary)]">
                                                 {RUN_STAGE_LABELS[run.stage] || run.stage}
                                             </span>
                                             {run.model && <Tag size="small">{run.model}</Tag>}
@@ -1014,12 +1084,12 @@ export default function EpisodeDetail() {
                                                     查看传入 LLM 的完整上下文
                                                 </Button>
                                             )}
-                                            <span className="text-xs text-slate-400 ml-auto">
+                                            <span className="text-xs font-mono text-[var(--text-muted)] ml-auto">
                                                 {run.created_at ? new Date(run.created_at).toLocaleString() : ''}
                                             </span>
                                         </div>
                                         {run.error && (
-                                            <div className="bg-red-50 border border-red-200 rounded-lg p-2.5 text-xs text-red-700">
+                                            <div className="bg-[var(--accent-soft)] border border-[var(--accent)] rounded-[4px] p-2.5 text-xs text-[var(--accent)]">
                                                 {formatRunError(run.error)}
                                             </div>
                                         )}
@@ -1087,16 +1157,16 @@ export default function EpisodeDetail() {
                 {inspectRun?.retrieved_context && (
                     <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1 text-xs">
                         {inspectRun.retrieved_context.story_bible?.main_plot && (
-                            <div className="rounded-xl bg-indigo-50 p-3.5 space-y-1">
-                                <div className="font-bold text-indigo-900">1. 主线脉络 (Main Plot)</div>
+                            <div className="rounded-[6px] border border-[var(--border)] bg-[var(--bg-elevated)] p-3.5 space-y-1 text-[var(--text-secondary)]">
+                                <div className="font-semibold text-[var(--text-primary)]">1. 主线脉络 (Main Plot)</div>
                                 <div>核心矛盾：{inspectRun.retrieved_context.story_bible.main_plot.core_conflict}</div>
                                 <div>当前篇章：{inspectRun.retrieved_context.story_bible.main_plot.current_arc}</div>
                                 <div>下话钩子：{inspectRun.retrieved_context.story_bible.main_plot.next_hook}</div>
                             </div>
                         )}
                         {inspectRun.retrieved_context.previous_bridge && (
-                            <div className="rounded-xl bg-amber-50 p-3.5 space-y-1">
-                                <div className="font-bold text-amber-900">
+                            <div className="rounded-[6px] border border-[var(--border)] bg-[var(--bg-elevated)] p-3.5 space-y-1 text-[var(--text-secondary)]">
+                                <div className="font-semibold text-[var(--text-primary)]">
                                     2. 上一话结尾无缝桥接 (第 {inspectRun.retrieved_context.previous_bridge.episode_number} 话)
                                 </div>
                                 <div>结尾悬念：{inspectRun.retrieved_context.previous_bridge.ending_state?.cliffhanger}</div>
@@ -1107,20 +1177,20 @@ export default function EpisodeDetail() {
                                 )}
                             </div>
                         )}
-                        <div className="rounded-xl bg-slate-50 border border-slate-200 p-3.5 space-y-1">
-                            <div className="font-bold text-slate-900">
+                        <div className="rounded-[6px] bg-[var(--bg-elevated)] border border-[var(--border)] p-3.5 space-y-1 text-[var(--text-secondary)]">
+                            <div className="font-semibold text-[var(--text-primary)]">
                                 3. 角色累积状态与原声样本 ({inspectRun.retrieved_context.character_dossier?.length || 0} 人)
                             </div>
                             {(inspectRun.retrieved_context.character_dossier || []).map((c, idx) => (
-                                <div key={idx} className="border-b border-slate-100 py-1">
-                                    <span className="font-semibold">{c.name}</span>：{c.current_state || '常规状态'}
+                                <div key={idx} className="border-b border-[var(--border)] py-1">
+                                    <span className="font-semibold text-[var(--text-primary)]">{c.name}</span>：{c.current_state || '常规状态'}
                                     {c.speech_samples && c.speech_samples.length > 0 && (
-                                        <span className="text-indigo-600 ml-2">台词样本：{c.speech_samples.join(' | ')}</span>
+                                        <span className="text-[var(--accent)] ml-2">台词样本：{c.speech_samples.join(' | ')}</span>
                                     )}
                                 </div>
                             ))}
                         </div>
-                        <div className="rounded-xl bg-slate-900 text-slate-100 p-4 font-mono overflow-x-auto">
+                        <div className="rounded-[6px] bg-[#141417] border border-[var(--border)] text-[#E4E4E7] p-4 font-mono overflow-x-auto">
                             <pre className="m-0 whitespace-pre-wrap">
                                 {JSON.stringify(inspectRun.retrieved_context, null, 2)}
                             </pre>

@@ -228,16 +228,24 @@ class RenderAgent:
             {"role": "user", "content": brief},
         ]
 
+        from app.core.telemetry import usage_context
+
         fallback: list[str] = []
         nudged_missing = False
         try:
             for step in range(MAX_AGENT_STEPS):
-                response = await client.chat.completions.create(
-                    model=settings.OPENAI_MODEL,
-                    messages=messages,
-                    tools=TOOL_DEFINITIONS,
-                    max_tokens=settings.OPENAI_MAX_TOKENS,
-                )
+                with usage_context(
+                    project_id=self.episode.project_id,
+                    episode_id=self.episode.id,
+                    generation_run_id=self.run_id,
+                    operation="render_plan",
+                ):
+                    response = await client.chat.completions.create(
+                        model=settings.OPENAI_MODEL,
+                        messages=messages,
+                        tools=TOOL_DEFINITIONS,
+                        max_tokens=settings.OPENAI_MAX_TOKENS,
+                    )
                 message = response.choices[0].message
                 tool_calls = getattr(message, "tool_calls", None) or []
 
@@ -549,15 +557,24 @@ class RenderAgent:
         neg = negative_prompt or "speech bubble, text, dialogue balloon, watermark, signature, blurry"
         target_size = self.panel_sizes.get(panel_id, self.size)
 
+        from app.core.telemetry import usage_context
+
         async with self._render_sem:
-            result = await self.backend.generate(
-                prompt=prompt,
-                negative_prompt=neg,
-                size=target_size,
-                reference_images=reference_images or None,
-                context=context,
-                model=self.image_model or None,
-            )
+            with usage_context(
+                project_id=self.episode.project_id,
+                episode_id=self.episode.id,
+                generation_run_id=self.run_id,
+                operation="image_generate",
+                panel_id=panel_id,
+            ):
+                result = await self.backend.generate(
+                    prompt=prompt,
+                    negative_prompt=neg,
+                    size=target_size,
+                    reference_images=reference_images or None,
+                    context=context,
+                    model=self.image_model or None,
+                )
             object_key = storage_service.generate_object_key(f"generated/{self.episode.id}", f"{panel_id}.png")
             storage_service.upload_file(settings.MINIO_BUCKET, object_key, result.image_data, content_type="image/png")
 

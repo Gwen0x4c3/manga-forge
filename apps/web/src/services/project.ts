@@ -41,6 +41,9 @@ export interface Project {
         [key: string]: unknown
     } | null
     long_summary?: string
+    cover_image_path?: string | null
+    episode_count?: number
+    understood_count?: number
     created_at: string
     updated_at: string
 }
@@ -391,7 +394,20 @@ export interface GenerationContext {
         description: string
         visual_tags?: string[]
     }>
+    context_budget?: {
+        profile: 'quality' | 'balanced' | 'cost' | string
+        profile_label: string
+        budget_tokens: number
+        estimated_tokens_before: number
+        estimated_tokens_after: number
+        utilization_pct: number
+        trimmed: boolean
+        trim_actions: string[]
+        section_tokens: Record<string, number>
+    }
 }
+
+export type ContextProfileKey = 'quality' | 'balanced' | 'cost'
 
 export interface GenerationRun {
     id: string
@@ -764,9 +780,19 @@ export const memoryService = {
             null,
             { params: { query, top_k: topK } },
         ),
-    getGenerationContext: (projectId: string, branchId: string, baseEpisodeNumber: number) =>
+    getGenerationContext: (
+        projectId: string,
+        branchId: string,
+        baseEpisodeNumber: number,
+        options?: { custom_instructions?: string; context_profile?: ContextProfileKey },
+    ) =>
         api.get<GenerationContext>(`/projects/${projectId}/memory/context`, {
-            params: { branch_id: branchId, base_episode_number: baseEpisodeNumber },
+            params: {
+                branch_id: branchId,
+                base_episode_number: baseEpisodeNumber,
+                custom_instructions: options?.custom_instructions || undefined,
+                context_profile: options?.context_profile || undefined,
+            },
         }),
     getGraph: (projectId: string, branchId?: string) =>
         api.get<StoryGraphResponse>(`/projects/${projectId}/memory/graph`, {
@@ -798,6 +824,7 @@ export const generationService = {
         base_episode_number: number
         tone?: string
         custom_instructions?: string
+        context_profile?: ContextProfileKey
     }) => api.post<{ task_id: string; episode_id: string; status: string }>('/generation/script', data),
     updateStoryboard: (episodeId: string, storyboard: Storyboard) =>
         api.put<{ id: string; episode_id: string; storyboard: Storyboard }>(
@@ -859,6 +886,7 @@ export const generationService = {
         image_backend?: string
         image_model?: string
         image_size?: string
+        context_profile?: ContextProfileKey
     }) => api.post<{ episode_id: string; episode_number: number; task_id: string; status: string }>('/generation/continue', data),
     getRun: (runId: string) => api.get<GenerationRun>(`/generation/runs/${runId}`),
     listEpisodeRuns: (episodeId: string) => api.get<{ items: GenerationRun[] }>(`/generation/episodes/${episodeId}/runs`),
@@ -900,4 +928,120 @@ export const assetImageService = {
         data: { episode_id: string; page_index: number; bbox: [number, number, number, number]; kind?: string },
     ) => api.post<AssetImage>(`/projects/assets/${assetId}/crop-from-page`, data),
     remove: (imageId: string) => api.delete(`/projects/asset-images/${imageId}`),
+}
+
+export interface UsageTotals {
+    total_calls: number
+    llm_calls: number
+    embedding_calls: number
+    image_calls: number
+    failed_calls: number
+    input_tokens: number
+    output_tokens: number
+    cache_read_tokens: number
+    cache_write_tokens: number
+    total_tokens: number
+    cache_hit_rate: number
+    total_images: number
+    total_duration_ms: number
+    avg_llm_duration_ms: number
+    avg_image_duration_ms: number
+}
+
+export interface UsageByModelItem {
+    kind: string
+    provider: string
+    model: string
+    calls: number
+    failed_calls: number
+    input_tokens: number
+    output_tokens: number
+    cache_read_tokens: number
+    cache_write_tokens: number
+    total_tokens: number
+    cache_hit_rate: number
+    image_count: number
+    avg_duration_ms: number
+    total_duration_ms: number
+}
+
+export interface UsageByOperationItem {
+    operation: string
+    kind: string
+    calls: number
+    input_tokens: number
+    output_tokens: number
+    cache_read_tokens: number
+    cache_write_tokens: number
+    total_tokens: number
+    cache_hit_rate: number
+    image_count: number
+    avg_duration_ms: number
+}
+
+export interface UsageDailyItem {
+    date: string
+    llm_calls: number
+    image_calls: number
+    input_tokens: number
+    output_tokens: number
+    cache_read_tokens: number
+    cache_write_tokens: number
+    total_tokens: number
+    image_count: number
+}
+
+export interface UsageSummaryResponse {
+    totals: UsageTotals
+    by_model: UsageByModelItem[]
+    by_operation: UsageByOperationItem[]
+    daily: UsageDailyItem[]
+}
+
+export interface UsageRecordItem {
+    id: string
+    project_id?: string | null
+    project_title?: string | null
+    episode_id?: string | null
+    episode_label?: string | null
+    generation_run_id?: string | null
+    kind: 'llm' | 'embedding' | 'image' | string
+    operation: string
+    provider: string
+    model: string
+    input_tokens: number
+    output_tokens: number
+    cache_read_tokens: number
+    cache_write_tokens: number
+    total_tokens: number
+    cache_hit_rate: number
+    image_count: number
+    image_size?: string | null
+    duration_ms: number
+    status: string
+    error?: string | null
+    meta?: Record<string, unknown> | null
+    created_at: string
+}
+
+export interface UsageRecordListResponse {
+    items: UsageRecordItem[]
+    total: number
+    page: number
+    page_size: number
+}
+
+export const usageService = {
+    summary: (params?: { project_id?: string; episode_id?: string; days?: number }) =>
+        api.get<UsageSummaryResponse>('/usage/summary', { params }),
+    records: (params?: {
+        project_id?: string
+        episode_id?: string
+        kind?: string
+        model?: string
+        operation?: string
+        status?: string
+        page?: number
+        page_size?: number
+    }) => api.get<UsageRecordListResponse>('/usage/records', { params }),
 }

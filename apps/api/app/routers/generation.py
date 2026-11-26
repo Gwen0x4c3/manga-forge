@@ -113,6 +113,7 @@ async def continue_from_episode(request: ContinueFromEpisodeRequest, db: AsyncSe
             "base_episode_number": float(request.base_episode_number),
             "image_backend": request.image_backend or settings.IMAGE_BACKEND,
             "image_size": request.image_size,
+            "context_profile": request.context_profile or settings.DEFAULT_CONTEXT_PROFILE,
         },
     )
     try:
@@ -127,6 +128,7 @@ async def continue_from_episode(request: ContinueFromEpisodeRequest, db: AsyncSe
             request.image_backend,
             request.image_model,
             request.image_size,
+            request.context_profile,
         )
     except Exception as exc:
         await generation_service.update_generation_run(db, str(run.id), "failed", error=str(exc))
@@ -237,7 +239,11 @@ async def trigger_script_generation(request: ScriptGenerateRequest, db: AsyncSes
         stage="script",
         backend="openai",
         model=settings.OPENAI_MODEL,
-        params={"tone": request.tone, "base_episode_number": float(request.base_episode_number)},
+        params={
+            "tone": request.tone,
+            "base_episode_number": float(request.base_episode_number),
+            "context_profile": request.context_profile or settings.DEFAULT_CONTEXT_PROFILE,
+        },
     )
     try:
         task = _dispatch_task(
@@ -248,6 +254,7 @@ async def trigger_script_generation(request: ScriptGenerateRequest, db: AsyncSes
             float(request.base_episode_number),
             request.tone,
             request.custom_instructions,
+            request.context_profile,
         )
     except Exception as exc:
         await generation_service.update_generation_run(db, str(run.id), "failed", error=str(exc))
@@ -464,8 +471,17 @@ async def inpaint_single_panel(
     )
     await generation_service.update_generation_run(db, run.id, "running")
     try:
+        from app.core.telemetry import usage_context
+
         backend = get_image_backend(backend_name=request.image_backend, model=request.image_model)
-        result = await backend.inpaint(source_bytes, mask_bytes, request.prompt)
+        with usage_context(
+            project_id=episode.project_id,
+            episode_id=episode.id,
+            generation_run_id=run.id,
+            operation="image_inpaint",
+            panel_id=panel_id,
+        ):
+            result = await backend.inpaint(source_bytes, mask_bytes, request.prompt)
         object_key = storage_service.generate_object_key(f"generated/{episode.id}", f"{panel_id}_inpaint.png")
         storage_service.upload_file(settings.MINIO_BUCKET, object_key, result.image_data, content_type="image/png")
         gen_image = await generation_service.save_generated_image(

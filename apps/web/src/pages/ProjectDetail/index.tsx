@@ -1,8 +1,6 @@
 import { useState, useRef, useMemo } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import {
-    Tabs,
-    TabPane,
     Spin,
     Button,
     Table,
@@ -55,6 +53,7 @@ import type {
     AssetClusterItem,
 } from '@/services/project'
 import StoryAtlas from '@/components/StoryAtlas'
+import UsagePanel from '@/components/UsagePanel'
 
 const STATUS_META: Record<string, { label: string; color: TagColor }> = {
     imported: { label: '已导入 · 待理解', color: 'blue' },
@@ -122,9 +121,12 @@ function splitPitClues(desc?: string): { summary: string; clues: string[] } {
 export default function ProjectDetail() {
     const { id: projectId } = useParams<{ id: string }>()
     const navigate = useNavigate()
+    const [searchParams] = useSearchParams()
     const queryClient = useQueryClient()
 
-    const [activeTab, setActiveTab] = useState('episodes')
+    const rawView = searchParams.get('view') || 'episodes'
+    const activeView = rawView === 'atlas' ? 'characters' : rawView
+    const [pitViewMode, setPitViewMode] = useState<'timeline' | 'table'>('timeline')
     const [showImport, setShowImport] = useState(false)
     const [showContinue, setShowContinue] = useState(false)
     const [showCreatePit, setShowCreatePit] = useState(false)
@@ -146,6 +148,7 @@ export default function ProjectDetail() {
     const [continueForm, setContinueForm] = useState({
         base_episode_id: '',
         tone: 'main',
+        context_profile: 'quality' as 'quality' | 'balanced' | 'cost',
         custom_instructions: '',
         title: '',
         image_backend: undefined as string | undefined,
@@ -355,6 +358,7 @@ export default function ProjectDetail() {
                 branch_id: baseEpisode.branch_id,
                 base_episode_number: baseEpisode.number,
                 tone: continueForm.tone,
+                context_profile: continueForm.context_profile,
                 custom_instructions: continueForm.custom_instructions || undefined,
                 title: continueForm.title || undefined,
                 image_backend: continueForm.image_backend,
@@ -583,7 +587,9 @@ export default function ProjectDetail() {
             key: 'label',
             width: 96,
             render: (text: string, record: Episode) => (
-                <span className="font-bold text-slate-900">第 {text || record.number} 话</span>
+                <span className="font-mono font-semibold text-[var(--text-primary)]">
+                    第 {text || record.number} 话
+                </span>
             ),
         },
         {
@@ -592,7 +598,7 @@ export default function ProjectDetail() {
             key: 'title',
             render: (text: string, record: Episode) => (
                 <span
-                    className="font-medium text-slate-800 hover:text-indigo-600 cursor-pointer"
+                    className="font-medium text-[var(--text-primary)] hover:text-[var(--accent)] cursor-pointer transition-colors"
                     onClick={() => navigate(`/projects/${projectId}/episodes/${record.id}`)}
                 >
                     {text || '（未命名章节）'}
@@ -616,7 +622,7 @@ export default function ProjectDetail() {
             width: 110,
             render: (text: string) => (
                 <Tag color={text === 'generated' ? 'violet' : 'grey'}>
-                    {text === 'generated' ? 'AI 续画' : text === 'import_mangadex' ? 'MangaDex' : '原作导入'}
+                    {text === 'generated' ? '续画成稿' : text === 'import_mangadex' ? 'MangaDex' : '原作导入'}
                 </Tag>
             ),
         },
@@ -635,14 +641,16 @@ export default function ProjectDetail() {
             dataIndex: 'updated_at',
             key: 'updated_at',
             width: 120,
-            render: (text: string) => <span className="text-xs text-slate-500">{new Date(text).toLocaleDateString()}</span>,
+            render: (text: string) => (
+                <span className="text-[13px] font-mono text-[var(--text-muted)]">{new Date(text).toLocaleDateString()}</span>
+            ),
         },
         {
             title: '操作',
             key: 'actions',
-            width: 310,
+            width: 350,
             render: (_: unknown, record: Episode) => (
-                <div className="flex flex-wrap gap-1.5">
+                <div className="flex flex-nowrap items-center gap-1.5 whitespace-nowrap">
                     <Button size="small" onClick={() => navigate(`/projects/${projectId}/episodes/${record.id}`)}>
                         阅读与解析
                     </Button>
@@ -717,16 +725,16 @@ export default function ProjectDetail() {
                 const { summary, clues } = splitPitClues(record.description || record.title)
                 return (
                     <div className="space-y-1.5 py-1">
-                        <div className="font-semibold text-slate-900 text-sm">{record.title}</div>
+                        <div className="font-semibold text-[var(--text-primary)] text-sm">{record.title}</div>
                         {summary && summary !== record.title && (
-                            <div className="text-xs text-slate-600 leading-relaxed">{summary}</div>
+                            <div className="text-xs text-[var(--text-secondary)] leading-relaxed">{summary}</div>
                         )}
                         {clues.length > 0 && (
                             <div className="space-y-1 pt-1">
                                 {clues.map((c, idx) => (
                                     <div
                                         key={idx}
-                                        className="text-xs bg-amber-50 border border-amber-200 text-amber-900 rounded px-2 py-1"
+                                        className="text-xs bg-[var(--bg-elevated)] border border-[var(--border)] text-[var(--text-secondary)] rounded-[4px] px-2 py-1"
                                     >
                                         {c}
                                     </div>
@@ -755,9 +763,9 @@ export default function ProjectDetail() {
             render: (introId: string, record: Pit) => (
                 <div className="space-y-1 text-xs">
                     <div>
-                        <span className="text-slate-400">埋设：</span>
+                        <span className="text-[var(--text-muted)]">埋设：</span>
                         <span
-                            className="text-indigo-600 hover:underline cursor-pointer"
+                            className="text-[var(--accent)] hover:underline cursor-pointer"
                             onClick={() => navigate(`/projects/${projectId}/episodes/${introId}`)}
                         >
                             {epLabelById[introId] || '查看章节'}
@@ -765,9 +773,9 @@ export default function ProjectDetail() {
                     </div>
                     {record.resolved_episode_id && (
                         <div>
-                            <span className="text-slate-400">回收：</span>
+                            <span className="text-[var(--text-muted)]">回收：</span>
                             <span
-                                className="text-emerald-600 hover:underline cursor-pointer"
+                                className="text-emerald-500 hover:underline cursor-pointer"
                                 onClick={() => navigate(`/projects/${projectId}/episodes/${record.resolved_episode_id}`)}
                             >
                                 {epLabelById[record.resolved_episode_id] || '查看章节'}
@@ -782,7 +790,7 @@ export default function ProjectDetail() {
             dataIndex: 'trigger_hint',
             key: 'trigger_hint',
             width: 220,
-            render: (text: string) => <span className="text-xs text-slate-500">{text || '-'}</span>,
+            render: (text: string) => <span className="text-xs text-[var(--text-muted)]">{text || '-'}</span>,
         },
         {
             title: '操作',
@@ -866,227 +874,252 @@ export default function ProjectDetail() {
     ]
 
     const assets = assetsData?.items || []
+    const isFullBleedAtlas =
+        activeView === 'characters' ||
+        activeView === 'qa' ||
+        (activeView === 'pits' && pitViewMode === 'timeline')
 
     return (
-        <div className="space-y-6">
-            {/* Luminous Bright Pop Editorial Project Hero */}
-            <div className="rounded-3xl pop-hero-surface p-6 md:p-7 space-y-5">
-                <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
-                    <div className="space-y-2">
-                        <div className="flex flex-wrap items-center gap-2.5">
-                            <h1 className="text-2xl md:text-[28px] font-black tracking-tight text-slate-900 m-0">
-                                {project.title}
-                            </h1>
-                            <span className="px-2.5 py-0.5 rounded-full bg-blue-50 border border-blue-200/80 text-[11px] font-bold text-blue-700">
-                                {project.language.toUpperCase()}
+        <div className={isFullBleedAtlas ? 'h-full w-full flex flex-col overflow-hidden' : 'space-y-6'}>
+            {isFullBleedAtlas ? (
+                <div className="flex-1 min-h-0 flex flex-col">
+                    {activeView === 'pits' && (
+                        <div className="h-9 shrink-0 px-4 border-b border-[var(--border)] bg-[var(--bg-panel)] flex items-center justify-between text-xs">
+                            <span className="text-[var(--text-muted)]">
+                                伏笔追踪时间线 · {pitsData?.total || 0} 条{pitStatusFilter === 'open' ? '待回收' : ''}
                             </span>
-                            {storyBible?.art_style && (
-                                <span className="px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200/80 text-[11px] font-bold text-emerald-700">
-                                    ✦ 画风已锚定
-                                </span>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setPitViewMode('table')}
+                                    className="px-2 py-0.5 rounded-[4px] border border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-elevated)] cursor-pointer transition-colors"
+                                >
+                                    管理列表
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setShowCreatePit(true)}
+                                    className="px-2 py-0.5 rounded-[4px] bg-[var(--accent)] text-white font-medium hover:opacity-90 cursor-pointer transition-opacity"
+                                >
+                                    + 手动埋设伏笔
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                    <div className="flex-1 min-h-0 flex flex-col">
+                        {projectId && (
+                            <StoryAtlas
+                                projectId={projectId}
+                                defaultBranchId={selectedBranch}
+                                mode={activeView as 'characters' | 'pits' | 'qa'}
+                            />
+                        )}
+                    </div>
+                </div>
+            ) : (
+                <>
+                    {/* Compact Editorial Masthead & Inline Summary Strip */}
+                    <header className="pb-5 border-b border-[var(--border)] space-y-3">
+                        <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-4">
+                            <div className="space-y-2 min-w-0">
+                                <div className="flex flex-wrap items-center gap-2.5">
+                                    <h1 className="font-editorial text-2xl font-bold tracking-tight text-[var(--text-primary)] m-0">
+                                        {project.title}
+                                    </h1>
+                                    <span className="px-2 py-0.5 rounded-[4px] border border-[var(--border)] bg-[var(--bg-panel)] text-xs font-mono uppercase text-[var(--text-secondary)]">
+                                        {project.language}
+                                    </span>
+                                    {storyBible?.art_style && (
+                                        <span className="px-2 py-0.5 rounded-[4px] border border-[var(--border)] bg-[var(--bg-panel)] text-xs font-medium text-[var(--text-secondary)]">
+                                            画风已锚定
+                                        </span>
+                                    )}
+                                </div>
+                                <p className="text-sm text-[var(--text-secondary)] m-0 max-w-3xl leading-relaxed">
+                                    {project.description || '导入连载章节并执行多模态理解后，系统将自动提取人物/道具/场景设定、主线脉络与伏笔。'}
+                                </p>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2 shrink-0">
+                                <Button
+                                    icon={<IconLink />}
+                                    onClick={() => navigate(`/projects/${projectId}/imports/mangadex`)}
+                                >
+                                    MangaDex 抓取
+                                </Button>
+                                <Button
+                                    icon={<IconPlus />}
+                                    onClick={() => setShowImport(true)}
+                                >
+                                    导入章节
+                                </Button>
+                                <Button
+                                    icon={<IconBolt />}
+                                    loading={batchUnderstandMutation.isPending}
+                                    onClick={() => batchUnderstandMutation.mutate(false)}
+                                >
+                                    一键理解全书{unanalyzedCount > 0 ? ` (${unanalyzedCount})` : ''}
+                                </Button>
+                                <Button
+                                    icon={<IconForward />}
+                                    theme="solid"
+                                    disabled={episodes.length === 0}
+                                    onClick={() => openContinueModal()}
+                                >
+                                    智能续画下一话
+                                </Button>
+                            </div>
+                        </div>
+
+                        {/* Inline Monospace Summary Strip (No KPI Card Grid) */}
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] text-[var(--text-secondary)] font-mono pt-1">
+                            <span>
+                                连载 <strong className="text-[var(--text-primary)]">{episodesData?.total || 0}</strong> 话（已理解 {understoodCount}）
+                            </span>
+                            <span className="text-[var(--border)]">/</span>
+                            <span>
+                                资产 <strong className="text-[var(--text-primary)]">{assetsData?.total || 0}</strong> 项
+                            </span>
+                            <span className="text-[var(--border)]">/</span>
+                            <span>
+                                伏笔 <strong className="text-[var(--accent)]">{pitsData?.total || 0}</strong> 条
+                            </span>
+                            {mainPlot?.current_arc && (
+                                <>
+                                    <span className="text-[var(--border)]">/</span>
+                                    <span className="font-sans text-[var(--text-primary)] truncate max-w-lg">
+                                        当前篇章：{mainPlot.current_arc}
+                                    </span>
+                                </>
                             )}
                         </div>
-                        <p className="text-xs md:text-sm text-slate-600 m-0 max-w-3xl leading-relaxed">
-                            {project.description || '导入连载章节并执行多模态理解后，系统将自动提取人物/道具/场景设定、主线脉络与伏笔。'}
-                        </p>
-                    </div>
+                    </header>
 
-                    <div className="flex flex-wrap items-center gap-2">
-                        <Button
-                            icon={<IconLink />}
-                            theme="light"
-                            onClick={() => navigate(`/projects/${projectId}/imports/mangadex`)}
-                        >
-                            MangaDex 抓取
-                        </Button>
-                        <Button
-                            icon={<IconPlus />}
-                            theme="light"
-                            onClick={() => setShowImport(true)}
-                        >
-                            导入章节
-                        </Button>
-                        <Button
-                            icon={<IconBolt />}
-                            theme="solid"
-                            loading={batchUnderstandMutation.isPending}
-                            onClick={() => batchUnderstandMutation.mutate(false)}
-                        >
-                            一键理解全书{unanalyzedCount > 0 ? ` (${unanalyzedCount})` : ''}
-                        </Button>
-                        <Button
-                            icon={<IconForward />}
-                            theme="solid"
-                            className="brand-gradient-btn"
-                            disabled={episodes.length === 0}
-                            onClick={() => openContinueModal()}
-                        >
-                            智能续画下一话
-                        </Button>
-                    </div>
-                </div>
-
-                {/* Energetic Color-Accented KPI Cards */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-2">
-                    <div
-                        className="rounded-2xl bg-gradient-to-br from-blue-50/80 to-white hover:border-blue-300 border border-blue-100 px-4 py-3.5 cursor-pointer transition-all hover:-translate-y-0.5"
-                        onClick={() => setActiveTab('episodes')}
-                    >
-                        <div className="text-[11px] font-bold text-blue-600 uppercase tracking-wide">连载章节</div>
-                        <div className="text-2xl font-black text-slate-900 mt-0.5">
-                            {episodesData?.total || 0}{' '}
-                            <span className="text-xs font-semibold text-slate-500">话 · 已理解 {understoodCount}</span>
-                        </div>
-                    </div>
-                    <div
-                        className="rounded-2xl bg-gradient-to-br from-violet-50/80 to-white hover:border-violet-300 border border-violet-100 px-4 py-3.5 cursor-pointer transition-all hover:-translate-y-0.5"
-                        onClick={() => setActiveTab('story')}
-                    >
-                        <div className="text-[11px] font-bold text-violet-600 uppercase tracking-wide">当前主线篇章</div>
-                        <div className="text-sm font-extrabold text-slate-900 mt-1.5 line-clamp-1">
-                            {mainPlot?.current_arc || (project.long_summary ? '已生成长程摘要' : '待理解提炼')}
-                        </div>
-                    </div>
-                    <div
-                        className="rounded-2xl bg-gradient-to-br from-emerald-50/80 to-white hover:border-emerald-300 border border-emerald-100 px-4 py-3.5 cursor-pointer transition-all hover:-translate-y-0.5"
-                        onClick={() => setActiveTab('assets')}
-                    >
-                        <div className="text-[11px] font-bold text-emerald-600 uppercase tracking-wide">视觉设定资产</div>
-                        <div className="text-2xl font-black text-slate-900 mt-0.5">
-                            {assetsData?.total || 0}{' '}
-                            <span className="text-xs font-semibold text-slate-500">项（角色/道具/场景）</span>
-                        </div>
-                    </div>
-                    <div
-                        className="rounded-2xl bg-gradient-to-br from-orange-50/90 to-white hover:border-orange-300 border border-orange-100 px-4 py-3.5 cursor-pointer transition-all hover:-translate-y-0.5"
-                        onClick={() => setActiveTab('atlas')}
-                    >
-                        <div className="text-[11px] font-bold text-[#ff5a36] uppercase tracking-wide">活跃伏笔悬念</div>
-                        <div className="text-2xl font-black text-[#ff5a36] mt-0.5">
-                            {pitsData?.total || 0}{' '}
-                            <span className="text-xs font-semibold text-slate-500">
-                                条 ({pitStatusFilter === 'open' ? '待回收' : '当前筛选'})
-                            </span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            {activeBatchNotice && (
-                <Banner
-                    type="info"
-                    description={activeBatchNotice}
-                    onClose={() => setBatchTaskNotice(null)}
-                />
-            )}
-
-            <div className="studio-card p-6">
-                <Tabs activeKey={activeTab} onChange={(k) => setActiveTab(k)}>
-                    {/* TAB 1: EPISODES */}
-                    <TabPane tab={`连载章节 (${episodesData?.total || 0})`} itemKey="episodes">
-                        <div className="flex flex-wrap justify-between items-center gap-3 mb-4 pt-2">
-                            <div className="flex items-center gap-2">
-                                <span className="text-sm text-slate-600 font-medium">世界线分支：</span>
-                                <Select
-                                    value={selectedBranch || ''}
-                                    onChange={(v) => {
-                                        setSelectedBranch(v ? String(v) : undefined)
-                                        setEpisodePage(1)
-                                    }}
-                                    style={{ width: 180 }}
-                                >
-                                    <Select.Option value="">全部分支</Select.Option>
-                                    {branches?.map((b) => (
-                                        <Select.Option key={b.id} value={b.id}>
-                                            {b.name} {b.is_default ? '(默认)' : ''}
-                                        </Select.Option>
-                                    ))}
-                                </Select>
-                            </div>
-                            <div className="flex items-center gap-2 text-xs text-slate-500">
-                                {episodes.length > 0 && (
-                                    <Button
-                                        size="small"
-                                        icon={<IconRefresh />}
-                                        onClick={() => {
-                                            Modal.confirm({
-                                                title: '重新按序理解全部章节？',
-                                                content: '将从第 1 话起按顺序重新分析本分支所有章节，刷新人物档案、主线与伏笔。',
-                                                onOk: () => batchUnderstandMutation.mutate(true),
-                                            })
-                                        }}
-                                    >
-                                        全分支重跑理解
-                                    </Button>
-                                )}
-                            </div>
-                        </div>
-
-                        <Table
-                            columns={episodeColumns}
-                            dataSource={episodes}
-                            loading={episodesLoading}
-                            rowKey="id"
-                            pagination={{
-                                currentPage: episodePage,
-                                pageSize: episodePageSize,
-                                total: episodesData?.total || 0,
-                                showTotal: true,
-                                onChange: (cp: number, ps: number) => {
-                                    setEpisodePage(cp)
-                                    setEpisodePageSize(ps)
-                                },
-                            }}
+                    {activeBatchNotice && (
+                        <Banner
+                            type="info"
+                            description={activeBatchNotice}
+                            onClose={() => setBatchTaskNotice(null)}
                         />
-                    </TabPane>
+                    )}
 
-                    {/* TAB 2: VISUAL STORY ATLAS */}
-                    <TabPane tab="故事宇宙图谱" itemKey="atlas">
-                        {projectId && <StoryAtlas projectId={projectId} defaultBranchId={selectedBranch} />}
-                    </TabPane>
+                    {/* VIEW: EPISODES */}
+                    {activeView === 'episodes' && (
+                        <section className="space-y-4">
+                            <div className="flex flex-wrap justify-between items-center gap-3">
+                                <div className="flex items-center gap-2">
+                                    <span className="text-[13px] text-[var(--text-secondary)] font-medium">世界线分支：</span>
+                                    <Select
+                                        size="small"
+                                        value={selectedBranch || ''}
+                                        onChange={(v) => {
+                                            setSelectedBranch(v ? String(v) : undefined)
+                                            setEpisodePage(1)
+                                        }}
+                                        style={{ width: 180 }}
+                                    >
+                                        <Select.Option value="">全部分支</Select.Option>
+                                        {branches?.map((b) => (
+                                            <Select.Option key={b.id} value={b.id}>
+                                                {b.name} {b.is_default ? '(默认)' : ''}
+                                            </Select.Option>
+                                        ))}
+                                    </Select>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    {episodes.length > 0 && (
+                                        <Button
+                                            size="small"
+                                            icon={<IconRefresh />}
+                                            onClick={() => {
+                                                Modal.confirm({
+                                                    title: '重新按序理解全部章节？',
+                                                    content: '将从第 1 话起按顺序重新分析本分支所有章节，刷新人物档案、主线与伏笔。',
+                                                    onOk: () => batchUnderstandMutation.mutate(true),
+                                                })
+                                            }}
+                                        >
+                                            全分支重跑理解
+                                        </Button>
+                                    )}
+                                </div>
+                            </div>
 
-                    {/* TAB 3: STORY BIBLE & MAIN PLOTLINE */}
-                    <TabPane tab="剧情主线与世界观" itemKey="story">
-                        <div className="space-y-6 pt-3">
-                            {/* Main Plotline Dashboard */}
-                            <div className="rounded-2xl bg-gradient-to-br from-indigo-50/90 via-white to-violet-50/70 border border-indigo-100 p-5 space-y-4">
-                                <div className="flex items-center justify-between">
+                            <div className="rounded-[6px] border border-[var(--border)] bg-[var(--bg-panel)] overflow-hidden">
+                                <Table
+                                    columns={episodeColumns}
+                                    dataSource={episodes}
+                                    loading={episodesLoading}
+                                    rowKey="id"
+                                    pagination={{
+                                        currentPage: episodePage,
+                                        pageSize: episodePageSize,
+                                        total: episodesData?.total || 0,
+                                        showTotal: true,
+                                        onChange: (cp: number, ps: number) => {
+                                            setEpisodePage(cp)
+                                            setEpisodePageSize(ps)
+                                        },
+                                    }}
+                                />
+                            </div>
+                        </section>
+                    )}
+
+                    {/* VIEW: STORY BIBLE & MAIN PLOTLINE */}
+                    {activeView === 'story' && (
+                        <section className="space-y-8 max-w-5xl">
+                            {/* Main Plotline */}
+                            <div className="space-y-4">
+                                <div className="flex items-center justify-between pb-2 border-b border-[var(--border)]">
                                     <div>
-                                        <h3 className="text-base font-bold text-indigo-950 m-0">主线核心脉络与篇章追踪</h3>
-                                        <p className="text-xs text-slate-500 m-0 mt-0.5">
-                                            由多模态理解引擎随章节推进自动提炼，并在续画分镜时作为最高优先级叙事纲领注入 LLM
+                                        <h2 className="font-editorial text-lg font-bold text-[var(--text-primary)] m-0">
+                                            主线核心脉络与篇章追踪
+                                        </h2>
+                                        <p className="text-xs text-[var(--text-muted)] m-0 mt-0.5">
+                                            由多模态理解引擎随章节推进自动提炼，续画分镜时作为最高优先级叙事纲领注入
                                         </p>
                                     </div>
                                     {storyBible?.last_updated_episode && (
-                                        <Tag color="indigo">已同步至第 {storyBible.last_updated_episode} 话</Tag>
+                                        <span className="px-2 py-0.5 rounded-[4px] border border-[var(--border)] bg-[var(--bg-panel)] text-xs font-mono text-[var(--text-secondary)]">
+                                            同步至第 {storyBible.last_updated_episode} 话
+                                        </span>
                                     )}
                                 </div>
 
                                 {!mainPlot?.core_conflict && !mainPlot?.current_arc ? (
-                                    <Empty description="尚未提炼主线脉络。请先导入章节并点击顶部「一键按序理解全书」。" />
+                                    <Empty description="尚未提炼主线脉络。请先导入章节并执行「一键理解全书」。" />
                                 ) : (
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                        <div className="bg-white rounded-xl p-4 border border-indigo-100/80">
-                                            <div className="text-xs font-semibold text-indigo-600 mb-1">全书核心矛盾 / 主线悬念</div>
-                                            <div className="text-sm text-slate-800 leading-relaxed">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-px bg-[var(--border)] rounded-[6px] overflow-hidden border border-[var(--border)]">
+                                        <div className="bg-[var(--bg-panel)] p-4 space-y-1.5">
+                                            <div className="text-[11px] font-mono uppercase tracking-wider text-[var(--accent)]">
+                                                Core Conflict · 全书核心矛盾
+                                            </div>
+                                            <div className="text-sm text-[var(--text-primary)] leading-relaxed">
                                                 {mainPlot?.core_conflict || '-'}
                                             </div>
                                         </div>
-                                        <div className="bg-white rounded-xl p-4 border border-indigo-100/80">
-                                            <div className="text-xs font-semibold text-violet-600 mb-1">当前所在篇章 (Current Arc)</div>
-                                            <div className="text-sm text-slate-800 leading-relaxed">
+                                        <div className="bg-[var(--bg-panel)] p-4 space-y-1.5">
+                                            <div className="text-[11px] font-mono uppercase tracking-wider text-[var(--text-muted)]">
+                                                Current Arc · 当前所在篇章
+                                            </div>
+                                            <div className="text-sm text-[var(--text-primary)] leading-relaxed">
                                                 {mainPlot?.current_arc || '-'}
                                             </div>
                                         </div>
-                                        <div className="bg-white rounded-xl p-4 border border-indigo-100/80">
-                                            <div className="text-xs font-semibold text-emerald-600 mb-1">主角当前目标与动机</div>
-                                            <div className="text-sm text-slate-800 leading-relaxed">
+                                        <div className="bg-[var(--bg-panel)] p-4 space-y-1.5">
+                                            <div className="text-[11px] font-mono uppercase tracking-wider text-[var(--text-muted)]">
+                                                Protagonist Goal · 主角当前目标
+                                            </div>
+                                            <div className="text-sm text-[var(--text-primary)] leading-relaxed">
                                                 {mainPlot?.protagonist_goal || '-'}
                                             </div>
                                         </div>
-                                        <div className="bg-white rounded-xl p-4 border border-amber-200/80">
-                                            <div className="text-xs font-semibold text-amber-600 mb-1">下一话衔接悬念钩子 (Next Hook)</div>
-                                            <div className="text-sm text-slate-800 leading-relaxed">
+                                        <div className="bg-[var(--bg-panel)] p-4 space-y-1.5">
+                                            <div className="text-[11px] font-mono uppercase tracking-wider text-[var(--text-muted)]">
+                                                Next Hook · 下一话衔接钩子
+                                            </div>
+                                            <div className="text-sm text-[var(--text-primary)] leading-relaxed">
                                                 {mainPlot?.next_hook || mainPlot?.arc_progress || '-'}
                                             </div>
                                         </div>
@@ -1094,35 +1127,44 @@ export default function ProjectDetail() {
                                 )}
 
                                 {storyBible?.art_style && (
-                                    <div className="bg-white/90 rounded-xl px-4 py-3 border border-slate-200 text-xs text-slate-700">
-                                        <span className="font-semibold text-slate-900">原作画风特征锚点：</span>
+                                    <div className="rounded-[6px] bg-[var(--bg-panel)] px-4 py-3 border border-[var(--border)] text-xs text-[var(--text-secondary)]">
+                                        <span className="font-semibold text-[var(--text-primary)]">原作画风特征锚点：</span>
                                         {storyBible.art_style}
                                     </div>
                                 )}
                             </div>
 
-                            {/* Core Foundational Rules + Auto-discovered World Rules */}
+                            {/* Core Foundational Rules */}
                             {coreRules.length > 0 && (
-                                <div className="space-y-2">
-                                    <h4 className="text-sm font-bold text-amber-900 m-0">
+                                <div className="space-y-2.5">
+                                    <h3 className="text-xs font-mono uppercase tracking-wider text-[var(--text-muted)] m-0">
                                         奠基核心设定法则 · Core Rules ({coreRules.length})
-                                    </h4>
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                                    </h3>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                                         {coreRules.map((rule, idx) => (
-                                            <div key={idx} className="rounded-lg bg-amber-50/70 border border-amber-200 px-3.5 py-2.5 text-xs text-amber-950">
-                                                ★ {rule}
+                                            <div
+                                                key={idx}
+                                                className="rounded-[4px] bg-[var(--bg-panel)] border-l-2 border-l-[var(--accent)] border border-[var(--border)] px-3.5 py-2.5 text-xs text-[var(--text-primary)] leading-relaxed"
+                                            >
+                                                {rule}
                                             </div>
                                         ))}
                                     </div>
                                 </div>
                             )}
 
+                            {/* Auto-discovered World Rules */}
                             {discoveredRules.length > 0 && (
-                                <div className="space-y-2">
-                                    <h4 className="text-sm font-bold text-slate-900 m-0">自动提炼的世界观与设定法则 ({discoveredRules.length})</h4>
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                                <div className="space-y-2.5">
+                                    <h3 className="text-xs font-mono uppercase tracking-wider text-[var(--text-muted)] m-0">
+                                        自动提炼的世界观与设定法则 ({discoveredRules.length})
+                                    </h3>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                                         {discoveredRules.map((rule, idx) => (
-                                            <div key={idx} className="rounded-lg bg-slate-50 border border-slate-200 px-3.5 py-2.5 text-xs text-slate-700">
+                                            <div
+                                                key={idx}
+                                                className="rounded-[4px] bg-[var(--bg-panel)] border border-[var(--border)] px-3.5 py-2 text-xs text-[var(--text-secondary)] leading-relaxed"
+                                            >
                                                 • {rule}
                                             </div>
                                         ))}
@@ -1130,18 +1172,19 @@ export default function ProjectDetail() {
                                 </div>
                             )}
 
+                            {/* Arc Summaries */}
                             {arcSummaries.length > 0 && (
-                                <div className="space-y-2">
-                                    <h4 className="text-sm font-bold text-slate-900 m-0">
-                                        层级篇章压缩摘要 ({arcSummaries.length} 个篇章块)
-                                    </h4>
-                                    <div className="space-y-2">
+                                <div className="space-y-2.5">
+                                    <h3 className="text-xs font-mono uppercase tracking-wider text-[var(--text-muted)] m-0">
+                                        层级篇章压缩摘要 ({arcSummaries.length})
+                                    </h3>
+                                    <div className="divide-y divide-[var(--border)] rounded-[6px] border border-[var(--border)] bg-[var(--bg-panel)]">
                                         {arcSummaries.map((arc, idx) => (
-                                            <div key={arc.key || idx} className="rounded-xl bg-indigo-50/40 border border-indigo-100 px-4 py-3 text-xs text-slate-700 space-y-1">
-                                                <div className="font-bold text-indigo-900">
+                                            <div key={arc.key || idx} className="px-4 py-3 text-xs space-y-1">
+                                                <div className="font-mono font-semibold text-[var(--text-primary)]">
                                                     第 {arc.start_episode} – {arc.end_episode} 话
                                                 </div>
-                                                <div className="leading-relaxed">{arc.summary}</div>
+                                                <div className="text-[var(--text-secondary)] leading-relaxed">{arc.summary}</div>
                                             </div>
                                         ))}
                                     </div>
@@ -1149,11 +1192,15 @@ export default function ProjectDetail() {
                             )}
 
                             {/* Rolling Long Summary (Editable) */}
-                            <div className="space-y-2">
+                            <div className="space-y-2.5">
                                 <div className="flex items-center justify-between">
                                     <div>
-                                        <h4 className="text-sm font-bold text-slate-900 m-0">长程滚动剧情记忆 (Long Summary)</h4>
-                                        <span className="text-xs text-slate-500">按话数去重累积，超出预算时由 LLM 自动保真压缩关键状态与伏笔</span>
+                                        <h3 className="text-sm font-semibold text-[var(--text-primary)] m-0">
+                                            长程滚动剧情记忆 (Long Summary)
+                                        </h3>
+                                        <span className="text-xs text-[var(--text-muted)]">
+                                            按话数去重累积，超出预算时自动保真压缩关键状态与伏笔
+                                        </span>
                                     </div>
                                     {!editingSummary ? (
                                         <Button
@@ -1164,7 +1211,7 @@ export default function ProjectDetail() {
                                                 setEditingSummary(true)
                                             }}
                                         >
-                                            手动修订摘要
+                                            修订摘要
                                         </Button>
                                     ) : (
                                         <div className="flex gap-2">
@@ -1191,7 +1238,7 @@ export default function ProjectDetail() {
                                                         .catch(() => {})
                                                 }}
                                             >
-                                                保存长程摘要
+                                                保存
                                             </Button>
                                         </div>
                                     )}
@@ -1199,17 +1246,21 @@ export default function ProjectDetail() {
                                 {editingSummary ? (
                                     <TextArea value={longSummaryDraft} onChange={setLongSummaryDraft} rows={8} />
                                 ) : (
-                                    <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">
+                                    <div className="rounded-[6px] bg-[var(--bg-panel)] border border-[var(--border)] p-4 text-sm text-[var(--text-secondary)] whitespace-pre-wrap leading-relaxed">
                                         {project.long_summary || '暂无长程摘要，执行章节理解后自动生成。'}
                                     </div>
                                 )}
                             </div>
 
                             {/* Manual Canon Rules + RAG Search */}
-                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 pt-2 border-t border-[var(--border)]">
                                 <div className="space-y-2">
-                                    <h4 className="text-sm font-bold text-slate-900 m-0">作者硬设定 (Canon Rules JSON)</h4>
-                                    <p className="text-xs text-slate-500 m-0">人工录入绝对不可违背的世界法则、战力体系或人物铁律（自动保留 story_bible）</p>
+                                    <h4 className="text-sm font-semibold text-[var(--text-primary)] m-0">
+                                        作者硬设定 (Canon Rules JSON)
+                                    </h4>
+                                    <p className="text-xs text-[var(--text-muted)] m-0">
+                                        人工录入不可违背的世界法则、战力体系或人物铁律（自动保留 story_bible）
+                                    </p>
                                     <TextArea
                                         value={canonText}
                                         onChange={(val: string) => {
@@ -1248,13 +1299,17 @@ export default function ProjectDetail() {
                                 </div>
 
                                 <div className="space-y-2">
-                                    <h4 className="text-sm font-bold text-slate-900 m-0">跨章节剧情记忆检索 (RAG / 分词召回)</h4>
-                                    <p className="text-xs text-slate-500 m-0">输入人物、道具或事件关键词，测试跨话历史记忆召回效果</p>
+                                    <h4 className="text-sm font-semibold text-[var(--text-primary)] m-0">
+                                        跨章节剧情记忆检索 (RAG / 分词召回)
+                                    </h4>
+                                    <p className="text-xs text-[var(--text-muted)] m-0">
+                                        输入人物、道具或事件关键词，测试跨话历史记忆召回效果
+                                    </p>
                                     <div className="flex gap-2">
                                         <Input
                                             value={ragQuery}
                                             onChange={setRagQuery}
-                                            placeholder="例如：星之匣 / 钥匙 / 小樱受伤..."
+                                            placeholder="例如：星之匣 / 炎龙 / 冰精灵..."
                                         />
                                         <Button
                                             theme="solid"
@@ -1267,348 +1322,400 @@ export default function ProjectDetail() {
                                                     .catch(() => {})
                                             }}
                                         >
-                                            检索记忆
+                                            检索
                                         </Button>
                                     </div>
                                     <div className="space-y-2 max-h-56 overflow-y-auto pt-1">
                                         {ragResults.map((r, i) => (
-                                            <div key={i} className="rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-xs space-y-1">
+                                            <div
+                                                key={i}
+                                                className="rounded-[4px] border border-[var(--border)] bg-[var(--bg-panel)] p-2.5 text-xs space-y-1"
+                                            >
                                                 <div className="flex items-center gap-2">
                                                     {r.payload?.episode_number != null && (
-                                                        <Tag size="small" color="indigo">
+                                                        <span className="font-mono text-[11px] text-[var(--accent)] font-semibold">
                                                             第 {String(r.payload.episode_number)} 话
-                                                        </Tag>
+                                                        </span>
                                                     )}
-                                                    <Tag size="small">{String(r.payload?.type || 'memory')}</Tag>
-                                                    <span className="text-slate-400 ml-auto">相关度 {r.score?.toFixed(3)}</span>
+                                                    <span className="text-[11px] text-[var(--text-muted)]">
+                                                        {String(r.payload?.type || 'memory')}
+                                                    </span>
+                                                    <span className="text-[11px] font-mono text-[var(--text-muted)] ml-auto">
+                                                        {r.score?.toFixed(3)}
+                                                    </span>
                                                 </div>
-                                                <div className="text-slate-700 leading-relaxed">{String(r.payload?.content || '')}</div>
+                                                <div className="text-[var(--text-secondary)] leading-relaxed">
+                                                    {String(r.payload?.content || '')}
+                                                </div>
                                             </div>
                                         ))}
                                     </div>
                                 </div>
                             </div>
-                        </div>
-                    </TabPane>
+                        </section>
+                    )}
 
-                    {/* TAB 3: VISUAL ASSETS GALLERY */}
-                    <TabPane tab={`角色·物品·场景图鉴 (${assetsData?.total || 0})`} itemKey="assets">
-                        <div className="flex flex-wrap justify-between items-center gap-3 mb-4 pt-2">
-                            <div className="flex flex-wrap items-center gap-2">
-                                <Select
-                                    value={assetTypeFilter || ''}
-                                    onChange={(v) => {
-                                        setAssetTypeFilter(v ? String(v) : undefined)
-                                        setAssetPage(1)
+                    {/* VIEW: VISUAL ASSETS GALLERY */}
+                    {activeView === 'assets' && (
+                        <section className="space-y-4">
+                            <div className="flex flex-wrap justify-between items-center gap-3">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <Select
+                                        size="small"
+                                        value={assetTypeFilter || ''}
+                                        onChange={(v) => {
+                                            setAssetTypeFilter(v ? String(v) : undefined)
+                                            setAssetPage(1)
+                                        }}
+                                        style={{ width: 160 }}
+                                    >
+                                        <Select.Option value="">全部资产类型</Select.Option>
+                                        {ASSET_TYPE_OPTIONS.map((opt) => (
+                                            <Select.Option key={opt.value} value={opt.value}>
+                                                {opt.label}
+                                            </Select.Option>
+                                        ))}
+                                    </Select>
+                                    <RadioGroup
+                                        type="button"
+                                        buttonSize="small"
+                                        value={assetViewMode}
+                                        onChange={(e) => setAssetViewMode(e.target.value as 'gallery' | 'table')}
+                                        options={[
+                                            { label: '图鉴', value: 'gallery' },
+                                            { label: '列表', value: 'table' },
+                                        ]}
+                                    />
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                    {selectedAssetIds.length >= 2 && (
+                                        <Button size="small" icon={<IconCopy />} theme="solid" onClick={() => setShowAssetMerge(true)}>
+                                            合并选中 ({selectedAssetIds.length})
+                                        </Button>
+                                    )}
+                                    <Button
+                                        size="small"
+                                        icon={<IconSearch />}
+                                        loading={clusterMutation.isPending}
+                                        onClick={() => clusterMutation.mutate()}
+                                    >
+                                        相似聚类去重
+                                    </Button>
+                                    <Button size="small" icon={<IconPlus />} theme="solid" onClick={() => setShowCreateAsset(true)}>
+                                        新增资产
+                                    </Button>
+                                </div>
+                            </div>
+
+                            {assetsLoading ? (
+                                <div className="py-12 flex justify-center">
+                                    <Spin />
+                                </div>
+                            ) : assets.length === 0 ? (
+                                <Empty description="暂无资产记录。理解漫画章节后将自动识别角色、关键道具与场景，并自动截取参考图。" />
+                            ) : assetViewMode === 'gallery' ? (
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5">
+                                    {assets.map((asset) => {
+                                        const meta = ASSET_TYPE_META[asset.type] || { label: asset.type, color: 'grey' as TagColor }
+                                        const epCount = Object.keys(asset.episode_ids || {}).length
+                                        const vtags = asset.tags?.visual_tags || []
+                                        const checked = selectedAssetIds.includes(asset.id)
+                                        return (
+                                            <div
+                                                key={asset.id}
+                                                className={`rounded-[6px] border p-3.5 flex flex-col justify-between space-y-3 transition-colors ${
+                                                    checked
+                                                        ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
+                                                        : 'border-[var(--border)] bg-[var(--bg-panel)] hover:border-[var(--text-muted)]'
+                                                }`}
+                                            >
+                                                <div className="space-y-3">
+                                                    <div className="flex items-start gap-3">
+                                                        <div
+                                                            onClick={() => setImageAsset(asset)}
+                                                            className="w-18 h-22 rounded-[4px] bg-[var(--bg-canvas)] border border-[var(--border)] overflow-hidden shrink-0 flex items-center justify-center cursor-pointer"
+                                                        >
+                                                            {asset.preview_image_path ? (
+                                                                <img
+                                                                    src={storageFileUrl(asset.preview_image_path)}
+                                                                    alt={asset.name}
+                                                                    className="w-full h-full object-cover"
+                                                                />
+                                                            ) : (
+                                                                <div className="text-center text-[10px] text-[var(--text-muted)] px-1">
+                                                                    <IconImage />
+                                                                    <div>上传</div>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                        <div className="min-w-0 flex-1 space-y-1">
+                                                            <div className="flex items-start justify-between gap-1">
+                                                                <div
+                                                                    className="font-semibold text-[var(--text-primary)] text-sm truncate"
+                                                                    title={asset.name}
+                                                                >
+                                                                    {asset.name}
+                                                                </div>
+                                                                <Checkbox
+                                                                    checked={checked}
+                                                                    onChange={(e) => {
+                                                                        if (e.target.checked) {
+                                                                            setSelectedAssetIds([...selectedAssetIds, asset.id])
+                                                                        } else {
+                                                                            setSelectedAssetIds(selectedAssetIds.filter((id) => id !== asset.id))
+                                                                        }
+                                                                    }}
+                                                                />
+                                                            </div>
+                                                            <div className="flex flex-wrap gap-1 text-[10px]">
+                                                                <span className="px-1.5 py-0.5 rounded-[4px] border border-[var(--border)] bg-[var(--bg-elevated)] text-[var(--text-secondary)]">
+                                                                    {meta.label}
+                                                                </span>
+                                                                {epCount > 0 && (
+                                                                    <span className="px-1.5 py-0.5 rounded-[4px] border border-[var(--border)] text-[var(--text-muted)] font-mono">
+                                                                        {epCount} 话
+                                                                    </span>
+                                                                )}
+                                                                {asset.tags?.role && (
+                                                                    <span className="px-1.5 py-0.5 rounded-[4px] border border-[var(--border)] text-[var(--text-muted)]">
+                                                                        {asset.tags.role}
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                            {asset.tags?.aliases && asset.tags.aliases.length > 0 && (
+                                                                <div className="text-[11px] text-[var(--text-muted)] truncate">
+                                                                    别名：{asset.tags.aliases.join(' / ')}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </div>
+
+                                                    <p className="text-xs text-[var(--text-secondary)] line-clamp-3 m-0 leading-relaxed">
+                                                        {asset.description || '暂无外貌或设定描述'}
+                                                    </p>
+
+                                                    {asset.tags?.speech_style && (
+                                                        <div className="rounded-[4px] bg-[var(--bg-elevated)] border border-[var(--border)] px-2.5 py-1.5 text-[11px] text-[var(--text-secondary)]">
+                                                            <span className="font-semibold text-[var(--text-primary)]">语气：</span>
+                                                            {asset.tags.speech_style}
+                                                        </div>
+                                                    )}
+
+                                                    {vtags.length > 0 && (
+                                                        <div className="flex flex-wrap gap-1">
+                                                            {vtags.slice(0, 4).map((t, idx) => (
+                                                                <span
+                                                                    key={idx}
+                                                                    className="text-[10px] bg-[var(--bg-elevated)] text-[var(--text-muted)] px-1.5 py-0.5 rounded-[4px] font-mono"
+                                                                >
+                                                                    {String(t)}
+                                                                </span>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+
+                                                <div className="flex items-center justify-between pt-2.5 border-t border-[var(--border)]">
+                                                    <div className="flex gap-1">
+                                                        <Button size="small" onClick={() => setImageAsset(asset)}>
+                                                            参考图 ({asset.image_count || 0})
+                                                        </Button>
+                                                        <Button size="small" onClick={() => setEditingAsset(asset)}>
+                                                            编辑
+                                                        </Button>
+                                                    </div>
+                                                    <div className="flex gap-1">
+                                                        <Button
+                                                            size="small"
+                                                            theme="borderless"
+                                                            icon={<IconSearch />}
+                                                            onClick={() => {
+                                                                assetService
+                                                                    .findSimilar(asset.id)
+                                                                    .then((res) => {
+                                                                        setSimilarAssets(res)
+                                                                        setShowSimilar(true)
+                                                                    })
+                                                                    .catch(() => {})
+                                                            }}
+                                                        />
+                                                        <Button
+                                                            size="small"
+                                                            type="danger"
+                                                            theme="borderless"
+                                                            icon={<IconDelete />}
+                                                            onClick={() => {
+                                                                Modal.confirm({
+                                                                    title: `确认删除资产 "${asset.name}"？`,
+                                                                    onOk: () => deleteAssetMutation.mutate(asset.id),
+                                                                })
+                                                            }}
+                                                        />
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )
+                                    })}
+                                </div>
+                            ) : (
+                                <div className="rounded-[6px] border border-[var(--border)] bg-[var(--bg-panel)] overflow-hidden">
+                                    <Table
+                                        rowKey="id"
+                                        dataSource={assets}
+                                        pagination={false}
+                                        columns={[
+                                            { title: '名称', dataIndex: 'name', key: 'name', width: 150 },
+                                            {
+                                                title: '类型',
+                                                dataIndex: 'type',
+                                                key: 'type',
+                                                width: 110,
+                                                render: (t: string) => {
+                                                    const m = ASSET_TYPE_META[t]
+                                                    return <Tag color={m?.color || 'grey'}>{m?.label || t}</Tag>
+                                                },
+                                            },
+                                            { title: '外貌与设定描述', dataIndex: 'description', key: 'description' },
+                                            {
+                                                title: '参考图',
+                                                dataIndex: 'image_count',
+                                                key: 'image_count',
+                                                width: 90,
+                                                render: (c: number) => `${c || 0} 张`,
+                                            },
+                                            {
+                                                title: '操作',
+                                                key: 'actions',
+                                                width: 180,
+                                                render: (_: unknown, record: Asset) => (
+                                                    <div className="flex gap-1">
+                                                        <Button size="small" onClick={() => setImageAsset(record)}>
+                                                            参考图
+                                                        </Button>
+                                                        <Button size="small" onClick={() => setEditingAsset(record)}>
+                                                            编辑
+                                                        </Button>
+                                                    </div>
+                                                ),
+                                            },
+                                        ]}
+                                    />
+                                </div>
+                            )}
+                        </section>
+                    )}
+
+                    {/* VIEW: PITS TABLE MODE */}
+                    {activeView === 'pits' && pitViewMode === 'table' && (
+                        <section className="space-y-4">
+                            <div className="flex flex-wrap justify-between items-center gap-3">
+                                <div className="flex items-center gap-2">
+                                    <span className="text-xs text-[var(--text-secondary)] font-medium">伏笔状态：</span>
+                                    <Select
+                                        size="small"
+                                        value={pitStatusFilter ?? ''}
+                                        onChange={(v) => {
+                                            setPitStatusFilter(v ? String(v) : undefined)
+                                            setPitPage(1)
+                                        }}
+                                        style={{ width: 150 }}
+                                    >
+                                        <Select.Option value="">全部伏笔</Select.Option>
+                                        <Select.Option value="open">待回收伏笔</Select.Option>
+                                        <Select.Option value="resolved">已回收伏笔</Select.Option>
+                                        <Select.Option value="abandoned">已搁置</Select.Option>
+                                    </Select>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <Button size="small" onClick={() => setPitViewMode('timeline')}>
+                                        返回时间线轨道视图
+                                    </Button>
+                                    <Button size="small" icon={<IconPlus />} theme="solid" onClick={() => setShowCreatePit(true)}>
+                                        手动埋设新伏笔
+                                    </Button>
+                                </div>
+                            </div>
+
+                            <div className="rounded-[6px] border border-[var(--border)] bg-[var(--bg-panel)] overflow-hidden">
+                                <Table
+                                    columns={pitColumns}
+                                    dataSource={pitsData?.items || []}
+                                    loading={pitsLoading}
+                                    rowKey="id"
+                                    pagination={{
+                                        currentPage: pitPage,
+                                        pageSize: pitPageSize,
+                                        total: pitsData?.total || 0,
+                                        showTotal: true,
+                                        onChange: (cp: number, ps: number) => {
+                                            setPitPage(cp)
+                                            setPitPageSize(ps)
+                                        },
                                     }}
-                                    style={{ width: 160 }}
-                                >
-                                    <Select.Option value="">全部资产类型</Select.Option>
-                                    {ASSET_TYPE_OPTIONS.map((opt) => (
-                                        <Select.Option key={opt.value} value={opt.value}>
-                                            {opt.label}
-                                        </Select.Option>
-                                    ))}
-                                </Select>
-                                <RadioGroup
-                                    type="button"
-                                    value={assetViewMode}
-                                    onChange={(e) => setAssetViewMode(e.target.value as 'gallery' | 'table')}
-                                    options={[
-                                        { label: '卡片图鉴', value: 'gallery' },
-                                        { label: '列表视图', value: 'table' },
-                                    ]}
                                 />
                             </div>
-                            <div className="flex flex-wrap gap-2">
-                                {selectedAssetIds.length >= 2 && (
-                                    <Button icon={<IconCopy />} theme="solid" onClick={() => setShowAssetMerge(true)}>
-                                        合并选中资产 ({selectedAssetIds.length})
+                        </section>
+                    )}
+
+                    {/* VIEW: BRANCHES */}
+                    {activeView === 'branches' && (
+                        <section className="space-y-6">
+                            {projectId && (
+                                <StoryAtlas projectId={projectId} defaultBranchId={selectedBranch} mode="branches" />
+                            )}
+
+                            <div className="flex flex-wrap justify-between items-center gap-3">
+                                <span className="text-xs text-[var(--text-muted)]">
+                                    从任意章节 Fork 出独立世界线探索 IF 剧情，续画上下文严格隔离不串线
+                                </span>
+                                <div className="flex flex-wrap gap-2">
+                                    <Button size="small" icon={<IconCopy />} onClick={() => setShowFork(true)}>
+                                        派生分支 (Fork)
                                     </Button>
-                                )}
-                                <Button icon={<IconSearch />} loading={clusterMutation.isPending} onClick={() => clusterMutation.mutate()}>
-                                    相似资产聚类去重
-                                </Button>
-                                <Button icon={<IconPlus />} theme="solid" onClick={() => setShowCreateAsset(true)}>
-                                    手动新增资产
-                                </Button>
+                                    <Button
+                                        size="small"
+                                        icon={<IconSearch />}
+                                        onClick={() => {
+                                            setDiffResult(null)
+                                            setShowDiff(true)
+                                        }}
+                                    >
+                                        对比差异
+                                    </Button>
+                                    <Button
+                                        size="small"
+                                        onClick={() => {
+                                            setDiffResult(null)
+                                            setShowMerge(true)
+                                        }}
+                                    >
+                                        合并成果
+                                    </Button>
+                                    <Button size="small" icon={<IconPlus />} theme="solid" onClick={() => setShowCreateBranch(true)}>
+                                        新建空分支
+                                    </Button>
+                                </div>
                             </div>
-                        </div>
 
-                        {assetsLoading ? (
-                            <div className="py-12 flex justify-center">
-                                <Spin />
+                            <div className="rounded-[6px] border border-[var(--border)] bg-[var(--bg-panel)] overflow-hidden">
+                                <Table
+                                    columns={branchColumns}
+                                    dataSource={branches || []}
+                                    rowKey="id"
+                                    pagination={false}
+                                />
                             </div>
-                        ) : assets.length === 0 ? (
-                            <Empty description="暂无资产记录。理解漫画章节后将自动识别角色、关键道具与场景，并自动截取参考图。" />
-                        ) : assetViewMode === 'gallery' ? (
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                                {assets.map((asset) => {
-                                    const meta = ASSET_TYPE_META[asset.type] || { label: asset.type, color: 'grey' as TagColor }
-                                    const epCount = Object.keys(asset.episode_ids || {}).length
-                                    const vtags = asset.tags?.visual_tags || []
-                                    const checked = selectedAssetIds.includes(asset.id)
-                                    return (
-                                        <div
-                                            key={asset.id}
-                                            className={`rounded-xl border p-4 flex flex-col justify-between space-y-3 transition-all ${
-                                                checked ? 'border-indigo-500 bg-indigo-50/30' : 'border-slate-200 bg-white hover:border-slate-300'
-                                            }`}
-                                        >
-                                            <div className="space-y-3">
-                                                <div className="flex items-start gap-3">
-                                                    <div
-                                                        onClick={() => setImageAsset(asset)}
-                                                        className="w-20 h-24 rounded-lg bg-slate-100 border border-slate-200 overflow-hidden shrink-0 flex items-center justify-center cursor-pointer relative group"
-                                                    >
-                                                        {asset.preview_image_path ? (
-                                                            <img
-                                                                src={storageFileUrl(asset.preview_image_path)}
-                                                                alt={asset.name}
-                                                                className="w-full h-full object-cover"
-                                                            />
-                                                        ) : (
-                                                            <div className="text-center text-[11px] text-slate-400 px-1">
-                                                                <IconImage />
-                                                                <div>上传参考图</div>
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                    <div className="min-w-0 flex-1 space-y-1">
-                                                        <div className="flex items-start justify-between gap-1">
-                                                            <div className="font-bold text-slate-900 text-sm truncate" title={asset.name}>
-                                                                {asset.name}
-                                                            </div>
-                                                            <Checkbox
-                                                                checked={checked}
-                                                                onChange={(e) => {
-                                                                    if (e.target.checked) {
-                                                                        setSelectedAssetIds([...selectedAssetIds, asset.id])
-                                                                    } else {
-                                                                        setSelectedAssetIds(selectedAssetIds.filter((id) => id !== asset.id))
-                                                                    }
-                                                                }}
-                                                            />
-                                                        </div>
-                                                        <div className="flex flex-wrap gap-1">
-                                                            <Tag size="small" color={meta.color}>
-                                                                {meta.label}
-                                                            </Tag>
-                                                            {epCount > 0 && (
-                                                                <Tag size="small" color="grey">
-                                                                    登场 {epCount} 话
-                                                                </Tag>
-                                                            )}
-                                                            {asset.tags?.role && (
-                                                                <Tag size="small" color="cyan">
-                                                                    {asset.tags.role}
-                                                                </Tag>
-                                                            )}
-                                                        </div>
-                                                        {asset.tags?.aliases && asset.tags.aliases.length > 0 && (
-                                                            <div className="text-[11px] text-slate-400 truncate">
-                                                                别名：{asset.tags.aliases.join(' / ')}
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                </div>
+                        </section>
+                    )}
 
-                                                <p className="text-xs text-slate-600 line-clamp-3 m-0 leading-relaxed">
-                                                    {asset.description || '暂无外貌或设定描述'}
-                                                </p>
-
-                                                {asset.tags?.speech_style && (
-                                                    <div className="rounded bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-600">
-                                                        <span className="font-semibold text-slate-700">语气特征：</span>
-                                                        {asset.tags.speech_style}
-                                                    </div>
-                                                )}
-
-                                                {vtags.length > 0 && (
-                                                    <div className="flex flex-wrap gap-1">
-                                                        {vtags.slice(0, 4).map((t, idx) => (
-                                                            <span
-                                                                key={idx}
-                                                                className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded"
-                                                            >
-                                                                {String(t)}
-                                                            </span>
-                                                        ))}
-                                                    </div>
-                                                )}
-                                            </div>
-
-                                            <div className="flex items-center justify-between pt-2.5 border-t border-slate-100">
-                                                <div className="flex gap-1">
-                                                    <Button size="small" onClick={() => setImageAsset(asset)}>
-                                                        参考图 ({asset.image_count || 0})
-                                                    </Button>
-                                                    <Button size="small" onClick={() => setEditingAsset(asset)}>
-                                                        编辑
-                                                    </Button>
-                                                </div>
-                                                <div className="flex gap-1">
-                                                    <Button
-                                                        size="small"
-                                                        theme="borderless"
-                                                        icon={<IconSearch />}
-                                                        onClick={() => {
-                                                            assetService
-                                                                .findSimilar(asset.id)
-                                                                .then((res) => {
-                                                                    setSimilarAssets(res)
-                                                                    setShowSimilar(true)
-                                                                })
-                                                                .catch(() => {})
-                                                        }}
-                                                    />
-                                                    <Button
-                                                        size="small"
-                                                        type="danger"
-                                                        theme="borderless"
-                                                        icon={<IconDelete />}
-                                                        onClick={() => {
-                                                            Modal.confirm({
-                                                                title: `确认删除资产 "${asset.name}"？`,
-                                                                onOk: () => deleteAssetMutation.mutate(asset.id),
-                                                            })
-                                                        }}
-                                                    />
-                                                </div>
-                                            </div>
-                                        </div>
-                                    )
-                                })}
-                            </div>
-                        ) : (
-                            <Table
-                                rowKey="id"
-                                dataSource={assets}
-                                pagination={false}
-                                columns={[
-                                    { title: '名称', dataIndex: 'name', key: 'name', width: 150 },
-                                    {
-                                        title: '类型',
-                                        dataIndex: 'type',
-                                        key: 'type',
-                                        width: 110,
-                                        render: (t: string) => {
-                                            const m = ASSET_TYPE_META[t]
-                                            return <Tag color={m?.color || 'grey'}>{m?.label || t}</Tag>
-                                        },
-                                    },
-                                    { title: '外貌与设定描述', dataIndex: 'description', key: 'description' },
-                                    {
-                                        title: '参考图',
-                                        dataIndex: 'image_count',
-                                        key: 'image_count',
-                                        width: 90,
-                                        render: (c: number) => `${c || 0} 张`,
-                                    },
-                                    {
-                                        title: '操作',
-                                        key: 'actions',
-                                        width: 180,
-                                        render: (_: unknown, record: Asset) => (
-                                            <div className="flex gap-1">
-                                                <Button size="small" onClick={() => setImageAsset(record)}>
-                                                    参考图
-                                                </Button>
-                                                <Button size="small" onClick={() => setEditingAsset(record)}>
-                                                    编辑
-                                                </Button>
-                                            </div>
-                                        ),
-                                    },
-                                ]}
-                            />
-                        )}
-                    </TabPane>
-
-                    {/* TAB 4: PITS / FORESHADOWING */}
-                    <TabPane tab={`伏笔追踪 (${pitsData?.total || 0})`} itemKey="pits">
-                        <div className="flex flex-wrap justify-between items-center gap-3 mb-4 pt-2">
-                            <div className="flex items-center gap-2">
-                                <span className="text-sm text-slate-600 font-medium">伏笔状态：</span>
-                                <Select
-                                    value={pitStatusFilter ?? ''}
-                                    onChange={(v) => {
-                                        setPitStatusFilter(v ? String(v) : undefined)
-                                        setPitPage(1)
-                                    }}
-                                    style={{ width: 150 }}
-                                >
-                                    <Select.Option value="">全部伏笔</Select.Option>
-                                    <Select.Option value="open">待回收伏笔</Select.Option>
-                                    <Select.Option value="resolved">已回收伏笔</Select.Option>
-                                    <Select.Option value="abandoned">已搁置</Select.Option>
-                                </Select>
-                            </div>
-                            <Button icon={<IconPlus />} theme="solid" onClick={() => setShowCreatePit(true)}>
-                                手动埋设新伏笔
-                            </Button>
-                        </div>
-
-                        <Table
-                            columns={pitColumns}
-                            dataSource={pitsData?.items || []}
-                            loading={pitsLoading}
-                            rowKey="id"
-                            pagination={{
-                                currentPage: pitPage,
-                                pageSize: pitPageSize,
-                                total: pitsData?.total || 0,
-                                showTotal: true,
-                                onChange: (cp: number, ps: number) => {
-                                    setPitPage(cp)
-                                    setPitPageSize(ps)
-                                },
-                            }}
-                        />
-                    </TabPane>
-
-                    {/* TAB 5: BRANCHES */}
-                    <TabPane tab={`平行世界线 (${branches?.length || 0})`} itemKey="branches">
-                        <div className="flex flex-wrap justify-between items-center gap-3 mb-4 pt-2">
-                            <span className="text-xs text-slate-500">
-                                可从任意章节 Fork 出独立世界线探索 IF 剧情，续画上下文将严格隔离不串线
-                            </span>
-                            <div className="flex flex-wrap gap-2">
-                                <Button icon={<IconCopy />} onClick={() => setShowFork(true)}>
-                                    从指定章节派生分支 (Fork)
-                                </Button>
-                                <Button
-                                    icon={<IconSearch />}
-                                    onClick={() => {
-                                        setDiffResult(null)
-                                        setShowDiff(true)
-                                    }}
-                                >
-                                    对比分支差异
-                                </Button>
-                                <Button
-                                    onClick={() => {
-                                        setDiffResult(null)
-                                        setShowMerge(true)
-                                    }}
-                                >
-                                    合并分支成果
-                                </Button>
-                                <Button icon={<IconPlus />} theme="solid" onClick={() => setShowCreateBranch(true)}>
-                                    新建空分支
-                                </Button>
-                            </div>
-                        </div>
-
-                        <Table
-                            columns={branchColumns}
-                            dataSource={branches || []}
-                            rowKey="id"
-                            pagination={false}
-                        />
-                    </TabPane>
-                </Tabs>
-            </div>
+                    {/* VIEW: MODEL USAGE & IMAGE LOGS */}
+                    {activeView === 'usage' && (
+                        <section>
+                            <UsagePanel projectId={projectId} />
+                        </section>
+                    )}
+                </>
+            )}
 
             {/* MODAL: IMPORT EPISODE */}
             <Modal
@@ -1673,10 +1780,10 @@ export default function ProjectDetail() {
                             multiple
                             accept="image/*,.zip"
                             onChange={(e) => e.target.files && setUploadFiles(Array.from(e.target.files))}
-                            className="block w-full text-sm text-slate-600 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100"
+                            className="block w-full text-sm text-[var(--text-secondary)] file:mr-4 file:py-1.5 file:px-3 file:rounded-[4px] file:border file:border-[var(--border)] file:text-xs file:font-medium file:bg-[var(--bg-elevated)] file:text-[var(--text-primary)] hover:file:border-[var(--accent)]"
                         />
                         {uploadFiles.length > 0 && (
-                            <div className="mt-1.5 text-xs text-indigo-600">已选择 {uploadFiles.length} 个文件（将按文件名自然序排列页码）</div>
+                            <div className="mt-1.5 text-xs text-[var(--accent)]">已选择 {uploadFiles.length} 个文件（将按文件名自然序排列页码）</div>
                         )}
                     </div>
                     <div className="flex justify-end gap-2">
@@ -1733,13 +1840,30 @@ export default function ProjectDetail() {
                             </Select>
                         </div>
                         <div>
-                            <label className="block text-sm font-medium mb-1">自定义新话标题（可选）</label>
-                            <Input
-                                value={continueForm.title}
-                                onChange={(v) => setContinueForm({ ...continueForm, title: v })}
-                                placeholder="留空则由编剧模型自动拟定"
-                            />
+                            <label className="block text-sm font-medium mb-1">上下文预算策略</label>
+                            <Select
+                                value={continueForm.context_profile}
+                                onChange={(v) =>
+                                    setContinueForm({
+                                        ...continueForm,
+                                        context_profile: (v as 'quality' | 'balanced' | 'cost') || 'quality',
+                                    })
+                                }
+                                style={{ width: '100%' }}
+                            >
+                                <Select.Option value="quality">效果优先 · 200K+ (64K 预算)</Select.Option>
+                                <Select.Option value="balanced">均衡模式 · 128K (28K 预算)</Select.Option>
+                                <Select.Option value="cost">成本优先 · 32K (10K 预算)</Select.Option>
+                            </Select>
                         </div>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium mb-1">自定义新话标题（可选）</label>
+                        <Input
+                            value={continueForm.title}
+                            onChange={(v) => setContinueForm({ ...continueForm, title: v })}
+                            placeholder="留空则由编剧模型自动拟定"
+                        />
                     </div>
                     <div>
                         <label className="block text-sm font-medium mb-1">导演剧情指令（可选）</label>
@@ -1752,7 +1876,7 @@ export default function ProjectDetail() {
                     </div>
                     <div className="grid grid-cols-3 gap-3">
                         <div>
-                            <label className="block text-xs font-medium text-slate-600 mb-1">生图引擎</label>
+                            <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">生图引擎</label>
                             <Select
                                 value={continueForm.image_backend}
                                 onChange={(v) => setContinueForm({ ...continueForm, image_backend: v ? String(v) : undefined })}
@@ -1767,7 +1891,7 @@ export default function ProjectDetail() {
                             </Select>
                         </div>
                         <div>
-                            <label className="block text-xs font-medium text-slate-600 mb-1">生图模型</label>
+                            <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">生图模型</label>
                             <Select
                                 value={continueForm.image_model}
                                 onChange={(v) => setContinueForm({ ...continueForm, image_model: v ? String(v) : undefined })}
@@ -1780,7 +1904,7 @@ export default function ProjectDetail() {
                             </Select>
                         </div>
                         <div>
-                            <label className="block text-xs font-medium text-slate-600 mb-1">单格画幅</label>
+                            <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">单格画幅</label>
                             <Select
                                 value={continueForm.image_size}
                                 onChange={(v) => setContinueForm({ ...continueForm, image_size: String(v || '1024x1024') })}
@@ -1915,7 +2039,7 @@ export default function ProjectDetail() {
                     >
                         上传高清参考图
                     </Button>
-                    <span className="text-xs text-slate-400">同时用于多模态人脸匹配与生图角色一致性锚定</span>
+                    <span className="text-xs text-[var(--text-muted)]">同时用于多模态人脸匹配与生图角色一致性锚定</span>
                 </div>
 
                 {assetImagesLoading ? (
@@ -1925,8 +2049,8 @@ export default function ProjectDetail() {
                 ) : (
                     <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                         {(assetImagesData?.items || []).map((img) => (
-                            <div key={img.id} className="border border-slate-200 rounded-xl p-2.5 space-y-2">
-                                <div className="w-full h-36 rounded-lg overflow-hidden flex items-center justify-center bg-slate-50">
+                            <div key={img.id} className="border border-[var(--border)] rounded-[6px] p-2.5 space-y-2 bg-[var(--bg-panel)]">
+                                <div className="w-full h-36 rounded-[4px] overflow-hidden flex items-center justify-center bg-[var(--bg-canvas)]">
                                     <img
                                         src={storageFileUrl(img.image_path)}
                                         alt={img.kind}

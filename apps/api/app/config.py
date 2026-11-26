@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     OPENAI_MAX_TOKENS: int = 16384
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
     OPENAI_BASE_URL: str | None = None
+    DEFAULT_CONTEXT_PROFILE: str = "quality"  # quality (200K+) | balanced (128K) | cost (32K)
+    MAX_CONTEXT_TOKENS: int | None = None
     QDRANT_API_KEY: str = ""
 
     IMAGE_BACKEND: str = "openai"

@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import { Modal, Select, Button, Tag, Toast } from '@douyinfe/semi-ui'
+import { Modal, Select, Button, Toast } from '@douyinfe/semi-ui'
 import { assetImageService, storageFileUrl } from '@/services/project'
 import type { Asset, EpisodePage } from '@/services/project'
 
@@ -93,7 +93,7 @@ export default function PageCropModal({ visible, episodeId, page, assets, onClos
             width={820}
             footer={
                 <div className="flex items-center justify-between">
-                    <div className="text-xs text-slate-500">
+                    <div className="text-xs text-[var(--text-muted)]">
                         {bbox
                             ? `已选区域：x=${(bbox[0] * 100).toFixed(0)}%–${(bbox[2] * 100).toFixed(0)}%, y=${(bbox[1] * 100).toFixed(0)}%–${(bbox[3] * 100).toFixed(0)}%`
                             : '在下方图片上按住鼠标左键拖动，即可框选角色特写或道具参考图'}
@@ -109,9 +109,9 @@ export default function PageCropModal({ visible, episodeId, page, assets, onClos
         >
             {page && (
                 <div className="space-y-4">
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 bg-[var(--bg-elevated)] p-3 rounded-[6px] border border-[var(--border)]">
                         <div className="md:col-span-2">
-                            <label className="block text-xs font-semibold text-slate-600 mb-1">归属目标资产</label>
+                            <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">归属目标资产</label>
                             <Select
                                 filter
                                 style={{ width: '100%' }}
@@ -127,7 +127,7 @@ export default function PageCropModal({ visible, episodeId, page, assets, onClos
                             </Select>
                         </div>
                         <div>
-                            <label className="block text-xs font-semibold text-slate-600 mb-1">参考图用途</label>
+                            <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">参考图用途</label>
                             <Select style={{ width: '100%' }} value={kind} onChange={(v) => setKind(String(v))}>
                                 <Select.Option value="reference">主参考图 (Reference)</Select.Option>
                                 <Select.Option value="turnaround">设定视图 (Turnaround)</Select.Option>
@@ -136,7 +136,7 @@ export default function PageCropModal({ visible, episodeId, page, assets, onClos
                         </div>
                     </div>
 
-                    <div className="flex justify-center bg-slate-900/5 rounded-xl p-3 max-h-[60vh] overflow-y-auto">
+                    <div className="flex justify-center bg-[var(--bg-canvas)] border border-[var(--border)] rounded-[6px] p-3 max-h-[60vh] overflow-y-auto">
                         <div
                             ref={containerRef}
                             onPointerDown={handlePointerDown}
@@ -147,11 +147,11 @@ export default function PageCropModal({ visible, episodeId, page, assets, onClos
                             <img
                                 src={storageFileUrl(page.image_path)}
                                 alt={`Crop Page ${page.page_index + 1}`}
-                                className="max-h-[54vh] w-auto block rounded pointer-events-none"
+                                className="max-h-[54vh] w-auto block rounded-[4px] pointer-events-none"
                             />
                             {bbox && (
                                 <div
-                                    className="absolute border-2 border-indigo-600 bg-indigo-500/20 shadow pointer-events-none"
+                                    className="absolute border-2 border-[var(--accent)] bg-[var(--accent-soft)] pointer-events-none"
                                     style={{
                                         left: `${bbox[0] * 100}%`,
                                         top: `${bbox[1] * 100}%`,
@@ -159,9 +159,9 @@ export default function PageCropModal({ visible, episodeId, page, assets, onClos
                                         height: `${(bbox[3] - bbox[1]) * 100}%`,
                                     }}
                                 >
-                                    <Tag size="small" color="indigo" className="absolute -top-6 left-0">
+                                    <span className="absolute -top-5 left-0 px-1.5 py-0.5 rounded-[4px] bg-[var(--accent)] text-white text-[10px] font-medium">
                                         裁切框
-                                    </Tag>
+                                    </span>
                                 </div>
                             )}
                         </div>

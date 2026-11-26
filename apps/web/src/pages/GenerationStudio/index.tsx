@@ -6,13 +6,10 @@ import {
     Button,
     Select,
     TextArea,
-    Steps,
     Toast,
-    Tag,
     Input,
     Image,
     Modal,
-    Banner,
 } from '@douyinfe/semi-ui'
 import { IconForward, IconArrowLeft, IconSearch, IconBolt, IconRefresh } from '@douyinfe/semi-icons'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -50,6 +47,7 @@ export default function GenerationStudio() {
     const queryClient = useQueryClient()
 
     const [tone, setTone] = useState('main')
+    const [contextProfile, setContextProfile] = useState<'quality' | 'balanced' | 'cost'>('quality')
     const [customInstructions, setCustomInstructions] = useState('')
     const [manualStep, setManualStep] = useState<number | null>(null)
 
@@ -165,12 +163,16 @@ export default function GenerationStudio() {
 
     const baseEpNumber = Math.max(0.01, (episode?.number || 2) - 0.01)
 
-    const loadContextPreview = async () => {
+    const loadContextPreview = async (overrideProfile?: 'quality' | 'balanced' | 'cost') => {
         if (!projectId || !episode) return
+        const targetProfile = overrideProfile || contextProfile
         setShowContextModal(true)
         setContextLoading(true)
         try {
-            const ctx = await memoryService.getGenerationContext(projectId, episode.branch_id, baseEpNumber)
+            const ctx = await memoryService.getGenerationContext(projectId, episode.branch_id, baseEpNumber, {
+                custom_instructions: customInstructions || undefined,
+                context_profile: targetProfile,
+            })
             setPreviewContext(ctx)
         } finally {
             setContextLoading(false)
@@ -185,6 +187,7 @@ export default function GenerationStudio() {
                 base_episode_number: Math.floor((episode?.number || 2) - 0.01),
                 tone,
                 custom_instructions: customInstructions || undefined,
+                context_profile: contextProfile,
             }),
         onSuccess: () => {
             setEditedStoryboard(null)
@@ -359,83 +362,167 @@ export default function GenerationStudio() {
         await layoutMutation.mutateAsync(mode)
     }
 
+    const STAGES = [
+        { idx: 0, code: '01', label: '剧本策划' },
+        { idx: 1, code: '02', label: '分镜脚本' },
+        { idx: 2, code: '03', label: '原画渲染' },
+        { idx: 3, code: '04', label: '排版与气泡' },
+    ]
+
     return (
-        <div className="space-y-6">
-            {/* Top Studio Bar */}
-            <div className="studio-card p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                        <Button
-                            size="small"
-                            theme="borderless"
-                            icon={<IconArrowLeft />}
-                            onClick={() => navigate(`/projects/${projectId}/episodes/${episodeId}`)}
-                        >
-                            返回本话阅读页
-                        </Button>
-                    </div>
-                    <h1 className="text-xl font-extrabold text-slate-900 m-0">
-                        AI 漫画分镜与渲染工坊 · 第 {episode.label || episode.number} 话
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+            {/* Compact Pro Studio Stage Toolbar (44px) */}
+            <div
+                className="h-11 shrink-0 border-b px-4 flex items-center justify-between gap-3"
+                style={{ backgroundColor: 'var(--bg-panel)', borderColor: 'var(--border)' }}
+            >
+                <div className="flex items-center gap-3 min-w-0">
+                    <button
+                        type="button"
+                        onClick={() => navigate(`/projects/${projectId}/episodes/${episodeId}`)}
+                        className="h-7 px-2 rounded border-0 bg-transparent hover:bg-[var(--bg-hover)] text-xs flex items-center gap-1 cursor-pointer shrink-0"
+                        style={{ color: 'var(--text-secondary)' }}
+                    >
+                        <IconArrowLeft size="small" />
+                        <span>返回阅读</span>
+                    </button>
+
+                    <span className="h-4 w-px" style={{ backgroundColor: 'var(--border)' }} />
+
+                    <h1 className="font-editorial text-sm font-semibold m-0 truncate" style={{ color: 'var(--text-primary)' }}>
+                        {episode.title && new RegExp(`^第\\s*${episode.label || episode.number}\\s*话`).test(episode.title)
+                            ? episode.title
+                            : `第 ${episode.label || episode.number} 话${episode.title ? ` · ${episode.title}` : ''}`}
                     </h1>
+
+                    <span className="h-4 w-px hidden md:inline-block" style={{ backgroundColor: 'var(--border)' }} />
+
+                    {/* Inline Linear Stage Selector */}
+                    <div
+                        className="hidden md:flex items-center rounded border p-0.5"
+                        style={{ backgroundColor: 'var(--bg-app)', borderColor: 'var(--border)' }}
+                    >
+                        {STAGES.map((st) => {
+                            const active = activeStep === st.idx
+                            return (
+                                <button
+                                    key={st.idx}
+                                    type="button"
+                                    onClick={() => setActiveStep(st.idx)}
+                                    className="h-6 px-2.5 rounded-[3px] border-0 text-[11px] cursor-pointer flex items-center gap-1.5 transition-colors"
+                                    style={{
+                                        backgroundColor: active ? 'var(--bg-elevated)' : 'transparent',
+                                        color: active ? 'var(--text-primary)' : 'var(--text-muted)',
+                                        fontWeight: active ? 600 : 400,
+                                    }}
+                                >
+                                    <span className="font-mono text-[10px]" style={{ color: active ? 'var(--accent)' : 'var(--text-muted)' }}>
+                                        {st.code}
+                                    </span>
+                                    {st.label}
+                                </button>
+                            )
+                        })}
+                    </div>
                 </div>
 
-                <div className="flex flex-wrap gap-2">
-                    <Button icon={<IconSearch />} onClick={loadContextPreview}>
-                        预览将传入 LLM 的上下文记忆
+                <div className="flex items-center gap-2 shrink-0">
+                    <Button size="small" theme="light" icon={<IconSearch />} onClick={() => loadContextPreview()}>
+                        记忆上下文
                     </Button>
                     {composedPages.length > 0 && (
                         <Button
+                            size="small"
                             theme="solid"
-                            onClick={() =>
-                                window.open(`/api/v1/generation/episodes/${episodeId}/export?format=pdf`, '_blank')
-                            }
+                            icon={<IconForward />}
+                            loading={continueMutation.isPending}
+                            onClick={() => continueMutation.mutate()}
                         >
-                            导出成稿 PDF
+                            续画下一话
                         </Button>
                     )}
                 </div>
             </div>
 
             {(isContinueRunning || activeRuns.length > 0) && (
-                <Banner
-                    type="info"
-                    closeIcon={null}
-                    description={`流水线正在运行中：${activeRuns.map((r) => `${r.stage} (${r.status})`).join(' · ')}，完成后页面会自动更新。`}
-                />
+                <div
+                    className="px-4 py-1.5 border-b text-xs flex items-center justify-between shrink-0"
+                    style={{
+                        backgroundColor: 'var(--accent-subtle)',
+                        borderColor: 'var(--border)',
+                        color: 'var(--text-primary)',
+                    }}
+                >
+                    <span>
+                        后台任务运行中：{activeRuns.map((r) => `${r.stage} (${r.status})`).join(' · ')}
+                    </span>
+                    <Spin size="small" />
+                </div>
             )}
 
-            <div className="studio-card p-6 space-y-6">
-                <Steps
-                    type="basic"
-                    current={activeStep}
-                    onChange={(idx) => setActiveStep(idx)}
-                >
-                    <Steps.Step title="1. 剧情策划与生成" description="组装记忆生成分镜" />
-                    <Steps.Step title="2. 分镜脚本审阅编辑" description="可逐格调整台词与 Prompt" />
-                    <Steps.Step title="3. 角色一致生图" description="Agent 挂载参考图渲染" />
-                    <Steps.Step title="4. 分格气泡排版与回写" description="合成最终页并写回记忆" />
-                </Steps>
+            {/* STEP 3 (FULL-BLEED PRO COMIC EDITOR) */}
+            {activeStep === 3 ? (
+                composedPages.length > 0 ? (
+                    <BubbleCanvasEditor
+                        episodeId={episodeId!}
+                        pages={composedPages}
+                        storyboard={draftStoryboard}
+                        runs={runList}
+                        writingMode={writingMode}
+                        onWritingModeChange={setWritingMode}
+                        onApplyAndRecompose={handleBubbleApplyAndRecompose}
+                        recomposing={layoutMutation.isPending}
+                    />
+                ) : (
+                    <div className="flex-1 flex flex-col items-center justify-center gap-4 p-8">
+                        <Empty description="尚未合成漫画成稿页面" />
+                        <Button
+                            theme="solid"
+                            loading={layoutMutation.isPending || isLayoutRunning}
+                            onClick={() => layoutMutation.mutate(writingMode)}
+                        >
+                            立即合成漫画页
+                        </Button>
+                    </div>
+                )
+            ) : (
+                <div className="flex-1 min-h-0 overflow-y-auto px-6 py-6">
+                    <div className="max-w-[1200px] mx-auto space-y-6">
 
                 {/* STEP 0: CONFIGURE & GENERATE SCRIPT */}
                 {activeStep === 0 && (
                     <div className="max-w-2xl space-y-5 pt-2">
-                        <div>
-                            <label className="block text-sm font-semibold mb-1.5">本话叙事基调</label>
-                            <Select value={tone} onChange={(v) => setTone(String(v || 'main'))} style={{ width: '100%' }}>
-                                <Select.Option value="main">主线推进 (承接上话结尾并推进核心矛盾)</Select.Option>
-                                <Select.Option value="pit_resolve">伏笔揭秘与回收 (优先兑现高优未解伏笔)</Select.Option>
-                                <Select.Option value="climax">戏剧高潮与转折 (大跨页张力与关键冲突)</Select.Option>
-                                <Select.Option value="daily">日常互动与人物塑造 (强化性格口癖与关系)</Select.Option>
-                                <Select.Option value="filler">独立支线短章</Select.Option>
-                            </Select>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label className="block text-sm font-semibold mb-1.5">本话叙事基调</label>
+                                <Select value={tone} onChange={(v) => setTone(String(v || 'main'))} style={{ width: '100%' }}>
+                                    <Select.Option value="main">主线推进 (承接上话结尾并推进核心矛盾)</Select.Option>
+                                    <Select.Option value="pit_resolve">伏笔揭秘与回收 (优先兑现高优未解伏笔)</Select.Option>
+                                    <Select.Option value="climax">戏剧高潮与转折 (大跨页张力与关键冲突)</Select.Option>
+                                    <Select.Option value="daily">日常互动与人物塑造 (强化性格口癖与关系)</Select.Option>
+                                    <Select.Option value="filler">独立支线短章</Select.Option>
+                                </Select>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-semibold mb-1.5">长程上下文策略</label>
+                                <Select
+                                    value={contextProfile}
+                                    onChange={(v) => setContextProfile((v as 'quality' | 'balanced' | 'cost') || 'quality')}
+                                    style={{ width: '100%' }}
+                                >
+                                    <Select.Option value="quality">效果优先 · 200K+ 模型 (64K 预算 / 近 10 话)</Select.Option>
+                                    <Select.Option value="balanced">均衡模式 · 128K 模型 (28K 预算 / 近 5 话)</Select.Option>
+                                    <Select.Option value="cost">成本优先 · 32K / 省 Token (10K 预算 / 近 3 话)</Select.Option>
+                                </Select>
+                            </div>
                         </div>
                         <div>
                             <label className="block text-sm font-semibold mb-1.5">导演剧情指令（可选）</label>
                             {(characterChips.length > 0 || openPitChips.length > 0) && (
-                                <div className="mb-2 space-y-1.5 bg-slate-50 rounded-xl p-2.5 border border-slate-200">
+                                <div className="mb-2 space-y-1.5 bg-[var(--bg-elevated)] rounded-[6px] p-2.5 border border-[var(--border)]">
                                     {characterChips.length > 0 && (
                                         <div className="flex flex-wrap items-center gap-1.5">
-                                            <span className="text-[11px] font-semibold text-slate-500">点击插入 @角色：</span>
+                                            <span className="text-[11px] font-medium text-[var(--text-muted)]">插入 @角色：</span>
                                             {characterChips.map((ch) => (
                                                 <button
                                                     key={ch.id}
@@ -445,13 +532,13 @@ export default function GenerationStudio() {
                                                             prev ? `${prev} @${ch.name}` : `聚焦 @${ch.name} `,
                                                         )
                                                     }
-                                                    className="inline-flex items-center gap-1 text-[11px] bg-white hover:bg-indigo-50 text-indigo-800 border border-indigo-200 rounded-full px-2 py-0.5 cursor-pointer transition"
+                                                    className="inline-flex items-center gap-1 text-[11px] bg-[var(--bg-panel)] hover:border-[var(--accent)] text-[var(--text-primary)] border border-[var(--border)] rounded-[4px] px-2 py-0.5 cursor-pointer transition-colors"
                                                 >
                                                     {ch.preview_image_path && (
                                                         <img
                                                             src={storageFileUrl(ch.preview_image_path)}
                                                             alt={ch.name}
-                                                            className="w-3.5 h-3.5 rounded-full object-cover"
+                                                            className="w-3.5 h-3.5 rounded-[2px] object-cover grayscale"
                                                         />
                                                     )}
                                                     @{ch.name}
@@ -461,7 +548,7 @@ export default function GenerationStudio() {
                                     )}
                                     {openPitChips.length > 0 && (
                                         <div className="flex flex-wrap items-center gap-1.5">
-                                            <span className="text-[11px] font-semibold text-slate-500">点击回收 #伏笔：</span>
+                                            <span className="text-[11px] font-medium text-[var(--text-muted)]">回收 #伏笔：</span>
                                             {openPitChips.map((pit) => (
                                                 <button
                                                     key={pit.id}
@@ -473,7 +560,7 @@ export default function GenerationStudio() {
                                                                 : `请在本话推进/回收伏笔【${pit.title}】`,
                                                         )
                                                     }
-                                                    className="text-[11px] bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-full px-2 py-0.5 cursor-pointer transition"
+                                                    className="text-[11px] bg-[var(--bg-panel)] hover:border-[var(--accent)] text-[var(--text-secondary)] border border-[var(--border)] rounded-[4px] px-2 py-0.5 cursor-pointer transition-colors"
                                                 >
                                                     #{pit.title.slice(0, 18)}
                                                 </button>
@@ -516,9 +603,9 @@ export default function GenerationStudio() {
                             <Empty description="尚未生成分镜脚本，请先在第一步点击「生成分镜脚本」。" />
                         ) : (
                             <>
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50 rounded-xl p-4 border border-slate-200">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-[var(--bg-elevated)] rounded-[6px] p-4 border border-[var(--border)]">
                                     <div>
-                                        <label className="block text-xs font-semibold text-slate-600 mb-1">本话标题</label>
+                                        <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">本话标题</label>
                                         <Input
                                             value={draftStoryboard.title}
                                             onChange={(val) => {
@@ -527,7 +614,7 @@ export default function GenerationStudio() {
                                         />
                                     </div>
                                     <div>
-                                        <label className="block text-xs font-semibold text-slate-600 mb-1">本话主线衔接说明</label>
+                                        <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">本话主线衔接说明</label>
                                         <Input
                                             value={draftStoryboard.arc_connection || ''}
                                             onChange={(val) => {
@@ -536,7 +623,7 @@ export default function GenerationStudio() {
                                         />
                                     </div>
                                     <div className="md:col-span-2">
-                                        <label className="block text-xs font-semibold text-slate-600 mb-1">剧情大纲 (Synopsis)</label>
+                                        <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">剧情大纲 (Synopsis)</label>
                                         <TextArea
                                             rows={2}
                                             value={draftStoryboard.synopsis}
@@ -549,13 +636,13 @@ export default function GenerationStudio() {
 
                                 <div className="space-y-4">
                                     {draftStoryboard.pages.map((page, pIdx) => (
-                                        <div key={pIdx} className="border border-slate-200 rounded-xl p-4 space-y-4 bg-white">
-                                            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
-                                                <span className="font-bold text-slate-900">
+                                        <div key={pIdx} className="border border-[var(--border)] rounded-[6px] p-4 space-y-4 bg-[var(--bg-panel)]">
+                                            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] pb-3">
+                                                <span className="font-mono font-semibold text-[var(--text-primary)]">
                                                     第 {page.page_number} 页 ({page.panels.length} 格)
                                                 </span>
                                                 <div className="flex items-center gap-2">
-                                                    <span className="text-xs text-slate-500">分格模板：</span>
+                                                    <span className="text-xs text-[var(--text-muted)]">分格模板：</span>
                                                     <Select
                                                         size="small"
                                                         value={page.layout}
@@ -575,18 +662,20 @@ export default function GenerationStudio() {
                                                 </div>
                                             </div>
 
-                                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
                                                 {page.panels.map((panel, panIdx) => (
                                                     <div
                                                         key={panIdx}
-                                                        className="rounded-xl bg-slate-50 border border-slate-200 p-3.5 space-y-2.5"
+                                                        className="rounded-[6px] bg-[var(--bg-elevated)] border border-[var(--border)] p-3.5 space-y-2.5"
                                                     >
                                                         <div className="flex items-center justify-between">
-                                                            <Tag color="indigo">Panel {panel.panel_id}</Tag>
-                                                            <span className="text-xs text-slate-500">景别：{panel.camera}</span>
+                                                            <span className="font-mono text-xs font-semibold text-[var(--accent)]">
+                                                                Panel {panel.panel_id}
+                                                            </span>
+                                                            <span className="text-xs text-[var(--text-muted)]">景别：{panel.camera}</span>
                                                         </div>
                                                         <div>
-                                                            <label className="block text-[11px] text-slate-500 mb-0.5">画面动作与场景</label>
+                                                            <label className="block text-[11px] text-[var(--text-muted)] mb-0.5">画面动作与场景</label>
                                                             <Input
                                                                 size="small"
                                                                 value={panel.scene}
@@ -598,7 +687,7 @@ export default function GenerationStudio() {
                                                             />
                                                         </div>
                                                         <div>
-                                                            <label className="block text-[11px] text-slate-500 mb-0.5">英文生图 Prompt</label>
+                                                            <label className="block text-[11px] text-[var(--text-muted)] mb-0.5">英文生图 Prompt</label>
                                                             <TextArea
                                                                 rows={2}
                                                                 value={panel.prompt}
@@ -611,7 +700,7 @@ export default function GenerationStudio() {
                                                         </div>
                                                         {panel.dialogue.length > 0 && (
                                                             <div className="space-y-1.5 pt-1">
-                                                                <div className="text-[11px] text-slate-500">对白与旁白气泡</div>
+                                                                <div className="text-[11px] text-[var(--text-muted)]">对白与旁白气泡</div>
                                                                 {panel.dialogue.map((dlg, dIdx) => (
                                                                     <div key={dIdx} className="flex gap-1.5">
                                                                         <Input
@@ -669,9 +758,9 @@ export default function GenerationStudio() {
                 {/* STEP 2: RENDER PANEL IMAGES */}
                 {activeStep === 2 && (
                     <div className="space-y-5 pt-2">
-                        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 bg-slate-50 rounded-xl p-4 border border-slate-200 items-end">
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 bg-[var(--bg-elevated)] rounded-[6px] p-4 border border-[var(--border)] items-end">
                             <div>
-                                <label className="block text-xs font-semibold text-slate-600 mb-1">图像后端</label>
+                                <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">图像后端</label>
                                 <Select
                                     value={imageBackend}
                                     onChange={(v) => setImageBackend(v ? String(v) : undefined)}
@@ -687,7 +776,7 @@ export default function GenerationStudio() {
                                 </Select>
                             </div>
                             <div>
-                                <label className="block text-xs font-semibold text-slate-600 mb-1">模型覆盖</label>
+                                <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">模型覆盖</label>
                                 <Select
                                     value={imageModel}
                                     onChange={(v) => setImageModel(v ? String(v) : undefined)}
@@ -700,7 +789,7 @@ export default function GenerationStudio() {
                                 </Select>
                             </div>
                             <div>
-                                <label className="block text-xs font-semibold text-slate-600 mb-1">分格尺寸</label>
+                                <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">分格尺寸</label>
                                 <Select
                                     value={imageSize}
                                     onChange={(v) => setImageSize(String(v || '1024x1024'))}
@@ -725,7 +814,7 @@ export default function GenerationStudio() {
                         {isRenderRunning && (
                             <div className="py-10 text-center space-y-2">
                                 <Spin size="large" />
-                                <div className="text-sm text-slate-600">
+                                <div className="text-sm text-[var(--text-secondary)]">
                                     Render Agent 正在检索角色设定图与画风基准并逐格生成画面（已完成 {generatedImages.length} 格）...
                                 </div>
                             </div>
@@ -733,7 +822,7 @@ export default function GenerationStudio() {
 
                         {generatedImages.length > 0 && (
                             <div className="space-y-4">
-                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5">
                                     {generatedImages.map((img) => {
                                         const pid = img.panel_id || img.id
                                         const candidates = candidatesByPanel.get(pid) || [img]
@@ -741,11 +830,11 @@ export default function GenerationStudio() {
                                             ? (img.meta?.reference_assets as string[])
                                             : []
                                         return (
-                                            <div key={img.id} className="border border-slate-200 rounded-xl p-2.5 bg-white space-y-2 flex flex-col">
+                                            <div key={img.id} className="border border-[var(--border)] rounded-[6px] p-2.5 bg-[var(--bg-panel)] space-y-2 flex flex-col">
                                                 <div className="flex items-center justify-between">
-                                                    <Tag size="small" color="indigo">
+                                                    <span className="font-mono text-xs font-semibold text-[var(--text-primary)]">
                                                         Panel {pid}
-                                                    </Tag>
+                                                    </span>
                                                     <Button
                                                         size="small"
                                                         theme="borderless"
@@ -755,24 +844,28 @@ export default function GenerationStudio() {
                                                         单格重绘
                                                     </Button>
                                                 </div>
-                                                <Image
-                                                    src={storageFileUrl(img.image_path)}
-                                                    alt={`Panel ${pid}`}
-                                                    className="w-full rounded"
-                                                />
+                                                <div className="mf-paper-sheet rounded-[4px] overflow-hidden">
+                                                    <Image
+                                                        src={storageFileUrl(img.image_path)}
+                                                        alt={`Panel ${pid}`}
+                                                        width="100%"
+                                                        className="w-full mf-manga-img"
+                                                        imgStyle={{ width: '100%', height: 'auto', display: 'block' }}
+                                                    />
+                                                </div>
                                                 {refNames.length > 0 && (
                                                     <div className="flex flex-wrap gap-1">
                                                         {refNames.slice(0, 3).map((rn, idx) => (
-                                                            <span key={idx} className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
-                                                                ref: {rn}
+                                                            <span key={idx} className="text-[10px] px-1.5 py-0.5 rounded-[4px] bg-[var(--bg-elevated)] text-[var(--text-muted)] font-mono">
+                                                                ref:{rn}
                                                             </span>
                                                         ))}
                                                     </div>
                                                 )}
                                                 {candidates.length > 1 && (
-                                                    <div className="pt-1 border-t border-slate-100 space-y-1">
-                                                        <div className="text-[10px] text-slate-500 font-semibold">
-                                                            候选版本切换 ({candidates.length})
+                                                    <div className="pt-1 border-t border-[var(--border)] space-y-1">
+                                                        <div className="text-[10px] text-[var(--text-muted)] font-medium">
+                                                            候选版本 ({candidates.length})
                                                         </div>
                                                         <div className="flex flex-wrap gap-1">
                                                             {candidates.map((cand, cIdx) => {
@@ -789,10 +882,10 @@ export default function GenerationStudio() {
                                                                                 imageId: cand.id,
                                                                             })
                                                                         }
-                                                                        className={`px-1.5 py-0.5 rounded text-[10px] border cursor-pointer ${
+                                                                        className={`px-1.5 py-0.5 rounded-[4px] text-[10px] font-mono border cursor-pointer ${
                                                                             isCur
-                                                                                ? 'bg-indigo-600 text-white border-indigo-600 font-bold'
-                                                                                : 'bg-slate-50 text-slate-600 border-slate-200 hover:border-indigo-400'
+                                                                                ? 'bg-[var(--accent)] text-white border-[var(--accent)] font-semibold'
+                                                                                : 'bg-[var(--bg-elevated)] text-[var(--text-secondary)] border-[var(--border)] hover:border-[var(--accent)]'
                                                                         }`}
                                                                     >
                                                                         v{cIdx + 1}
@@ -807,69 +900,22 @@ export default function GenerationStudio() {
                                     })}
                                 </div>
                                 <div className="flex justify-between pt-2">
-                                    <Button onClick={() => setActiveStep(1)}>← 返回调整分镜或对白</Button>
+                                    <Button theme="light" onClick={() => setActiveStep(1)}>← 返回调整分镜</Button>
                                     <Button
                                         theme="solid"
-                                        size="large"
                                         loading={layoutMutation.isPending}
                                         onClick={() => layoutMutation.mutate(writingMode)}
                                     >
-                                        合成漫画排版与对白气泡 →
+                                        进入排版与气泡画布 →
                                     </Button>
                                 </div>
                             </div>
                         )}
                     </div>
                 )}
-
-                {/* STEP 3: INTERACTIVE BUBBLE STUDIO & WRITEBACK */}
-                {activeStep === 3 && (
-                    <div className="space-y-5 pt-2">
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                            <div className="text-sm text-slate-600">
-                                支持传统日漫竖排与横排气泡切换、鼠标拖拽调整气泡位置、切换呐喊/低语样式，以及导出 PDF / CBZ / 长条漫。
-                            </div>
-                            <div className="flex gap-2">
-                                <Button
-                                    loading={layoutMutation.isPending || isLayoutRunning}
-                                    onClick={() => layoutMutation.mutate(writingMode)}
-                                >
-                                    {composedPages.length > 0 ? '重新合成全部页' : '开始合成漫画页'}
-                                </Button>
-                                {composedPages.length > 0 && (
-                                    <Button
-                                        theme="solid"
-                                        icon={<IconForward />}
-                                        loading={continueMutation.isPending}
-                                        onClick={() => continueMutation.mutate()}
-                                    >
-                                        继续续画下一话
-                                    </Button>
-                                )}
-                            </div>
-                        </div>
-
-                        {isLayoutRunning && (
-                            <div className="py-10 text-center space-y-2">
-                                <Spin size="large" />
-                                <div className="text-sm text-slate-600">正在执行漫画分格排版与记忆闭环回写...</div>
-                            </div>
-                        )}
-
-                        {composedPages.length > 0 && (
-                            <BubbleCanvasEditor
-                                episodeId={episodeId!}
-                                pages={composedPages}
-                                storyboard={draftStoryboard}
-                                writingMode={writingMode}
-                                onWritingModeChange={setWritingMode}
-                                onApplyAndRecompose={handleBubbleApplyAndRecompose}
-                                recomposing={layoutMutation.isPending}
-                            />
-                        )}
                     </div>
-                )}
-            </div>
+                </div>
+            )}
 
             {/* SINGLE PANEL RERENDER MODAL */}
             <Modal
@@ -883,11 +929,11 @@ export default function GenerationStudio() {
             >
                 <div className="space-y-3.5 text-xs">
                     <div>
-                        <label className="block font-semibold text-slate-700 mb-1">本格生图 Prompt</label>
+                        <label className="block font-medium text-[var(--text-secondary)] mb-1">本格生图 Prompt</label>
                         <TextArea rows={4} value={rerenderPrompt} onChange={setRerenderPrompt} />
                     </div>
                     <div>
-                        <label className="block font-semibold text-slate-700 mb-1">负向约束 (Negative Prompt)</label>
+                        <label className="block font-medium text-[var(--text-secondary)] mb-1">负向约束 (Negative Prompt)</label>
                         <Input
                             value={rerenderNegPrompt}
                             onChange={setRerenderNegPrompt}
@@ -896,7 +942,7 @@ export default function GenerationStudio() {
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                         <div>
-                            <label className="block font-semibold text-slate-700 mb-1">显式挂载参考资产（角色/道具/场景）</label>
+                            <label className="block font-medium text-[var(--text-secondary)] mb-1">显式挂载参考资产（角色/道具/场景）</label>
                             <Select
                                 multiple
                                 filter
@@ -913,7 +959,7 @@ export default function GenerationStudio() {
                             </Select>
                         </div>
                         <div>
-                            <label className="block font-semibold text-slate-700 mb-1">生图后端</label>
+                            <label className="block font-medium text-[var(--text-secondary)] mb-1">生图后端</label>
                             <Select
                                 style={{ width: '100%' }}
                                 value={rerenderBackend}
@@ -939,19 +985,94 @@ export default function GenerationStudio() {
                 footer={null}
                 width={860}
             >
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-3 mb-3 border-b border-[var(--border)]">
+                    <span className="text-xs text-[var(--text-secondary)]">切换预算策略实时预览动态裁剪效果：</span>
+                    <div className="flex items-center gap-1.5">
+                        {(
+                            [
+                                { key: 'quality', label: '效果优先 (64K)' },
+                                { key: 'balanced', label: '均衡 (28K)' },
+                                { key: 'cost', label: '成本优先 (10K)' },
+                            ] as const
+                        ).map((p) => {
+                            const active = (previewContext?.context_budget?.profile || contextProfile) === p.key
+                            return (
+                                <button
+                                    key={p.key}
+                                    type="button"
+                                    onClick={() => {
+                                        setContextProfile(p.key)
+                                        loadContextPreview(p.key)
+                                    }}
+                                    className="px-2.5 py-1 rounded-[4px] border text-xs cursor-pointer transition-colors"
+                                    style={{
+                                        backgroundColor: active ? 'var(--accent)' : 'var(--bg-elevated)',
+                                        borderColor: active ? 'var(--accent)' : 'var(--border)',
+                                        color: active ? '#fff' : 'var(--text-secondary)',
+                                    }}
+                                >
+                                    {p.label}
+                                </button>
+                            )
+                        })}
+                    </div>
+                </div>
+
                 {contextLoading ? (
                     <div className="py-12 flex justify-center">
                         <Spin size="large" />
                     </div>
                 ) : previewContext ? (
-                    <div className="space-y-4 max-h-[70vh] overflow-y-auto text-xs pr-1">
+                    <div className="space-y-4 max-h-[66vh] overflow-y-auto text-xs pr-1 text-[var(--text-secondary)]">
+                        {previewContext.context_budget && (
+                            <div className="rounded-[6px] border border-[var(--border)] bg-[var(--bg-elevated)] p-3.5 space-y-2">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <span className="font-semibold text-[var(--text-primary)]">
+                                        动态 Token 预算 · {previewContext.context_budget.profile_label}
+                                    </span>
+                                    <span className="font-mono text-[var(--text-primary)]">
+                                        约 {previewContext.context_budget.estimated_tokens_after.toLocaleString()} /{' '}
+                                        {previewContext.context_budget.budget_tokens.toLocaleString()} tokens (
+                                        {previewContext.context_budget.utilization_pct}%)
+                                    </span>
+                                </div>
+                                <div className="w-full h-1.5 rounded bg-[var(--bg-panel)] overflow-hidden">
+                                    <div
+                                        className="h-full"
+                                        style={{
+                                            width: `${Math.min(100, previewContext.context_budget.utilization_pct)}%`,
+                                            backgroundColor:
+                                                previewContext.context_budget.utilization_pct > 85
+                                                    ? 'var(--accent)'
+                                                    : 'var(--status-ok)',
+                                        }}
+                                    />
+                                </div>
+                                <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] text-[var(--text-muted)]">
+                                    <span>史料 {previewContext.context_budget.section_tokens.long_summary || 0}</span>
+                                    <span>近窗 {previewContext.context_budget.section_tokens.recent_episodes || 0}</span>
+                                    <span>角色 {previewContext.context_budget.section_tokens.character_dossier || 0}</span>
+                                    <span>伏笔 {previewContext.context_budget.section_tokens.active_pits || 0}</span>
+                                    <span>RAG {previewContext.context_budget.section_tokens.rag_memories || 0}</span>
+                                    <span>桥接 {previewContext.context_budget.section_tokens.previous_bridge || 0}</span>
+                                </div>
+                                {previewContext.context_budget.trim_actions.length > 0 && (
+                                    <div className="pt-1.5 border-t border-[var(--border)] space-y-0.5 text-[11px] text-[var(--accent)]">
+                                        {previewContext.context_budget.trim_actions.map((act, idx) => (
+                                            <div key={idx}>• {act}</div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                            <div className="rounded-xl bg-indigo-50 p-3.5 space-y-1">
-                                <div className="font-bold text-indigo-900">主线核心矛盾</div>
+                            <div className="rounded-[6px] border border-[var(--border)] bg-[var(--bg-elevated)] p-3.5 space-y-1">
+                                <div className="font-semibold text-[var(--text-primary)]">主线核心矛盾</div>
                                 <div>{previewContext.story_bible?.main_plot?.core_conflict || '（将从历史摘要推导）'}</div>
                             </div>
-                            <div className="rounded-xl bg-amber-50 p-3.5 space-y-1">
-                                <div className="font-bold text-amber-900">上一话结尾无缝桥接</div>
+                            <div className="rounded-[6px] border border-[var(--border)] bg-[var(--bg-elevated)] p-3.5 space-y-1">
+                                <div className="font-semibold text-[var(--text-primary)]">上一话结尾无缝桥接</div>
                                 <div>
                                     {previewContext.previous_bridge
                                         ? `第 ${previewContext.previous_bridge.episode_number} 话 · ${previewContext.previous_bridge.ending_state?.cliffhanger || previewContext.previous_bridge.summary}`
@@ -960,28 +1081,28 @@ export default function GenerationStudio() {
                             </div>
                         </div>
 
-                        <div className="rounded-xl border border-slate-200 p-3.5 space-y-1.5">
-                            <div className="font-bold text-slate-900">
+                        <div className="rounded-[6px] border border-[var(--border)] bg-[var(--bg-panel)] p-3.5 space-y-1.5">
+                            <div className="font-semibold text-[var(--text-primary)]">
                                 传入的角色档案与原声样本 ({previewContext.character_dossier?.length || 0})
                             </div>
                             {(previewContext.character_dossier || []).map((c) => (
-                                <div key={c.id} className="bg-slate-50 rounded p-2">
-                                    <span className="font-semibold text-slate-900">{c.name}</span>：{c.description}
-                                    {c.current_state && <div className="text-emerald-700 mt-0.5">累积状态：{c.current_state}</div>}
+                                <div key={c.id} className="bg-[var(--bg-elevated)] border border-[var(--border)] rounded-[4px] p-2">
+                                    <span className="font-semibold text-[var(--text-primary)]">{c.name}</span>：{c.description}
+                                    {c.current_state && <div className="text-emerald-500 mt-0.5">累积状态：{c.current_state}</div>}
                                     {c.speech_samples && c.speech_samples.length > 0 && (
-                                        <div className="text-indigo-700 mt-0.5">原声台词：{c.speech_samples.join(' / ')}</div>
+                                        <div className="text-[var(--text-muted)] mt-0.5">原声台词：{c.speech_samples.join(' / ')}</div>
                                     )}
                                 </div>
                             ))}
                         </div>
 
                         {(previewContext.unavailable_characters || []).length > 0 && (
-                            <div className="rounded-xl border border-rose-200 bg-rose-50/70 p-3.5 space-y-1">
-                                <div className="font-bold text-rose-900">
+                            <div className="rounded-[6px] border border-[var(--accent)] bg-[var(--accent-soft)] p-3.5 space-y-1">
+                                <div className="font-semibold text-[var(--accent)]">
                                     已故 / 封印 / 失踪状态硬锁定 ({previewContext.unavailable_characters?.length})
                                 </div>
                                 {(previewContext.unavailable_characters || []).map((uc) => (
-                                    <div key={uc.id} className="text-rose-800">
+                                    <div key={uc.id} className="text-[var(--text-primary)]">
                                         • <strong>{uc.name}</strong> [{uc.vital_status.toUpperCase()}
                                         {uc.vital_status_episode ? ` · 第${uc.vital_status_episode}话` : ''}]
                                         {uc.vital_status_note ? `：${uc.vital_status_note}` : ''}
@@ -990,8 +1111,8 @@ export default function GenerationStudio() {
                             </div>
                         )}
 
-                        <div className="rounded-xl border border-slate-200 p-3.5 space-y-1">
-                            <div className="font-bold text-slate-900">活跃待填伏笔 ({previewContext.active_pits.length})</div>
+                        <div className="rounded-[6px] border border-[var(--border)] bg-[var(--bg-panel)] p-3.5 space-y-1">
+                            <div className="font-semibold text-[var(--text-primary)]">活跃待填伏笔 ({previewContext.active_pits.length})</div>
                             {previewContext.active_pits.map((p, idx) => (
                                 <div key={idx}>
                                     • [{p.priority_label || p.priority}] {p.description}

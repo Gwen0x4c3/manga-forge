@@ -11,12 +11,11 @@ import {
     Toast,
     Popconfirm,
     Pagination,
-    Tag,
     TextArea,
 } from '@douyinfe/semi-ui'
 import { IconPlus, IconDelete, IconLink, IconSearch } from '@douyinfe/semi-icons'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { projectService, importService } from '@/services/project'
+import { projectService, importService, storageFileUrl } from '@/services/project'
 import type { CreateProjectRequest } from '@/services/project'
 
 const LANG_LABELS: Record<string, string> = {
@@ -36,6 +35,7 @@ export default function ProjectList() {
     const [keyword, setKeyword] = useState('')
     const [page, setPage] = useState(1)
     const [pageSize, setPageSize] = useState(18)
+    const [brokenCovers, setBrokenCovers] = useState<Record<string, boolean>>({})
 
     useEffect(() => {
         if (searchParams.get('create') === '1') {
@@ -91,32 +91,36 @@ export default function ProjectList() {
 
     return (
         <div className="space-y-6">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            {/* Minimal Editorial Gallery Header */}
+            <header className="pb-4 border-b flex flex-col md:flex-row md:items-end justify-between gap-4" style={{ borderColor: 'var(--border)' }}>
                 <div>
-                    <h1 className="text-2xl font-bold text-slate-900 m-0">连载作品库</h1>
-                    <p className="text-sm text-slate-500 mt-1 mb-0">
-                        管理全部漫画连载工程、世界观主线档案与多分支续画任务
+                    <h1 className="font-editorial text-2xl font-bold m-0" style={{ color: 'var(--text-primary)' }}>
+                        连载作品库
+                    </h1>
+                    <p className="text-xs mt-1 mb-0" style={{ color: 'var(--text-muted)' }}>
+                        共 {data?.total ?? 0} 部漫画连载工程 · 点击封面进入编辑工作台
                     </p>
                 </div>
-                <div className="flex flex-wrap items-center gap-3">
+                <div className="flex flex-wrap items-center gap-2">
                     <Input
+                        size="small"
                         prefix={<IconSearch />}
-                        placeholder="搜索作品名称..."
+                        placeholder="检索作品名..."
                         value={keyword}
                         onChange={(v: string) => {
                             setKeyword(v)
                             setPage(1)
                         }}
-                        style={{ width: 240 }}
+                        style={{ width: 200 }}
                     />
-                    <Button icon={<IconLink />} onClick={() => setShowMangaDexCreate(true)}>
-                        从 MangaDex 一键建档
+                    <Button size="small" theme="light" icon={<IconLink />} onClick={() => setShowMangaDexCreate(true)}>
+                        MangaDex 导入
                     </Button>
-                    <Button icon={<IconPlus />} theme="solid" onClick={() => setShowCreate(true)}>
-                        新建漫画项目
+                    <Button size="small" icon={<IconPlus />} theme="solid" onClick={() => setShowCreate(true)}>
+                        新建作品
                     </Button>
                 </div>
-            </div>
+            </header>
 
             {isLoading && (
                 <div className="py-16 flex justify-center">
@@ -125,17 +129,17 @@ export default function ProjectList() {
             )}
 
             {!isLoading && (!data?.items || data.items.length === 0) && (
-                <div className="studio-card py-16 px-6 text-center">
+                <div className="py-20 text-center space-y-4 border rounded-md" style={{ borderColor: 'var(--border)', backgroundColor: 'var(--bg-panel)' }}>
                     <Empty
-                        title="暂无连载项目"
-                        description="新建一部漫画作品，上传已有章节图片或 ZIP，系统即可自动识别人物场景、提炼主线伏笔并续画新章节。"
+                        title="尚无连载作品"
+                        description="新建作品或从 MangaDex 导入连载章节，即可构建人物图谱、伏笔时间线并续画新章节。"
                     />
-                    <div className="mt-4 flex justify-center gap-3">
-                        <Button icon={<IconPlus />} theme="solid" onClick={() => setShowCreate(true)}>
-                            新建连载项目
+                    <div className="flex justify-center gap-2">
+                        <Button size="small" icon={<IconPlus />} theme="solid" onClick={() => setShowCreate(true)}>
+                            新建连载
                         </Button>
-                        <Button icon={<IconLink />} onClick={() => setShowMangaDexCreate(true)}>
-                            从 MangaDex 导入整部连载
+                        <Button size="small" theme="light" icon={<IconLink />} onClick={() => setShowMangaDexCreate(true)}>
+                            从 MangaDex 导入
                         </Button>
                     </div>
                 </div>
@@ -143,80 +147,116 @@ export default function ProjectList() {
 
             {!isLoading && data?.items && data.items.length > 0 && (
                 <>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                    {/* Editorial Print Book Gallery */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                         {data.items.map((project) => {
                             const bible = project.canon_rules?.story_bible
                             const mainPlot = bible?.main_plot
-                            const ruleCount = bible?.discovered_rules?.length || 0
+                            const epTotal = project.episode_count ?? 0
+                            const epDone = project.understood_count ?? 0
+                            const pct = epTotal > 0 ? Math.round((epDone / epTotal) * 100) : 0
+
                             return (
-                                <div
+                                <article
                                     key={project.id}
-                                    onClick={() => navigate(`/projects/${project.id}`)}
-                                    className="studio-card studio-card-hover p-5 relative group cursor-pointer flex flex-col justify-between space-y-4"
+                                    onClick={() => navigate(`/projects/${project.id}?view=episodes`)}
+                                    className="group cursor-pointer flex flex-col relative"
                                 >
-                                    <div className="space-y-2.5">
-                                        <div className="flex items-start justify-between gap-2 pr-8">
-                                            <h3 className="text-base font-bold text-slate-900 m-0 line-clamp-1">
+                                    {/* Tankobon Cover Frame (2:3 Editorial Proportion) */}
+                                    <div
+                                        className="relative aspect-[3/4] rounded-[5px] border overflow-hidden transition-colors group-hover:border-[var(--accent)]"
+                                        style={{
+                                            backgroundColor: 'var(--bg-elevated)',
+                                            borderColor: 'var(--border)',
+                                        }}
+                                    >
+                                        {project.cover_image_path && !brokenCovers[project.id] ? (
+                                            <img
+                                                src={storageFileUrl(project.cover_image_path)}
+                                                alt={project.title}
+                                                onError={() =>
+                                                    setBrokenCovers((prev) => ({ ...prev, [project.id]: true }))
+                                                }
+                                                className="w-full h-full object-cover object-top transition-transform duration-300 group-hover:scale-[1.02]"
+                                            />
+                                        ) : (
+                                            <div className="w-full h-full px-5 pt-11 pb-5 flex flex-col justify-between bg-[var(--bg-panel)]">
+                                                <div
+                                                    className="font-mono text-[10px] uppercase tracking-widest"
+                                                    style={{ color: 'var(--text-muted)' }}
+                                                >
+                                                    {LANG_LABELS[project.language] || project.language}
+                                                </div>
+                                                <div
+                                                    className="font-editorial text-xl font-bold leading-snug line-clamp-3"
+                                                    style={{ color: 'var(--text-primary)' }}
+                                                >
+                                                    {project.title}
+                                                </div>
+                                                <div
+                                                    className="border-t pt-2 font-mono text-[10px] tracking-wider"
+                                                    style={{
+                                                        borderColor: 'var(--border)',
+                                                        color: 'var(--text-muted)',
+                                                    }}
+                                                >
+                                                    MANGAFORGE EDITION
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {/* Crisp top-left print stamp */}
+                                        <span className="absolute top-2.5 left-2.5 font-mono text-[11px] font-semibold px-2 py-0.5 rounded-[3px] bg-[#18181B]/90 border border-[#38383D] text-[#F4F4F5] uppercase">
+                                            {project.language} · {epTotal} 话
+                                        </span>
+
+                                        {/* Delete action on hover */}
+                                        <div
+                                            className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
+                                            onClick={(e) => e.stopPropagation()}
+                                        >
+                                            <Popconfirm
+                                                title="确认删除该连载项目？"
+                                                content="删除后该作品下的所有章节、资产与记忆将一并清理。"
+                                                onConfirm={() => deleteMutation.mutate(project.id)}
+                                            >
+                                                <Button icon={<IconDelete />} type="danger" theme="solid" size="small" />
+                                            </Popconfirm>
+                                        </div>
+                                    </div>
+
+                                    {/* Editorial Typography Footer */}
+                                    <div className="pt-3 space-y-2">
+                                        <div className="flex items-start justify-between gap-2">
+                                            <h3
+                                                className="font-editorial text-base font-bold m-0 line-clamp-1 group-hover:text-[var(--accent)] transition-colors"
+                                                style={{ color: 'var(--text-primary)' }}
+                                            >
                                                 {project.title}
                                             </h3>
                                         </div>
 
-                                        <div className="flex flex-wrap gap-1.5">
-                                            <Tag color="indigo" size="small">
-                                                {LANG_LABELS[project.language] || project.language.toUpperCase()}
-                                            </Tag>
-                                            {bible?.last_updated_episode && (
-                                                <Tag color="cyan" size="small">
-                                                    已解析至第 {bible.last_updated_episode} 话
-                                                </Tag>
-                                            )}
-                                            {ruleCount > 0 && (
-                                                <Tag color="purple" size="small">
-                                                    世界法则 {ruleCount} 条
-                                                </Tag>
-                                            )}
-                                        </div>
-
-                                        <p className="text-xs text-slate-500 line-clamp-2 m-0">
-                                            {project.description || '暂无简介'}
+                                        <p className="text-[13px] m-0 line-clamp-2 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                                            {mainPlot?.current_arc
+                                                ? `当前篇章：${mainPlot.current_arc}`
+                                                : project.description || '尚未导入或解析章节内容'}
                                         </p>
 
-                                        {mainPlot?.core_conflict ? (
-                                            <div className="rounded-lg bg-indigo-50/75 border border-indigo-100 p-3 text-xs space-y-1">
-                                                <div className="font-semibold text-indigo-800">核心主线：</div>
-                                                <div className="text-indigo-950 line-clamp-2">
-                                                    {mainPlot.core_conflict}
-                                                </div>
+                                        {/* Minimal Linear Progress Bar + Timestamp */}
+                                        <div className="pt-1 space-y-1.5">
+                                            <div className="h-[2px] w-full overflow-hidden rounded" style={{ backgroundColor: 'var(--border)' }}>
+                                                <div
+                                                    className="h-full"
+                                                    style={{ width: `${pct}%`, backgroundColor: 'var(--accent)' }}
+                                                />
                                             </div>
-                                        ) : project.long_summary ? (
-                                            <div className="rounded-lg bg-slate-50 border border-slate-100 p-3 text-xs text-slate-600 line-clamp-2">
-                                                {project.long_summary}
+                                            <div className="flex items-center justify-between text-xs font-mono" style={{ color: 'var(--text-muted)' }}>
+                                                <span>已解析 {epDone}/{epTotal} 话</span>
+                                                <span>{new Date(project.updated_at).toLocaleDateString()}</span>
                                             </div>
-                                        ) : (
-                                            <div className="rounded-lg bg-slate-50 border border-dashed border-slate-200 p-3 text-xs text-slate-400">
-                                                尚未运行多模态剧情理解，进入项目后可一键按序理解全书
-                                            </div>
-                                        )}
+                                        </div>
                                     </div>
-
-                                    <div className="flex items-center justify-between pt-3 border-t border-slate-100 text-xs text-slate-400">
-                                        <span>更新于 {new Date(project.updated_at).toLocaleDateString()}</span>
-                                        <span className="font-medium text-indigo-600">打开工作台 →</span>
-                                    </div>
-
-                                    <div
-                                        className="absolute top-3.5 right-3.5 opacity-0 group-hover:opacity-100 transition-opacity"
-                                        onClick={(e) => e.stopPropagation()}
-                                    >
-                                        <Popconfirm
-                                            title="确认删除该连载项目？"
-                                            content="删除后该作品下的所有章节、资产与记忆将一并清理。"
-                                            onConfirm={() => deleteMutation.mutate(project.id)}
-                                        >
-                                            <Button icon={<IconDelete />} type="danger" theme="light" size="small" />
-                                        </Popconfirm>
-                                    </div>
-                                </div>
+                                </article>
                             )
                         })}
                     </div>
