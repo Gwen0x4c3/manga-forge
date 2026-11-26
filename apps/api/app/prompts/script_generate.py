@@ -26,7 +26,10 @@ SCRIPT_GENERATE_SYSTEM_PROMPT = (
     "the series' exact manga art style. NEVER ask for speech bubbles or written text inside `panel.prompt` "
     "(lettering is composited separately by the layout engine).\n"
     "6. BUBBLE PLACEMENT — Set `dialogue[].speaker_position` (`top-right`, `top-left`, `bottom-right`, `bottom-left`) "
-    "to alternate cleanly across speakers in a panel."
+    "to alternate cleanly across speakers in a panel.\n"
+    "7. VITAL STATUS & DEATH LOCK — Characters marked `deceased` MUST NOT appear alive in present-day scenes "
+    "(only in explicitly labeled flashbacks, memories, or spirits if canon allows). Sealed or missing characters "
+    "cannot walk in casually without an explicit plot event explaining their return."
 )
 
 SCRIPT_GENERATE_USER_PROMPT = """Create the storyboard script for Episode {{ episode_number }}.
@@ -101,7 +104,7 @@ State Changes:
 ## Character Dossier (Cumulative State & Authentic Voice)
 {% if character_dossier %}
 {% for char in character_dossier %}
-- **{{ char.name }}**{% if char.role %} [{{ char.role }}]{% endif %}: {{ char.description }}
+- **{{ char.name }}**{% if char.role %} [{{ char.role }}]{% endif %}{% if char.vital_status and char.vital_status != 'alive' %} [STATUS: {{ char.vital_status | upper }}{% if char.vital_status_episode %} since Ep {{ char.vital_status_episode }}{% endif %}]{% endif %}: {{ char.description }}
   {% if char.visual_tags %}Visual Tags: {{ char.visual_tags | join(', ') }}{% endif %}
   {% if char.current_state %}Current State: {{ char.current_state }}{% endif %}
   {% if char.speech_style %}Speech Style: {{ char.speech_style }}{% endif %}
@@ -109,6 +112,13 @@ State Changes:
 {% endfor %}
 {% else %}
 (No character dossier yet)
+{% endif %}
+
+{% if unavailable_characters %}
+## Deceased / Unavailable Characters (STRICT CONTINUITY LOCK)
+{% for uc in unavailable_characters %}
+- **{{ uc.name }}** — **{{ uc.vital_status | upper }}**{% if uc.vital_status_episode %} (since Episode {{ uc.vital_status_episode }}){% endif %}{% if uc.vital_status_note %}: {{ uc.vital_status_note }}{% endif %}. DO NOT depict alive in present-day scenes unless explicitly framed as a flashback or canon revival.
+{% endfor %}
 {% endif %}
 
 ## Key Locations, Props & Outfits (Keep Visual Descriptions Consistent)

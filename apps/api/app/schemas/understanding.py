@@ -51,7 +51,13 @@ class Event(_CoercedBaseModel):
 
 class StateChange(_CoercedBaseModel):
     character: str = Field(description="Character or item whose state changed")
-    attribute: str = Field(description="What changed: injury|relationship|location|possession|ability|knowledge|status")
+    attribute: str = Field(
+        description=(
+            "What changed: vital_status|injury|relationship|location|possession|ability|knowledge|status. "
+            "Use vital_status with after='deceased'|'missing'|'sealed'|'injured'|'alive' whenever a character "
+            "dies, goes missing, is sealed, or revives."
+        )
+    )
     before: str | None = Field(default=None, description="Previous state")
     after: str = Field(description="New state")
     reason: str | None = Field(default=None, description="Why the change happened")
@@ -73,6 +79,13 @@ class CharacterSighting(_CoercedBaseModel):
         description="Speech pattern, tone, pronouns, or catchphrases observed in their dialogue",
     )
     role: str = Field(default="", description="protagonist|support|antagonist|cameo")
+    vital_status: str | None = Field(
+        default=None,
+        description=(
+            "Character vital/availability status at the end of this episode: "
+            "alive|injured|missing|sealed|deceased (set 'deceased' if killed or confirmed dead)"
+        ),
+    )
     source_page: int | None = Field(
         default=None,
         description="1-based episode page number showing the clearest portrait/view of this character",

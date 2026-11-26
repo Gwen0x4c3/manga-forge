@@ -29,6 +29,175 @@ ARC_BLOCK_SIZE = 10
 _SUMMARY_COMPRESS_THRESHOLD = 6500
 _SUMMARY_COMPRESS_TARGET = 3600
 
+VALID_VITAL_STATUSES = ("alive", "injured", "missing", "sealed", "deceased")
+
+_DECEASED_TOKENS = (
+    "deceased",
+    "dead",
+    "died",
+    "killed",
+    "slain",
+    "perished",
+    "executed",
+    "已死亡",
+    "已故",
+    "死亡",
+    "身亡",
+    "战死",
+    "阵亡",
+    "去世",
+    "逝世",
+    "牺牲",
+    "毙命",
+    "断气",
+    "被杀",
+    "被斩杀",
+    "被消灭",
+    "丧命",
+    "死去",
+    "陨落",
+)
+_REVIVED_TOKENS = (
+    "alive",
+    "revived",
+    "resurrected",
+    "recovered",
+    "healed",
+    "unsealed",
+    "returned",
+    "复活",
+    "重生",
+    "苏醒",
+    "存活",
+    "生还",
+    "痊愈",
+    "解除封印",
+    "归来",
+)
+_SEALED_TOKENS = ("sealed", "petrified", "frozen", "imprisoned", "封印", "石化", "冰封", "囚禁", "关押")
+_MISSING_TOKENS = ("missing", "vanished", "disappeared", "失踪", "下落不明", "不知所踪", "消失")
+_INJURED_TOKENS = ("injured", "wounded", "coma", "unconscious", "incapacitated", "重伤", "昏迷", "濒死", "受伤", "失能")
+
+
+def normalize_vital_status(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    val = str(raw).strip().lower()
+    if val in VALID_VITAL_STATUSES:
+        return val
+    return None
+
+
+def infer_vital_status(attribute: str | None, after_text: str | None) -> str | None:
+    """Infer a canonical vital_status from structured attribute/value or CJK/EN state_change phrasing."""
+    attr = (attribute or "").strip().lower()
+    text = (after_text or "").strip().lower()
+    if not text:
+        return None
+    direct = normalize_vital_status(text)
+    if direct:
+        return direct
+    # Check revival/alive BEFORE deceased so phrases like "从死亡中复活" resolve to alive
+    if any(tok in text for tok in _REVIVED_TOKENS):
+        return "alive"
+    if any(tok in text for tok in _DECEASED_TOKENS):
+        # Avoid false positive on negation like "未死亡" / "not dead"
+        if any(neg in text for neg in ("未死", "没死", "未死亡", "not dead", "survived", "逃过一死")):
+            return "alive"
+        return "deceased"
+    if any(tok in text for tok in _SEALED_TOKENS):
+        return "sealed"
+    if any(tok in text for tok in _MISSING_TOKENS):
+        return "missing"
+    if attr in ("injury", "vital_status", "status") and any(tok in text for tok in _INJURED_TOKENS):
+        return "injured"
+    return None
+
+
+def _match_character_asset_id(raw_name: str, char_assets: list[Asset]) -> str | None:
+    q = (raw_name or "").strip().lower()
+    if not q:
+        return None
+    for ca in char_assets:
+        names = [ca.name, *((ca.tags or {}).get("aliases") or [])]
+        for nm in names:
+            nl = (nm or "").strip().lower()
+            if nl and nl == q:
+                return ca.id
+    for ca in char_assets:
+        names = [ca.name, *((ca.tags or {}).get("aliases") or [])]
+        for nm in names:
+            nl = (nm or "").strip().lower()
+            if nl and len(nl) >= 2 and len(q) >= 2 and (nl in q or q in nl):
+                return ca.id
+    return None
+
+
+def replay_character_vital_statuses(
+    char_assets: list[Asset],
+    ep_summaries: list[tuple[Episode, dict]],
+) -> dict[str, dict[str, str | None]]:
+    """Chronologically replay character vital statuses across the active branch episodes up to cutoff.
+
+    Branch-isolated & time-travel safe: if a character dies in Ep 20 on `main`, they are `deceased`
+    for Ep 21+ on `main`, still `alive` on a What-If branch forked from Ep 15, and revert to `alive`
+    if a later episode explicitly revives them. Author `tags['vital_status_override']` takes precedence.
+    """
+    states: dict[str, dict[str, str | None]] = {
+        ca.id: {
+            "vital_status": "alive",
+            "vital_status_episode": None,
+            "vital_status_note": "",
+            "vital_status_override": None,
+        }
+        for ca in char_assets
+    }
+    id_set = set(states.keys())
+
+    for ep, content in ep_summaries:
+        ep_lbl = str(ep.label or ep.number)
+        for c_sight in content.get("characters") or content.get("character_sightings") or []:
+            if not isinstance(c_sight, dict):
+                continue
+            cid = c_sight.get("asset_id") if c_sight.get("asset_id") in id_set else None
+            if not cid:
+                cid = _match_character_asset_id(str(c_sight.get("name") or ""), char_assets)
+            if not cid:
+                continue
+            vs = normalize_vital_status(c_sight.get("vital_status"))
+            if vs and vs != states[cid]["vital_status"]:
+                states[cid]["vital_status"] = vs
+                states[cid]["vital_status_episode"] = ep_lbl
+
+        for sc in content.get("state_changes") or []:
+            if not isinstance(sc, dict):
+                continue
+            cid = _match_character_asset_id(str(sc.get("character") or ""), char_assets)
+            if not cid:
+                continue
+            attr = str(sc.get("attribute") or "")
+            after = str(sc.get("after") or "").strip()
+            reason = str(sc.get("reason") or "").strip()
+            vs = infer_vital_status(attr, after)
+            if vs:
+                states[cid]["vital_status"] = vs
+                states[cid]["vital_status_episode"] = ep_lbl
+                states[cid]["vital_status_note"] = (f"{after}（{reason}）" if reason else after)[:240]
+
+    # Honor explicit author manual override (e.g. from Story Atlas UI)
+    for ca in char_assets:
+        tags = ca.tags or {}
+        override = normalize_vital_status(tags.get("vital_status_override"))
+        if override:
+            states[ca.id]["vital_status"] = override
+            states[ca.id]["vital_status_override"] = override
+            if tags.get("vital_status_note"):
+                states[ca.id]["vital_status_note"] = str(tags["vital_status_note"])[:240]
+            if tags.get("vital_status_episode"):
+                states[ca.id]["vital_status_episode"] = str(tags["vital_status_episode"])
+
+    return states
+
 
 async def get_canon_rules(db: AsyncSession, project_id: str) -> dict | None:
     result = await db.execute(select(Project).where(Project.id == project_id).limit(1))
@@ -936,7 +1105,11 @@ async def build_context_for_generation(
 
     assets.sort(key=_asset_relevance_score)
 
+    char_assets_all = [a for a in assets if a.type == "character"]
+    vital_states_by_id = replay_character_vital_statuses(char_assets_all, ep_summaries)
+
     character_dossier: list[dict] = []
+    unavailable_characters: list[dict] = []
     world_assets: list[dict] = []
     style_desc = story_bible.get("art_style") or ""
 
@@ -960,18 +1133,35 @@ async def build_context_for_generation(
                         if ln not in samples:
                             samples.append(ln)
 
-            character_dossier.append(
-                {
-                    "id": asset.id,
-                    "name": asset.name,
-                    "role": tags.get("role", ""),
-                    "description": asset.description or tags.get("latest_appearance", ""),
-                    "visual_tags": vtags[:10],
-                    "current_state": "; ".join(f"{k}={v}" for k, v in state_items.items()),
-                    "speech_style": tags.get("speech_style", ""),
-                    "speech_samples": samples[-3:],
-                }
-            )
+            vs_info = vital_states_by_id.get(asset.id) or {}
+            v_status = str(vs_info.get("vital_status") or "alive")
+            v_ep = vs_info.get("vital_status_episode")
+            v_note = str(vs_info.get("vital_status_note") or "")
+
+            entry = {
+                "id": asset.id,
+                "name": asset.name,
+                "role": tags.get("role", ""),
+                "vital_status": v_status,
+                "vital_status_episode": v_ep,
+                "vital_status_note": v_note,
+                "description": asset.description or tags.get("latest_appearance", ""),
+                "visual_tags": vtags[:10],
+                "current_state": "; ".join(f"{k}={v}" for k, v in state_items.items()),
+                "speech_style": tags.get("speech_style", ""),
+                "speech_samples": samples[-3:],
+            }
+            character_dossier.append(entry)
+            if v_status in ("deceased", "missing", "sealed"):
+                unavailable_characters.append(
+                    {
+                        "id": asset.id,
+                        "name": asset.name,
+                        "vital_status": v_status,
+                        "vital_status_episode": v_ep,
+                        "vital_status_note": v_note,
+                    }
+                )
         else:
             world_assets.append(
                 {
@@ -1056,6 +1246,7 @@ async def build_context_for_generation(
             for ep, c in recent_pairs
         ],
         "character_dossier": character_dossier[:20],
+        "unavailable_characters": unavailable_characters,
         "world_assets": world_assets[:25],
         "rag_memories": [
             {
@@ -1375,6 +1566,9 @@ async def build_story_graph(
             for idx_b in range(idx_a + 1, len(seen_list)):
                 pair_episodes.setdefault((seen_list[idx_a], seen_list[idx_b]), set()).add(ep_num)
 
+    # Replay branch-isolated character vital statuses across timeline episodes
+    graph_vital_states = replay_character_vital_statuses(char_assets, ep_summaries_branch)
+
     # Build character nodes
     char_nodes: list[dict] = []
     for ca in char_assets:
@@ -1396,11 +1590,16 @@ async def build_story_graph(
                     }
                 )
 
+        vs_info = graph_vital_states.get(ca.id) or {}
         char_nodes.append(
             {
                 "id": ca.id,
                 "name": ca.name,
                 "role": tags.get("role") or "support",
+                "vital_status": vs_info.get("vital_status") or "alive",
+                "vital_status_episode": vs_info.get("vital_status_episode"),
+                "vital_status_note": vs_info.get("vital_status_note") or "",
+                "vital_status_override": vs_info.get("vital_status_override"),
                 "aliases": tags.get("aliases") or [],
                 "description": (ca.description or "")[:360],
                 "speech_style": tags.get("speech_style") or "",

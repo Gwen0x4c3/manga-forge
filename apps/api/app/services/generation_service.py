@@ -330,12 +330,15 @@ async def record_character_sightings(
     project_id: str,
     episode_id: str,
     sightings: list[dict],
+    episode_label: str | None = None,
 ) -> dict[str, Asset]:
     """Cross-episode character tracking: link sightings to known assets (by asset_id or name/alias),
-    record appearance, and enrich speech_style / role / appearance metadata.
+    record appearance, and enrich speech_style / role / appearance / vital_status metadata.
 
     Returns mapping of normalized character name -> matched Asset.
     """
+    from app.services.memory_service import normalize_vital_status
+
     if not sightings:
         return {}
     result = await db.execute(select(Asset).where(Asset.project_id == project_id, Asset.type == "character"))
@@ -372,12 +375,57 @@ async def record_character_sightings(
             tags["latest_appearance"] = str(s["appearance"])[:400]
             if not asset.description:
                 asset.description = str(s["appearance"])
+        vs = normalize_vital_status(s.get("vital_status"))
+        if vs:
+            if vs != tags.get("vital_status") and episode_label:
+                tags["vital_status_episode"] = str(episode_label)
+            tags["vital_status"] = vs
         asset.tags = tags
         if name:
             matched_by_name[_normalize_name(name)] = asset
 
     await db.commit()
     return matched_by_name
+
+
+async def sync_character_vital_statuses(
+    db: AsyncSession,
+    project_id: str,
+    episode_label: str,
+    state_changes: list[dict],
+) -> None:
+    """Apply vital_status transitions (death, sealing, missing, injury, revival) from state_changes
+    directly onto matching character Assets so their tags always reflect the latest iterative state."""
+    from app.services.memory_service import infer_vital_status
+
+    if not state_changes:
+        return
+    result = await db.execute(select(Asset).where(Asset.project_id == project_id, Asset.type == "character"))
+    char_assets = list(result.scalars().all())
+    changed = False
+
+    for sc in state_changes:
+        if not isinstance(sc, dict):
+            continue
+        cname = str(sc.get("character") or "").strip()
+        attr = str(sc.get("attribute") or "").strip()
+        after = str(sc.get("after") or "").strip()
+        reason = str(sc.get("reason") or "").strip()
+        inferred = infer_vital_status(attr, after)
+        if not cname or not inferred:
+            continue
+        asset = next((a for a in char_assets if _asset_matches_name(a, cname)), None)
+        if not asset:
+            continue
+        tags = dict(asset.tags or {})
+        tags["vital_status"] = inferred
+        tags["vital_status_episode"] = str(episode_label)
+        tags["vital_status_note"] = (f"{after}（{reason}）" if reason else after)[:240]
+        asset.tags = tags
+        changed = True
+
+    if changed:
+        await db.commit()
 
 
 async def record_asset_sightings(

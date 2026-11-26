@@ -203,6 +203,8 @@ def _merge_chunk_understandings(chunks: list[dict]) -> dict:
                 if char.get("bbox") and not prev.get("bbox"):
                     prev["bbox"] = char["bbox"]
                     prev["source_page"] = char.get("source_page")
+                if char.get("vital_status"):
+                    prev["vital_status"] = char["vital_status"]
                 prev["aliases"] = list(dict.fromkeys([*(prev.get("aliases") or []), *(char.get("aliases") or [])]))
 
         for sight in chunk.get("asset_sightings") or []:
@@ -752,10 +754,19 @@ async def persist_episode_understanding(
             db, episode.project_id, episode.id, understanding_dict["new_assets"]
         )
 
-    # 2. Record character & item/location sightings + backfill asset_id onto understanding_dict.characters
+    # 2. Record character & item/location sightings + backfill asset_id + sync vital_status transitions
+    ep_label_early = episode.label or str(episode.number)
     matched_chars = await generation_service.record_character_sightings(
-        db, episode.project_id, episode.id, understanding_dict.get("characters", [])
+        db,
+        episode.project_id,
+        episode.id,
+        understanding_dict.get("characters", []),
+        episode_label=ep_label_early,
     )
+    if understanding_dict.get("state_changes"):
+        await generation_service.sync_character_vital_statuses(
+            db, episode.project_id, ep_label_early, understanding_dict.get("state_changes", [])
+        )
     for c in understanding_dict.get("characters") or []:
         if not c.get("asset_id"):
             norm = generation_service._normalize_name(c.get("name", ""))

@@ -399,3 +399,145 @@ def test_crop_asset_from_page_and_comfyui_injection(monkeypatch: pytest.MonkeyPa
     assert default_wf["5"]["inputs"]["width"] == 832
     assert default_wf["5"]["inputs"]["height"] == 1216
     assert default_wf["6"]["inputs"]["text"] == "manga hero"
+
+
+def test_iterative_character_vital_status_death_branch_isolation_and_revival(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify iterative character death/revival state binding, branch isolation, and long-series lock."""
+    monkeypatch.setattr(memory_service, "embeddings_configured", lambda: False)
+    db = _make_memory_db()
+
+    async def _run() -> None:
+        pid = str(uuid.uuid4())
+        bid_main = str(uuid.uuid4())
+        bid_whatif = str(uuid.uuid4())
+        ep1, ep2, ep3, ep5 = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+        ep_whatif_3 = str(uuid.uuid4())
+
+        db.add(Project(id=pid, title="Death Lock Manga", language="zh"))
+        db.add(Branch(id=bid_main, project_id=pid, name="main", is_default=True))
+        db.add(
+            Branch(
+                id=bid_whatif,
+                project_id=pid,
+                name="what-if-saved",
+                is_default=False,
+                base_branch_id=bid_main,
+                base_episode_id=ep2,
+            )
+        )
+        for eid, num, lbl in [(ep1, "1", "1"), (ep2, "2", "2"), (ep3, "3", "3"), (ep5, "5", "5")]:
+            db.add(
+                Episode(
+                    id=eid,
+                    project_id=pid,
+                    branch_id=bid_main,
+                    number=Decimal(num),
+                    label=lbl,
+                    title=f"第{lbl}话",
+                    status="understood",
+                )
+            )
+        # What-if branch copies ep1 & ep2 lineage and diverges at ep3 (where Mentor survives)
+        ep_w1, ep_w2 = str(uuid.uuid4()), str(uuid.uuid4())
+        db.add(Episode(id=ep_w1, project_id=pid, branch_id=bid_whatif, number=Decimal("1"), label="1", parent_episode_id=ep1, status="understood"))
+        db.add(Episode(id=ep_w2, project_id=pid, branch_id=bid_whatif, number=Decimal("2"), label="2", parent_episode_id=ep2, status="understood"))
+        db.add(Episode(id=ep_whatif_3, project_id=pid, branch_id=bid_whatif, number=Decimal("3"), label="3", parent_episode_id=ep_w2, status="understood"))
+
+        mentor = Asset(
+            id=str(uuid.uuid4()),
+            project_id=pid,
+            type="character",
+            name="雷恩导师",
+            description="白发剑圣",
+            tags={"role": "support"},
+            episode_ids={ep1: True, ep3: True},
+        )
+        db.add(mentor)
+
+        db.add(EpisodeMemory(id=str(uuid.uuid4()), episode_id=ep1, type="summary", content={"summary": "导师登场教导主角。", "state_changes": []}))
+        db.add(EpisodeMemory(id=str(uuid.uuid4()), episode_id=ep2, type="summary", content={"summary": "前往边境城。", "state_changes": []}))
+        db.add(
+            EpisodeMemory(
+                id=str(uuid.uuid4()),
+                episode_id=ep3,
+                type="summary",
+                content={
+                    "summary": "雷恩导师为掩护主角撤退与魔王军激战。",
+                    "state_changes": [
+                        {
+                            "character": "雷恩导师",
+                            "attribute": "vital_status",
+                            "before": "存活",
+                            "after": "战死",
+                            "reason": "替主角挡下致命魔剑",
+                        }
+                    ],
+                },
+            )
+        )
+        db.add(
+            EpisodeMemory(
+                id=str(uuid.uuid4()),
+                episode_id=ep5,
+                type="summary",
+                content={
+                    "summary": "大祭司发动禁术复活了雷恩导师。",
+                    "state_changes": [
+                        {
+                            "character": "雷恩导师",
+                            "attribute": "vital_status",
+                            "before": "已死亡",
+                            "after": "被禁术复活",
+                        }
+                    ],
+                },
+            )
+        )
+        # What-if branch Ep 3: Mentor survives!
+        db.add(EpisodeMemory(id=str(uuid.uuid4()), episode_id=ep_w1, type="summary", content={"summary": "导师登场。", "state_changes": []}))
+        db.add(EpisodeMemory(id=str(uuid.uuid4()), episode_id=ep_w2, type="summary", content={"summary": "前往边境城。", "state_changes": []}))
+        db.add(
+            EpisodeMemory(
+                id=str(uuid.uuid4()),
+                episode_id=ep_whatif_3,
+                type="summary",
+                content={
+                    "summary": "主角及时救下导师，全员生还。",
+                    "state_changes": [
+                        {"character": "雷恩导师", "attribute": "vital_status", "after": "逃过一死，重伤撤离"}
+                    ],
+                },
+            )
+        )
+        await db.commit()
+
+        # 1. On main after Ep 3 (cutoff=4): Mentor MUST be deceased & locked in unavailable_characters
+        ctx_main_4 = await memory_service.build_context_for_generation(db, pid, bid_main, Decimal("4"))  # type: ignore[arg-type]
+        assert len(ctx_main_4["unavailable_characters"]) == 1
+        assert ctx_main_4["unavailable_characters"][0]["name"] == "雷恩导师"
+        assert ctx_main_4["unavailable_characters"][0]["vital_status"] == "deceased"
+        assert ctx_main_4["unavailable_characters"][0]["vital_status_episode"] == "3"
+
+        # 2. On What-If branch after Ep 3: Mentor survived (injured, NOT deceased & NOT locked unavailable!)
+        ctx_whatif_4 = await memory_service.build_context_for_generation(db, pid, bid_whatif, Decimal("4"))  # type: ignore[arg-type]
+        assert ctx_whatif_4["unavailable_characters"] == []
+        mentor_whatif = next(c for c in ctx_whatif_4["character_dossier"] if c["name"] == "雷恩导师")
+        assert mentor_whatif["vital_status"] == "injured"
+        assert memory_service.infer_vital_status("vital_status", "确认未死亡") == "alive"
+
+        # 3. On main after Ep 5 revival (cutoff=5): Iterative replay flips status back to alive!
+        ctx_main_5 = await memory_service.build_context_for_generation(db, pid, bid_main, Decimal("5"))  # type: ignore[arg-type]
+        assert ctx_main_5["unavailable_characters"] == []
+        mentor_revived = next(c for c in ctx_main_5["character_dossier"] if c["name"] == "雷恩导师")
+        assert mentor_revived["vital_status"] == "alive"
+        assert mentor_revived["vital_status_episode"] == "5"
+
+        # 4. Story Graph exposes vital_status fields too
+        graph = await memory_service.build_story_graph(db, pid, branch_id=bid_main)  # type: ignore[arg-type]
+        node = next(n for n in graph["character_graph"]["nodes"] if n["name"] == "雷恩导师")
+        assert node["vital_status"] == "alive"
+        assert node["vital_status_episode"] == "5"
+
+    asyncio.run(_run())

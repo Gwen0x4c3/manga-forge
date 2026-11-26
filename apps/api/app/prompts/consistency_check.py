@@ -11,11 +11,11 @@ CONSISTENCY_CHECK_SYSTEM_PROMPT = (
     "1. Canon & World Rule Violations (breaking established laws/settings of the world)\n"
     "2. Immediate Transition Errors (ignoring where/how the previous episode ended without explanation)\n"
     "3. Character & Voice Inconsistencies (wrong personality, wrong forms of address, wrong visual appearance/outfit)\n"
-    "4. Cumulative State Conflicts (injured character suddenly unharmed, lost/locked item used impossibly, wrong location)\n"
+    "4. Cumulative State & Vital Status Conflicts (DECEASED character appearing alive in present-day scenes without explicit flashback/revival, injured character suddenly unharmed, sealed/missing character appearing without explanation, lost/locked item used impossibly)\n"
     "5. Plot & Foreshadowing Contradictions (contradicting open mysteries or past events)\n"
     "6. Panel-Layout Mismatch (e.g. layout='3_panels' having 1 or 5 panels, or missing dialogue language consistency)\n\n"
     "Severity levels:\n"
-    "- critical = factual contradiction, broken continuity, or wrong character identity/state (must regenerate)\n"
+    "- critical = factual contradiction, deceased character erroneously alive, broken continuity, or wrong character identity/state (must regenerate)\n"
     "- warning = minor pacing, outfit, or tone drift\n"
     "- info = constructive polish suggestion\n"
     "Be rigorous on continuity facts while welcoming creative forward plot progression."
@@ -48,10 +48,17 @@ Canon Rules: (none)
 
 ## Cumulative Character Dossier & Latest States
 {% for char in character_states %}
-- {{ char.name }}: {{ char.description }}{% if char.current_state %} | State: {{ char.current_state }}{% endif %}{% if char.speech_style %} | Voice: {{ char.speech_style }}{% endif %}
+- {{ char.name }}{% if char.vital_status and char.vital_status != 'alive' %} [{{ char.vital_status | upper }}{% if char.vital_status_episode %} since Ep {{ char.vital_status_episode }}{% endif %}]{% endif %}: {{ char.description }}{% if char.current_state %} | State: {{ char.current_state }}{% endif %}{% if char.speech_style %} | Voice: {{ char.speech_style }}{% endif %}
 {% else %}
 (none)
 {% endfor %}
+
+{% if unavailable_characters %}
+## Deceased / Unavailable Characters (MUST NOT appear alive in present-day panels)
+{% for uc in unavailable_characters %}
+- {{ uc.name }}: {{ uc.vital_status | upper }}{% if uc.vital_status_episode %} (Ep {{ uc.vital_status_episode }}){% endif %}{% if uc.vital_status_note %} — {{ uc.vital_status_note }}{% endif %}
+{% endfor %}
+{% endif %}
 
 ## Key Items & Locations
 {% for asset in world_assets %}
