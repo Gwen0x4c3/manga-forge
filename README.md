@@ -42,7 +42,7 @@ MangaForge ingests serialized manga chapters (local archives/images or MangaDex)
 
 ## Showcase
 
-End-to-end live workspace on ***Isekai Ojisan* (*Uncle from Another World*)**: 118 MangaDex chapters imported, with the first 10 chapters (Chapters 1–9 incl. 7.5, 213 pages) analyzed sequentially into 6 clean characters (9.0–9.5/10 blind-scored portraits), 18 100%-illustrated visual assets, and 4 consolidated high-signal plot threads, alongside generated continuation chapters.
+End-to-end live workspace on ***Isekai Ojisan* (*Uncle from Another World*)**: 118 MangaDex chapters imported, with the first 10 chapters (Chapters 1–9 incl. 7.5, 213 pages) analyzed sequentially into 5 core characters (9.0–9.5/10 blind-scored portraits), 18 100%-illustrated scene/prop/outfit assets (24 assets total incl. style sheet), and 4 consolidated high-signal plot threads, alongside generated continuation chapters.
 
 ### Project Workbench, Asset Library & Model Hub
 
