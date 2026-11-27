@@ -21,6 +21,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { assetService, episodeService, generationService, storageFileUrl } from '@/services/project'
 import type { EpisodeMemory, EpisodePage, GenerationRun } from '@/services/project'
 import PageCropModal from '@/components/PageCropModal'
+import { formatEpisodeLabel } from '@/utils/episode'
 
 const STATUS_META: Record<string, { label: string; color: TagColor }> = {
     imported: { label: '已导入 · 待理解', color: 'blue' },
@@ -268,7 +269,8 @@ export default function EpisodeDetail() {
                     </div>
                     <div className="flex flex-wrap items-center gap-2.5">
                         <h1 className="font-editorial text-xl font-bold text-[var(--text-primary)] m-0">
-                            第 {episode.label || episode.number} 话{episode.title ? ` · ${episode.title}` : ''}
+                            {formatEpisodeLabel(episode.label, episode.number)}
+                            {episode.title ? ` · ${episode.title}` : ''}
                         </h1>
                         <Tag color={statusInfo.color}>{statusInfo.label}</Tag>
                         <Tag color={episode.source === 'generated' ? 'violet' : 'grey'}>

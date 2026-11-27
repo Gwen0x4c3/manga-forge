@@ -39,7 +39,7 @@ def _build_openai_client(role: str = "main_llm") -> AsyncOpenAI:
         api_key=cfg.api_key or "no-key",
         base_url=base_url,
         default_headers=extra_headers or None,
-        http_client=httpx.AsyncClient(trust_env=False, timeout=600.0),
+        http_client=httpx.AsyncClient(trust_env=False, timeout=240.0),
     )
     return instrument_openai_client(client, provider=cfg.provider_key or "openai")
 

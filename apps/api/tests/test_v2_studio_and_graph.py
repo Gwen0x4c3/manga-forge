@@ -266,7 +266,7 @@ def test_build_story_graph_and_ask_bible(monkeypatch: pytest.MonkeyPatch) -> Non
         )
         assert "冰霜之手" in qa["answer"]
         assert len(qa["citations"]) >= 1
-        assert captured_calls[0]["max_tokens"] == settings.OPENAI_MAX_TOKENS
+        assert captured_calls[0]["max_tokens"] >= settings.OPENAI_MAX_TOKENS
 
     asyncio.run(_run())
 

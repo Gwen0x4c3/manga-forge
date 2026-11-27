@@ -581,6 +581,7 @@ async def get_episode_external_ref(
             EpisodeExternalRef.provider == "mangadex",
             EpisodeExternalRef.external_chapter_id == external_chapter_id,
         )
+        .limit(1)
     )
     return result.scalar_one_or_none()
 

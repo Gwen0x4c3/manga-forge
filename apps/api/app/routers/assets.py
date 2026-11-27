@@ -160,6 +160,15 @@ async def crop_asset_from_page(
     return AssetImageResponse.model_validate(image)
 
 
+@router.post("/asset-images/{image_id}/set-primary", response_model=AssetImageResponse)
+async def set_primary_asset_image(image_id: str, db: AsyncSession = Depends(get_db)):
+    image = await asset_service.get_asset_image(db, image_id)
+    if not image:
+        raise HTTPException(status_code=404, detail="Asset image not found")
+    updated = await asset_service.set_primary_asset_image(db, image)
+    return AssetImageResponse.model_validate(updated)
+
+
 @router.delete("/asset-images/{image_id}", status_code=204)
 async def delete_asset_image(image_id: str, db: AsyncSession = Depends(get_db)):
     image = await asset_service.get_asset_image(db, image_id)

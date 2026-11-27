@@ -28,6 +28,7 @@ import type {
     Storyboard,
     GenerationContext,
 } from '@/services/project'
+import { formatEpisodeLabel } from '@/utils/episode'
 import BubbleCanvasEditor from '@/components/BubbleCanvasEditor'
 
 const LAYOUT_OPTIONS = [
@@ -392,7 +393,7 @@ export default function GenerationStudio() {
                     <h1 className="font-editorial text-sm font-semibold m-0 truncate" style={{ color: 'var(--text-primary)' }}>
                         {episode.title && new RegExp(`^第\\s*${episode.label || episode.number}\\s*话`).test(episode.title)
                             ? episode.title
-                            : `第 ${episode.label || episode.number} 话${episode.title ? ` · ${episode.title}` : ''}`}
+                            : `${formatEpisodeLabel(episode.label, episode.number)}${episode.title ? ` · ${episode.title}` : ''}`}
                     </h1>
 
                     <span className="h-4 w-px hidden md:inline-block" style={{ backgroundColor: 'var(--border)' }} />

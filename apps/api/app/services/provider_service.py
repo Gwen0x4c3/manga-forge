@@ -86,9 +86,10 @@ async def get_overview(db: AsyncSession) -> ProviderOverviewResponse:
 
 async def create_provider(db: AsyncSession, payload: ProviderCreateRequest) -> ModelProviderResponse:
     preset = PRESET_BY_KEY.get(payload.preset_key)
-    base_url = normalize_base_url(payload.base_url or (preset.base_url if preset else "")) or ""
-    default_model = (payload.default_model or (preset.default_model if preset else "")).strip()
     interface_type = payload.interface_type or (preset.interface_type if preset else "openai_compatible")
+    raw_url = (payload.base_url or (preset.base_url if preset else "")).strip()
+    base_url = raw_url if interface_type == "antigravity" else (normalize_base_url(raw_url) or "")
+    default_model = (payload.default_model or (preset.default_model if preset else "")).strip()
     headers = dict(preset.extra_headers if preset else {})
     if payload.extra_headers:
         headers.update(payload.extra_headers)
@@ -139,7 +140,10 @@ async def update_provider(
     if payload.interface_type is not None:
         provider.interface_type = payload.interface_type
     if payload.base_url is not None:
-        provider.base_url = normalize_base_url(payload.base_url) or ""
+        eff_iface = payload.interface_type or provider.interface_type
+        provider.base_url = (
+            payload.base_url.strip() if eff_iface == "antigravity" else (normalize_base_url(payload.base_url) or "")
+        )
     if payload.api_key is not None:
         raw_key = payload.api_key.strip()
         if raw_key:

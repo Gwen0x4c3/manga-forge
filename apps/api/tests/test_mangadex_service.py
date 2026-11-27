@@ -465,12 +465,18 @@ def test_extract_chapters_from_aggregate_response_keeps_entries_without_chapter_
                 "chapters": {
                     "none": {"chapter": None, "id": "special-1"},
                 }
-            }
+            },
+            "none": {
+                "chapters": {
+                    "none": {"chapter": "none", "id": "special-2"},
+                }
+            },
         },
     }
 
     flattened = extract_chapters_from_aggregate_response(payload)
 
     assert flattened == [
-        {"chapter": "id:special-1", "chapter_id": "special-1", "volume": "0", "is_unavailable": False}
+        {"chapter": "Vol.0 番外", "chapter_id": "special-1", "volume": "0", "is_unavailable": False},
+        {"chapter": "番外", "chapter_id": "special-2", "volume": None, "is_unavailable": False},
     ]

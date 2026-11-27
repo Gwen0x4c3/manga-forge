@@ -26,10 +26,14 @@ def test_builtin_presets_cover_all_mainstream_providers():
         "kimi",
         "deepseek",
         "qwen",
+        "antigravity",
         "comfyui",
         "custom",
     }
     assert expected.issubset(keys)
+    assert PRESET_BY_KEY["antigravity"].interface_type == "antigravity"
+    assert PRESET_BY_KEY["antigravity"].supports_image is True
+    assert PRESET_BY_KEY["openrouter"].supports_image is True
     assert PRESET_BY_KEY["glm_coding"].base_url == "https://open.bigmodel.cn/api/coding/paas/v4"
     assert PRESET_BY_KEY["openrouter"].base_url == "https://openrouter.ai/api/v1"
     assert PRESET_BY_KEY["deepseek"].base_url == "https://api.deepseek.com"

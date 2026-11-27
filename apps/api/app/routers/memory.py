@@ -135,3 +135,18 @@ async def ask_story_bible(
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/{project_id}/memory/consolidate")
+async def consolidate_memory(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Run Memory Gardener to merge duplicate aliases, prune background noise, and tighten open pits."""
+    from app.core.llm import ensure_llm_configured
+
+    ensure_llm_configured()
+    try:
+        return await memory_service.consolidate_project_memory(db, project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

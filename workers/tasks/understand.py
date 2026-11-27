@@ -143,6 +143,14 @@ async def _understand_branch_sequential(
             try:
                 await _summarize_episode_with_db(db, None, str(run.id), ep.id)
                 completed += 1
+                if completed % 10 == 0:
+                    try:
+                        from app.services import memory_service
+
+                        stats = await memory_service.consolidate_project_memory(db, project_id)
+                        logger.info("Auto-consolidated project %s after %d episodes: %s", project_id, completed, stats)
+                    except Exception:
+                        logger.warning("Periodic memory consolidation failed after episode %s", ep.id, exc_info=True)
             except Exception:
                 failed_ids.append(ep.id)
                 logger.warning("Sequential understand skipped failed episode %s, continuing series", ep.id)

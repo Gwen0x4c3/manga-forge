@@ -138,7 +138,7 @@ def _env_fallback(role: str) -> ResolvedModelConfig:
             interface_type="openai_compatible",
             base_url=normalize_base_url(settings.IMAGE_API_URL or settings.OPENAI_BASE_URL),
             api_key=settings.IMAGE_API_KEY or settings.OPENAI_API_KEY or "",
-            model=settings.IMAGE_MODEL or "gpt-image-2",
+            model=settings.IMAGE_MODEL or "gpt-image-1",
             image_size=settings.IMAGE_DEFAULT_SIZE or "1024x1024",
         )
 
@@ -202,6 +202,11 @@ def _load_db_snapshot() -> dict[str, ResolvedModelConfig]:
                 elif b.role == "image_gen" and p.preset_key == "comfyui":
                     eff_interface = "comfyui"
 
+                eff_model = (b.model_id or p.default_model or "").strip()
+                default_max_tokens = settings.OPENAI_MAX_TOKENS
+                if any(k in eff_model.lower() for k in ("glm-5.4", "reasoner", "thinking", "r1", "o3", "o4")):
+                    default_max_tokens = max(default_max_tokens, 32768)
+
                 resolved[b.role] = ResolvedModelConfig(
                     role=b.role,
                     source="database",
@@ -211,8 +216,8 @@ def _load_db_snapshot() -> dict[str, ResolvedModelConfig]:
                     interface_type=eff_interface,
                     base_url=normalize_base_url(p.base_url),
                     api_key=decrypt_secret(p.api_key_encrypted),
-                    model=(b.model_id or p.default_model or "").strip(),
-                    max_tokens=int(params.get("max_tokens") or settings.OPENAI_MAX_TOKENS),
+                    model=eff_model,
+                    max_tokens=int(params.get("max_tokens") or default_max_tokens),
                     extra_headers=headers,
                     image_size=str(params.get("image_size") or settings.IMAGE_DEFAULT_SIZE or "1024x1024"),
                 )
@@ -257,7 +262,38 @@ async def probe_provider_connection(
     preset_key: str = "custom",
 ) -> dict[str, Any]:
     """Verify endpoint reachability + auth and discover live models via /models (with safe fallback)."""
+    import shutil
+    from pathlib import Path
+
     t0 = time.perf_counter()
+
+    if interface_type == "antigravity":
+        raw_target = (base_url or "").strip()
+        bridge_dir = raw_target if (raw_target and Path(raw_target).is_dir()) else (settings.AGY_BRIDGE_DIR or "")
+        cli_bin = raw_target if (raw_target and not Path(raw_target).is_dir()) else (settings.AGY_CLI_BIN or "agy")
+        resolved_cli = shutil.which(cli_bin)
+        elapsed = int((time.perf_counter() - t0) * 1000)
+        if bridge_dir and Path(bridge_dir).is_dir():
+            return {
+                "ok": True,
+                "latency_ms": elapsed,
+                "message": f"Antigravity 桥接目录就绪: {bridge_dir}",
+                "models": ["antigravity-image-generator"],
+            }
+        if resolved_cli:
+            return {
+                "ok": True,
+                "latency_ms": elapsed,
+                "message": f"本机 agy CLI 可用: {resolved_cli}",
+                "models": ["antigravity-image-generator"],
+            }
+        return {
+            "ok": False,
+            "latency_ms": elapsed,
+            "message": f"未找到本机命令 `{cli_bin}`，且未配置有效的桥接目录（可填写 agy 绝对路径或桥接目录）",
+            "models": [],
+        }
+
     norm_url = normalize_base_url(base_url) or ""
     if not norm_url:
         return {"ok": False, "latency_ms": 0, "message": "请先填写接口 Base URL", "models": []}

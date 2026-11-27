@@ -331,7 +331,37 @@ async def list_asset_images(db: AsyncSession, asset_id: str) -> list[AssetImage]
     result = await db.execute(
         select(AssetImage).where(AssetImage.asset_id == asset_id).order_by(AssetImage.created_at.asc())
     )
-    return list(result.scalars().all())
+    items = list(result.scalars().all())
+    priority = ("reference", "turnaround", "thumbnail", "lora_dataset")
+    items.sort(
+        key=lambda im: (
+            0 if (im.meta or {}).get("is_primary") else 1,
+            priority.index(im.kind) if im.kind in priority else 99,
+            -float((im.meta or {}).get("portrait_score") or 0.0),
+        )
+    )
+    return items
+
+
+async def set_primary_asset_image(db: AsyncSession, image: AssetImage) -> AssetImage:
+    siblings = list(
+        (await db.execute(select(AssetImage).where(AssetImage.asset_id == image.asset_id))).scalars().all()
+    )
+    for sib in siblings:
+        meta = dict(sib.meta or {})
+        if sib.id == image.id:
+            sib.kind = "reference"
+            meta["is_primary"] = True
+            meta["manual_primary"] = True
+        else:
+            if meta.get("auto_cropped") and sib.kind == "reference":
+                sib.kind = "thumbnail"
+            meta["is_primary"] = False
+            meta["manual_primary"] = False
+        sib.meta = meta
+    await db.commit()
+    await db.refresh(image)
+    return image
 
 
 async def upload_asset_image(

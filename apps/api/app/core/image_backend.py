@@ -104,7 +104,7 @@ class OpenAIImageBackend(ImageBackend):
             base_url=raw_url,
             http_client=httpx.AsyncClient(trust_env=False, timeout=600.0),
         )
-        self._model = model or settings.IMAGE_MODEL or "gpt-image-2"
+        self._model = model or settings.IMAGE_MODEL or "gpt-image-1"
         self._edits_supported = not bool(raw_url and "open.bigmodel.cn" in raw_url)
 
     @staticmethod
@@ -151,6 +151,16 @@ class OpenAIImageBackend(ImageBackend):
         full_prompt = _compose_prompt(prompt, negative_prompt, context)
         model = kwargs.get("model") or self._model
         size_str = self._size_to_str(size, model)
+
+        # OpenRouter image models use /chat/completions with modalities=["image", "text"]
+        if "openrouter.ai" in (self._base_url or "").lower():
+            return await self._generate_via_openrouter_chat(
+                full_prompt=full_prompt,
+                model=model,
+                size=size,
+                seed=seed,
+                reference_images=reference_images,
+            )
 
         used_edits = False
         response = None
@@ -218,6 +228,71 @@ class OpenAIImageBackend(ImageBackend):
                 "prompt": full_prompt,
                 "references": len(reference_images or []),
                 "endpoint": "edits" if used_edits else "generations",
+            },
+        )
+
+    async def _generate_via_openrouter_chat(
+        self,
+        *,
+        full_prompt: str,
+        model: str,
+        size: tuple[int, int],
+        seed: int | None,
+        reference_images: list[tuple[bytes, str]] | None,
+    ) -> ImageResult:
+        content: list[dict] = [{"type": "text", "text": full_prompt}]
+        for data, mime in (reference_images or [])[:6]:
+            b64 = base64.b64encode(data).decode()
+            content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+
+        headers = {
+            "Authorization": f"Bearer {self._client.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/Gwen0x4c3/manga-forge",
+            "X-Title": "MangaForge",
+        }
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": content}],
+            "modalities": ["image", "text"],
+            "image_config": {"aspect_ratio": _nearest_ratio(size)},
+        }
+        url = f"{self._base_url.rstrip('/')}/chat/completions"
+        async with httpx.AsyncClient(trust_env=False, timeout=240.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            body = resp.json()
+
+        img_bytes = b""
+        choices = body.get("choices") or []
+        if choices:
+            msg = choices[0].get("message") or {}
+            images = msg.get("images") or []
+            for item in images:
+                img_url = ""
+                if isinstance(item, dict):
+                    img_url = (item.get("image_url") or {}).get("url") or item.get("url") or ""
+                if img_url.startswith("data:") and "," in img_url:
+                    img_bytes = base64.b64decode(img_url.split(",", 1)[1])
+                    break
+                if img_url.startswith("http"):
+                    async with httpx.AsyncClient(trust_env=False, timeout=120.0) as dl:
+                        r = await dl.get(img_url)
+                        r.raise_for_status()
+                        img_bytes = r.content
+                        break
+        if not img_bytes:
+            raise RuntimeError(f"OpenRouter model {model} did not return image data")
+        return ImageResult(
+            image_data=img_bytes,
+            seed=seed,
+            meta={
+                "model": model,
+                "size": f"{size[0]}x{size[1]}",
+                "aspect_ratio": _nearest_ratio(size),
+                "prompt": full_prompt,
+                "references": len(reference_images or []),
+                "endpoint": "openrouter_chat_image",
             },
         )
 
@@ -556,10 +631,17 @@ class AntigravityImageBackend(ImageBackend):
     Supports passing local character/item/style reference crops (`ImagePaths`) directly
     to Antigravity's native `generate_image` tool for multi-reference manga consistency."""
 
-    def __init__(self, model: str | None = None) -> None:
+    def __init__(self, model: str | None = None, *, endpoint: str | None = None) -> None:
+        from pathlib import Path
+
         self._model = model or "antigravity-image-generator"
-        self._cli_bin = settings.AGY_CLI_BIN or "agy"
-        self._bridge_dir = settings.AGY_BRIDGE_DIR
+        raw = (endpoint or "").strip()
+        if raw and Path(raw).is_dir():
+            self._bridge_dir = raw
+            self._cli_bin = settings.AGY_CLI_BIN or "agy"
+        else:
+            self._bridge_dir = settings.AGY_BRIDGE_DIR
+            self._cli_bin = raw or settings.AGY_CLI_BIN or "agy"
 
     async def generate(
         self,
@@ -1001,7 +1083,7 @@ def get_image_backend(backend_name: str | None = None, model: str | None = None)
         eff_url = None
 
     if backend == "antigravity":
-        inner: ImageBackend = AntigravityImageBackend(model=eff_model)
+        inner: ImageBackend = AntigravityImageBackend(model=eff_model, endpoint=eff_url)
     elif backend == "comfyui":
         inner = ComfyUIImageBackend(model=eff_model)
         if eff_url:

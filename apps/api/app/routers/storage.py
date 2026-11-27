@@ -8,12 +8,12 @@ router = APIRouter()
 
 
 @router.get("/file/{key:path}")
-async def get_default_bucket_file(key: str):
-    return await get_file(settings.MINIO_BUCKET, key)
+def get_default_bucket_file(key: str):
+    return get_file(settings.MINIO_BUCKET, key)
 
 
 @router.get("/{bucket}/{key:path}")
-async def get_file(bucket: str, key: str):
+def get_file(bucket: str, key: str):
     actual_bucket = settings.MINIO_BUCKET if bucket == "default" else bucket
     client = storage_service.get_minio_client()
     try:

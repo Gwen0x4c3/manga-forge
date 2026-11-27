@@ -1,3 +1,4 @@
+import { formatEpisodeLabel } from '@/utils/episode'
 import { useState, useRef, useMemo } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import {
@@ -287,6 +288,18 @@ export default function ProjectDetail() {
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey: ['asset-images', imageAsset?.id] })
             queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
+            queryClient.invalidateQueries({ queryKey: ['story-graph', projectId] })
+        },
+        onError: () => {},
+    })
+
+    const setPrimaryImageMutation = useMutation({
+        mutationFn: (imageId: string) => assetImageService.setPrimary(imageId),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['asset-images', imageAsset?.id] })
+            queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
+            queryClient.invalidateQueries({ queryKey: ['story-graph', projectId] })
+            Toast.success('已设为主头像（图谱与后续识图将优先使用）')
         },
         onError: () => {},
     })
@@ -536,6 +549,26 @@ export default function ProjectDetail() {
         onError: () => {},
     })
 
+    const updateLanguageMutation = useMutation({
+        mutationFn: (language: string) => projectService.update(projectId!, { language }),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['project', projectId] })
+            Toast.success('记忆与输出偏好语言已更新')
+        },
+        onError: () => {},
+    })
+
+    const consolidateMemoryMutation = useMutation({
+        mutationFn: () => memoryService.consolidate(projectId!),
+        onSuccess: (res) => {
+            queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
+            queryClient.invalidateQueries({ queryKey: ['pits', projectId] })
+            queryClient.invalidateQueries({ queryKey: ['story-graph', projectId] })
+            Toast.success(res.summary || '记忆库整理完成')
+        },
+        onError: () => {},
+    })
+
     if (projectLoading) {
         return (
             <div className="py-20 flex justify-center">
@@ -585,10 +618,10 @@ export default function ProjectDetail() {
             title: '话数',
             dataIndex: 'label',
             key: 'label',
-            width: 96,
+            width: 112,
             render: (text: string, record: Episode) => (
                 <span className="font-mono font-semibold text-[var(--text-primary)]">
-                    第 {text || record.number} 话
+                    {formatEpisodeLabel(text, record.number)}
                 </span>
             ),
         },
@@ -926,9 +959,18 @@ export default function ProjectDetail() {
                                     <h1 className="font-editorial text-2xl font-bold tracking-tight text-[var(--text-primary)] m-0">
                                         {project.title}
                                     </h1>
-                                    <span className="px-2 py-0.5 rounded-[4px] border border-[var(--border)] bg-[var(--bg-panel)] text-xs font-mono uppercase text-[var(--text-secondary)]">
-                                        {project.language}
-                                    </span>
+                                    <Select
+                                        size="small"
+                                        value={project.language || 'zh'}
+                                        loading={updateLanguageMutation.isPending}
+                                        onChange={(val) => updateLanguageMutation.mutate(String(val))}
+                                        style={{ width: 112 }}
+                                        optionList={[
+                                            { value: 'zh', label: '简体中文' },
+                                            { value: 'en', label: 'English' },
+                                            { value: 'ja', label: '日本語' },
+                                        ]}
+                                    />
                                     {storyBible?.art_style && (
                                         <span className="px-2 py-0.5 rounded-[4px] border border-[var(--border)] bg-[var(--bg-panel)] text-xs font-medium text-[var(--text-secondary)]">
                                             画风已锚定
@@ -1027,6 +1069,15 @@ export default function ProjectDetail() {
                                     </Select>
                                 </div>
                                 <div className="flex items-center gap-2">
+                                    {understoodCount > 0 && (
+                                        <Button
+                                            size="small"
+                                            loading={consolidateMemoryMutation.isPending}
+                                            onClick={() => consolidateMemoryMutation.mutate()}
+                                        >
+                                            一键整理记忆库
+                                        </Button>
+                                    )}
                                     {episodes.length > 0 && (
                                         <Button
                                             size="small"
@@ -2048,30 +2099,63 @@ export default function ProjectDetail() {
                     <Empty description="暂无参考图，可上传角色立绘或漫画截图" />
                 ) : (
                     <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                        {(assetImagesData?.items || []).map((img) => (
-                            <div key={img.id} className="border border-[var(--border)] rounded-[6px] p-2.5 space-y-2 bg-[var(--bg-panel)]">
-                                <div className="w-full h-36 rounded-[4px] overflow-hidden flex items-center justify-center bg-[var(--bg-canvas)]">
-                                    <img
-                                        src={storageFileUrl(img.image_path)}
-                                        alt={img.kind}
-                                        className="max-w-full max-h-full object-contain"
-                                    />
+                        {(assetImagesData?.items || []).map((img, idx) => {
+                            const isPrimary = Boolean((img.meta as Record<string, unknown> | undefined)?.is_primary) || (idx === 0 && img.kind === 'reference')
+                            const score = (img.meta as Record<string, unknown> | undefined)?.portrait_score
+                            return (
+                                <div
+                                    key={img.id}
+                                    className="rounded-[6px] p-2.5 space-y-2 bg-[var(--bg-panel)] border"
+                                    style={{ borderColor: isPrimary ? 'var(--accent)' : 'var(--border)' }}
+                                >
+                                    <div className="w-full h-36 rounded-[4px] overflow-hidden flex items-center justify-center bg-[var(--bg-canvas)]">
+                                        <img
+                                            src={storageFileUrl(img.image_path)}
+                                            alt={img.kind}
+                                            className="max-w-full max-h-full object-contain"
+                                        />
+                                    </div>
+                                    <div className="flex items-center justify-between gap-1.5">
+                                        <div className="flex items-center gap-1.5 shrink-0">
+                                            <Tag size="small" color={isPrimary ? 'red' : img.kind === 'reference' ? 'indigo' : 'grey'}>
+                                                {isPrimary
+                                                    ? '主头像'
+                                                    : img.kind === 'reference'
+                                                      ? '设定图'
+                                                      : img.kind === 'turnaround'
+                                                        ? '三视图'
+                                                        : '候选图'}
+                                            </Tag>
+                                            {typeof score === 'number' && score > 0 && (
+                                                <span className="font-mono text-[11px] text-[var(--text-muted)] whitespace-nowrap">
+                                                    {score.toFixed(1)}
+                                                </span>
+                                            )}
+                                        </div>
+                                        <div className="flex items-center gap-0.5 shrink-0">
+                                            {!isPrimary && (
+                                                <Button
+                                                    size="small"
+                                                    theme="borderless"
+                                                    loading={setPrimaryImageMutation.isPending}
+                                                    onClick={() => setPrimaryImageMutation.mutate(img.id)}
+                                                >
+                                                    设为主图
+                                                </Button>
+                                            )}
+                                            <Button
+                                                size="small"
+                                                type="danger"
+                                                theme="borderless"
+                                                icon={<IconDelete />}
+                                                loading={deleteImageMutation.isPending}
+                                                onClick={() => deleteImageMutation.mutate(img.id)}
+                                            />
+                                        </div>
+                                    </div>
                                 </div>
-                                <div className="flex items-center justify-between">
-                                    <Tag size="small" color={img.kind === 'reference' ? 'indigo' : 'grey'}>
-                                        {img.kind}
-                                    </Tag>
-                                    <Button
-                                        size="small"
-                                        type="danger"
-                                        theme="borderless"
-                                        icon={<IconDelete />}
-                                        loading={deleteImageMutation.isPending}
-                                        onClick={() => deleteImageMutation.mutate(img.id)}
-                                    />
-                                </div>
-                            </div>
-                        ))}
+                            )
+                        })}
                     </div>
                 )}
             </Modal>

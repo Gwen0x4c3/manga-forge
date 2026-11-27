@@ -613,31 +613,39 @@ export default function ModelsPage() {
 
                     <div>
                         <label className="block text-[13px] font-medium text-[var(--text-primary)] mb-1">
-                            API Base URL
+                            {(editingProvider?.interface_type || activePreset?.interface_type) === 'antigravity'
+                                ? 'agy 命令路径或桥接目录（可选，留空默认使用本机 agy）'
+                                : 'API Base URL'}
                         </label>
                         <Input
                             value={formBaseUrl}
                             onChange={setFormBaseUrl}
-                            placeholder="https://open.bigmodel.cn/api/coding/paas/v4"
+                            placeholder={
+                                (editingProvider?.interface_type || activePreset?.interface_type) === 'antigravity'
+                                    ? '留空默认 agy，或填 /usr/local/bin/agy 或桥接目录路径'
+                                    : 'https://open.bigmodel.cn/api/coding/paas/v4'
+                            }
                         />
                     </div>
 
-                    <div>
-                        <label className="block text-[13px] font-medium text-[var(--text-primary)] mb-1">
-                            API Key{' '}
-                            {editingProvider?.has_api_key && (
-                                <span className="font-mono text-xs text-[var(--text-muted)]">
-                                    （已保存 {editingProvider.api_key_masked}，留空保持不变）
-                                </span>
-                            )}
-                        </label>
-                        <Input
-                            mode="password"
-                            value={formApiKey}
-                            onChange={setFormApiKey}
-                            placeholder={activePreset?.api_key_placeholder || 'sk-...'}
-                        />
-                    </div>
+                    {(editingProvider?.interface_type || activePreset?.interface_type) !== 'antigravity' && (
+                        <div>
+                            <label className="block text-[13px] font-medium text-[var(--text-primary)] mb-1">
+                                API Key{' '}
+                                {editingProvider?.has_api_key && (
+                                    <span className="font-mono text-xs text-[var(--text-muted)]">
+                                        （已保存 {editingProvider.api_key_masked}，留空保持不变）
+                                    </span>
+                                )}
+                            </label>
+                            <Input
+                                mode="password"
+                                value={formApiKey}
+                                onChange={setFormApiKey}
+                                placeholder={activePreset?.api_key_placeholder || 'sk-...'}
+                            />
+                        </div>
+                    )}
 
                     {/* Quick-pick model chips from preset + live /models discovery */}
                     {(activePreset?.models.length || formModels.length) > 0 && (

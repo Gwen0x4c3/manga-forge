@@ -802,6 +802,15 @@ export const memoryService = {
         projectId: string,
         data: { question: string; branch_id?: string; max_episode_number?: number },
     ) => api.post<StoryBibleQAResponse>(`/projects/${projectId}/memory/ask`, data, { timeout: 120000 }),
+    consolidate: (projectId: string) =>
+        api.post<{
+            merged_assets: number
+            pruned_assets: number
+            pruned_pits: number
+            remaining_assets: number
+            remaining_open_pits: number
+            summary: string
+        }>(`/projects/${projectId}/memory/consolidate`, null, { timeout: 120000 }),
 }
 
 export const generationService = {
@@ -927,6 +936,7 @@ export const assetImageService = {
         assetId: string,
         data: { episode_id: string; page_index: number; bbox: [number, number, number, number]; kind?: string },
     ) => api.post<AssetImage>(`/projects/assets/${assetId}/crop-from-page`, data),
+    setPrimary: (imageId: string) => api.post<AssetImage>(`/projects/asset-images/${imageId}/set-primary`),
     remove: (imageId: string) => api.delete(`/projects/asset-images/${imageId}`),
 }
 

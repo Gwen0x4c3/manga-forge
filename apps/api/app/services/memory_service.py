@@ -443,7 +443,7 @@ async def append_episode_summary(
         text = "\n".join(lines)
 
     if len(text) > _SUMMARY_COMPRESS_THRESHOLD:
-        compressed = await _compress_long_summary(text)
+        compressed = await _compress_long_summary(text, preferred_language=project.language or "zh")
         if compressed:
             text = compressed
 
@@ -453,43 +453,42 @@ async def append_episode_summary(
     return project.long_summary
 
 
-async def _compress_long_summary(text: str) -> str | None:
-    from pydantic import BaseModel
+async def _compress_long_summary(text: str, preferred_language: str = "zh") -> str | None:
+    from app.core.llm import get_active_llm_config, get_raw_openai_client
+    from app.prompts.summarize import resolve_language_label
 
-    from app.core.llm import get_active_llm_config, get_llm_client
-
+    lang_label = resolve_language_label(preferred_language)
     system = (
         "You are a manga story archivist. Compress the episode-by-episode story "
-        "history into a structured, high-density rolling summary.\n"
+        "history into a structured, high-density rolling summary in plain text (NO JSON wrapper).\n"
         "Preserve in strict priority order:\n"
         "1. Overarching main plotline, core mystery, and current arc progress\n"
-        "2. Character relationships and persistent state changes (injuries, items held, secrets known)\n"
+        "2. Character relationships and persistent state changes (vital status, injuries, items held, secrets known)\n"
         "3. Key items, locations, and worldbuilding rules\n"
-        "4. ALL unresolved foreshadowing threads\n"
-        "Write in the same language as the input. "
+        "4. Major unresolved foreshadowing threads\n"
+        f"Write STRICTLY in {lang_label}. "
         f"Keep it under {_SUMMARY_COMPRESS_TARGET} characters."
     )
     try:
         llm_cfg = get_active_llm_config("main_llm")
-        client = get_llm_client(role="main_llm")
-
-        class Compressed(BaseModel):
-            summary: str
+        client = get_raw_openai_client()
+        extra_kwargs: dict = {}
+        if llm_cfg.provider_key in ("glm_coding", "glm") or "glm-" in (llm_cfg.model or "").lower():
+            extra_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
 
         from app.core.telemetry import usage_context
 
         with usage_context(operation="summarize_compress"):
-            result = await client.chat.completions.create(
+            resp = await client.chat.completions.create(
                 model=llm_cfg.model,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": text},
                 ],
-                response_model=Compressed,
-                max_tokens=llm_cfg.max_tokens,
-                max_retries=1,
+                max_tokens=min(llm_cfg.max_tokens, 4096),
+                **extra_kwargs,
             )
-        compressed = result.summary.strip()
+        compressed = (resp.choices[0].message.content or "").strip()
         return compressed if len(compressed) >= 50 else None
     except Exception:
         logger.warning("Long summary compression failed, keeping hierarchical summary", exc_info=True)
@@ -1461,7 +1460,14 @@ async def build_story_graph(
         imgs = asset_images_by_id.get(aid) or []
         if not imgs:
             return None
-        best = min(imgs, key=lambda i: ref_priority.index(i.kind) if i.kind in ref_priority else 99)
+        best = min(
+            imgs,
+            key=lambda i: (
+                0 if (i.meta or {}).get("is_primary") else 1,
+                ref_priority.index(i.kind) if i.kind in ref_priority else 99,
+                -float((i.meta or {}).get("portrait_score") or 0.0),
+            ),
+        )
         return best.image_path
 
     ep_num_by_id = {ep.id: float(ep.number) for ep in all_eps}
@@ -1987,4 +1993,227 @@ async def ask_story_bible(
         "model": llm_cfg.model,
         "citations": citations[:6],
         "matched_characters": matched_chars[:6],
+    }
+
+
+async def consolidate_project_memory(
+    db: AsyncSession,
+    project_id: str,
+) -> dict:
+    """Memory Gardener: deduplicate same-character/asset aliases, prune one-off unnamed clutter,
+    and remove redundant or trivial non-foreshadowing pits. Safe to run every ~10 episodes or on demand."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import update
+
+    from app.core.llm import get_active_llm_config, get_raw_openai_client
+    from app.core.telemetry import usage_context
+    from app.models.asset_image import AssetImage
+    from app.prompts.summarize import resolve_language_label
+
+    project = (await db.execute(select(Project).where(Project.id == project_id).limit(1))).scalar_one_or_none()
+    if not project:
+        raise ValueError("Project not found")
+
+    assets = list((await db.execute(select(Asset).where(Asset.project_id == project_id))).scalars().all())
+    open_pits = list(
+        (await db.execute(select(Pit).where(Pit.project_id == project_id, Pit.status == "open"))).scalars().all()
+    )
+
+    if len(assets) <= 2 and len(open_pits) <= 3:
+        return {
+            "merged_assets": 0,
+            "pruned_assets": 0,
+            "pruned_pits": 0,
+            "remaining_assets": len(assets),
+            "remaining_open_pits": len(open_pits),
+            "summary": "当前资产与伏笔数量精简，无需整理。",
+        }
+
+    lang_label = resolve_language_label(project.language or "zh")
+    asset_inventory = [
+        {
+            "id": a.id,
+            "type": a.type,
+            "name": a.name,
+            "aliases": ((a.tags or {}).get("aliases") or [])[:6],
+            "appearances": len(a.episode_ids or {}),
+            "desc": (a.description or "")[:100],
+        }
+        for a in assets
+        if a.type != "style"
+    ]
+    pit_inventory = [
+        {
+            "id": p.id,
+            "priority": p.priority,
+            "title": (p.title or "")[:50],
+            "desc": (p.description or "")[:120],
+        }
+        for p in open_pits
+    ]
+
+    system_prompt = (
+        "You are a senior manga series archivist performing periodic Memory Consolidation "
+        "(garbage collection & deduplication).\n"
+        f"Project Preferred Language: {lang_label}\n\n"
+        "Review the JSON inventory of Assets and Open Pits and return ONLY a strict JSON object with:\n"
+        "{\n"
+        '  "asset_merges": [\n'
+        '    {"keep_id": "<id with highest appearances>", "merge_ids": ["<duplicate id>"], '
+        '"canonical_name": "<clean primary name in Preferred Language>", '
+        '"aliases": ["<original JP/EN names and alternate titles>"]}\n'
+        "  ],\n"
+        '  "prune_asset_ids": ["<id of one-off unnamed extra, scanlation credit, or mundane prop>"],\n'
+        '  "prune_pit_ids": ["<id of duplicate pit, single-episode gag, or non-foreshadowing note>"]\n'
+        "}\n\n"
+        "Rules:\n"
+        "1. Merge ALL duplicate names/translations referring to the same person/item/place "
+        "(e.g. 'Uncle'/'おじさん'/'叔父' -> keep 1 with canonical_name='舅舅', aliases=['おじさん','Uncle']).\n"
+        "2. NEVER merge genuinely different characters.\n"
+        "3. In prune_asset_ids, ONLY include assets with appearances <= 1 that are unnamed extras, "
+        "scanlation credits, or mundane everyday props.\n"
+        "4. In prune_pit_ids, be strict (less is more): keep ONLY truly important, non-duplicate "
+        "cross-episode mysteries, curses, promises, or looming threats.\n"
+        "5. Output valid JSON only, no markdown commentary."
+    )
+
+    llm_cfg = get_active_llm_config("main_llm")
+    client = get_raw_openai_client()
+    extra_kwargs: dict = {}
+    if llm_cfg.provider_key in ("glm_coding", "glm") or "glm-" in (llm_cfg.model or "").lower():
+        extra_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+
+    user_payload = json.dumps(
+        {"assets": asset_inventory[:140], "open_pits": pit_inventory[:120]},
+        ensure_ascii=False,
+    )
+    with usage_context(project_id=project_id, operation="memory_consolidate"):
+        resp = await client.chat.completions.create(
+            model=llm_cfg.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_payload},
+            ],
+            max_tokens=min(llm_cfg.max_tokens, 6144),
+            **extra_kwargs,
+        )
+
+    raw_text = (resp.choices[0].message.content or "").strip()
+    if raw_text.startswith("```"):
+        raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
+        raw_text = re.sub(r"\s*```$", "", raw_text)
+    plan = json.loads(raw_text)
+
+    assets_by_id = {a.id: a for a in assets}
+    protected_keep_ids: set[str] = set()
+    deleted_asset_ids: set[str] = set()
+    merged_count = 0
+
+    for merge in plan.get("asset_merges") or []:
+        keep_id = str(merge.get("keep_id") or "")
+        merge_ids = [str(mid) for mid in (merge.get("merge_ids") or []) if str(mid) != keep_id]
+        keep_asset = assets_by_id.get(keep_id)
+        if not keep_asset or keep_id in deleted_asset_ids:
+            continue
+        protected_keep_ids.add(keep_id)
+
+        merged_ep_ids = dict(keep_asset.episode_ids or {})
+        tags = dict(keep_asset.tags or {})
+        all_aliases = list(tags.get("aliases") or [])
+        all_vtags = list(tags.get("visual_tags") or [])
+        best_desc = keep_asset.description or ""
+
+        canon_name = (merge.get("canonical_name") or "").strip()
+        if canon_name and canon_name != keep_asset.name:
+            if keep_asset.name not in all_aliases:
+                all_aliases.append(keep_asset.name)
+            keep_asset.name = canon_name[:120]
+
+        for extra_a in merge.get("aliases") or []:
+            s = str(extra_a).strip()
+            if s and s != keep_asset.name and s not in all_aliases:
+                all_aliases.append(s)
+
+        for mid in merge_ids:
+            dup = assets_by_id.get(mid)
+            if not dup or mid in deleted_asset_ids or mid in protected_keep_ids or dup.type == "style":
+                continue
+            merged_ep_ids.update(dup.episode_ids or {})
+            if dup.name and dup.name != keep_asset.name and dup.name not in all_aliases:
+                all_aliases.append(dup.name)
+            dtags = dup.tags or {}
+            for a in dtags.get("aliases") or []:
+                sa = str(a).strip()
+                if sa and sa != keep_asset.name and sa not in all_aliases:
+                    all_aliases.append(sa)
+            for vt in dtags.get("visual_tags") or []:
+                if vt not in all_vtags:
+                    all_vtags.append(vt)
+            if len(dup.description or "") > len(best_desc):
+                best_desc = dup.description or ""
+            await db.execute(update(AssetImage).where(AssetImage.asset_id == mid).values(asset_id=keep_id))
+            await db.delete(dup)
+            deleted_asset_ids.add(mid)
+            merged_count += 1
+
+        keep_asset.episode_ids = merged_ep_ids
+        keep_asset.description = best_desc
+        tags["aliases"] = list(dict.fromkeys(all_aliases))[:16]
+        tags["visual_tags"] = list(dict.fromkeys(all_vtags))[:24]
+        keep_asset.tags = tags
+
+    pruned_assets = 0
+    for pid in plan.get("prune_asset_ids") or []:
+        aid = str(pid)
+        target = assets_by_id.get(aid)
+        if not target or aid in deleted_asset_ids or aid in protected_keep_ids or target.type == "style":
+            continue
+        if len(target.episode_ids or {}) > 1:
+            continue
+        await db.delete(target)
+        deleted_asset_ids.add(aid)
+        pruned_assets += 1
+
+    pits_by_id = {p.id: p for p in open_pits}
+    pruned_pits = 0
+    for pit_id in plan.get("prune_pit_ids") or []:
+        p = pits_by_id.get(str(pit_id))
+        if p is not None:
+            await db.delete(p)
+            pruned_pits += 1
+
+    canon = dict(project.canon_rules or {})
+    sb = dict(canon.get("story_bible") or {})
+    sb["last_consolidated_at"] = datetime.now(timezone.utc).isoformat()
+    canon["story_bible"] = sb
+    project.canon_rules = canon
+    await db.commit()
+
+    # Also elect the best iconic portrait for recurring characters with multiple candidates
+    from app.services.understanding_service import elect_best_character_portrait
+
+    elected_count = 0
+    for a in assets:
+        if a.id in deleted_asset_ids or a.type != "character":
+            continue
+        if len(a.episode_ids or {}) >= 2:
+            try:
+                winner = await elect_best_character_portrait(db, a)
+                if winner is not None:
+                    elected_count += 1
+            except Exception:
+                logger.debug("Portrait election skipped for %s", a.name, exc_info=True)
+
+    return {
+        "merged_assets": merged_count,
+        "pruned_assets": pruned_assets,
+        "pruned_pits": pruned_pits,
+        "elected_portraits": elected_count,
+        "remaining_assets": len(assets) - len(deleted_asset_ids),
+        "remaining_open_pits": len(open_pits) - pruned_pits,
+        "summary": (
+            f"整理完成：合并 {merged_count} 项重复资产、清理 {pruned_assets} 项路人/杂物、"
+            f"精简 {pruned_pits} 条冗余伏笔、优选 {elected_count} 位主角头像。"
+        ),
     }

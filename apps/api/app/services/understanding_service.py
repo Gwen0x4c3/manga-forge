@@ -1,23 +1,31 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+import json
 import logging
+import re
 import uuid
 from io import BytesIO
 from typing import TYPE_CHECKING
 
 from jinja2 import Template
-from PIL import Image
+from PIL import Image, ImageDraw, ImageStat
 from sqlalchemy import delete, func, select
 
 from app.config import settings
-from app.core.llm import get_active_llm_config, get_llm_client
+from app.core.llm import get_active_llm_config, get_llm_client, get_raw_openai_client
 from app.models.asset import Asset
 from app.models.asset_image import AssetImage
 from app.models.episode_memory import EpisodeMemory
 from app.models.pit import Pit
 from app.models.project import Project
-from app.prompts.summarize import SUMMARIZE_SYSTEM_PROMPT, SUMMARIZE_USER_PROMPT
+from app.prompts.summarize import (
+    SUMMARIZE_CHUNK_TAIL_PROMPT,
+    SUMMARIZE_SHARED_PREFIX_PROMPT,
+    SUMMARIZE_SYSTEM_PROMPT,
+    resolve_language_label,
+)
 from app.schemas.understanding import EpisodeUnderstanding
 from app.services import generation_service, memory_service, storage_service
 
@@ -28,11 +36,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Long-edge cap for images sent to the LLM: keeps payloads and vision tokens
-# reasonable while staying well above readable resolution for manga pages.
-_MAX_IMAGE_EDGE = 1344
-_MAX_PAGES_PER_CHUNK = 12
-_CHUNK_SIZE = 10
+# Long-edge cap and byte budget for images sent to multimodal LLMs.
+# Keeping each request's total image base64 <= ~210KB prevents gateway/MTU stalls
+# while 560px JPEG preserves crisp manga dialogue and packs ~4 pages per chunk.
+_MAX_IMAGE_EDGE = 560
+_REF_IMAGE_EDGE = 200
+_MAX_PAGES_PER_CHUNK = 4
+_CHUNK_SIZE = 4
+_MAX_CHUNK_B64_CHARS = 215_000
+_CHUNK_CONCURRENCY = 3
+_MAX_NEW_PITS_PER_EPISODE = 2
 
 _MIME_BY_EXT = {
     "jpg": "image/jpeg",
@@ -43,9 +56,20 @@ _MIME_BY_EXT = {
     "bmp": "image/bmp",
 }
 
-# One reference sheet per known character, capped to keep vision-token cost sane.
-_MAX_CHARACTER_REFS = 12
+# Up to 6 compact 200px character reference portraits (~40KB total) so core cast always fits.
+_MAX_CHARACTER_REFS = 6
+_MAX_AUTO_PORTRAITS = 3
+_MIN_PORTRAIT_SCORE = 6.0
+_MIN_ASSET_SCORE = 5.5
 _REF_KIND_PRIORITY = ("reference", "turnaround", "thumbnail", "lora_dataset")
+
+
+def _image_rank_key(img: AssetImage) -> tuple[int, int, float]:
+    meta = img.meta or {}
+    is_primary = 0 if meta.get("is_primary") else 1
+    kind_rank = _REF_KIND_PRIORITY.index(img.kind) if img.kind in _REF_KIND_PRIORITY else 99
+    score = float(meta.get("portrait_score") or 0.0)
+    return (is_primary, kind_rank, -score)
 
 
 async def _character_reference_blocks(
@@ -63,10 +87,7 @@ async def _character_reference_blocks(
         images = (await db.execute(select(AssetImage).where(AssetImage.asset_id == asset.id))).scalars().all()
         if not images:
             continue
-        best = min(
-            images,
-            key=lambda i: _REF_KIND_PRIORITY.index(i.kind) if i.kind in _REF_KIND_PRIORITY else 99,
-        )
+        best = min(images, key=_image_rank_key)
         candidates.append((asset, best))
 
     def _ref_rank(pair: tuple[Asset, AssetImage]) -> tuple[int, int]:
@@ -92,34 +113,85 @@ async def _character_reference_blocks(
         data = storage_service.get_object_bytes(settings.MINIO_BUCKET, image.image_path)
         if data is None:
             continue
-        blocks.append((f"参考图 [{asset.id}] {asset.name}", image_to_data_url(data, image.image_path)))
+        aliases = [str(x).strip() for x in ((asset.tags or {}).get("aliases") or []) if str(x).strip()][:4]
+        alias_suffix = f"（别名: {' / '.join(aliases)}）" if aliases else ""
+        blocks.append(
+            (
+                f"参考图 [{asset.id}] {asset.name}{alias_suffix}",
+                image_to_data_url(data, image.image_path, max_edge=_REF_IMAGE_EDGE, quality=66),
+            )
+        )
     return blocks
 
 
-def image_to_data_url(data: bytes, object_key: str) -> str:
+def image_to_data_url(
+    data: bytes,
+    object_key: str,
+    *,
+    max_edge: int = _MAX_IMAGE_EDGE,
+    quality: int = 65,
+) -> str:
     ext = object_key.rsplit(".", 1)[-1].lower() if "." in object_key else "png"
     mime = _MIME_BY_EXT.get(ext, "image/png")
-    data, out_mime = _downscale_with_mime(data, mime)
+    data, out_mime = _downscale_with_mime(data, mime, max_edge=max_edge, quality=quality)
     return f"data:{out_mime};base64," + base64.b64encode(data).decode()
 
 
-def _downscale_with_mime(data: bytes, mime: str) -> tuple[bytes, str]:
-    """Downscale any oversized image (including PNG/WebP/BMP/JPEG) so LLM vision payloads stay bounded."""
+def _downscale_with_mime(
+    data: bytes,
+    mime: str,
+    *,
+    max_edge: int = _MAX_IMAGE_EDGE,
+    quality: int = 65,
+) -> tuple[bytes, str]:
+    """Downscale and JPEG-compress manga pages so each image stays crisp yet compact (<~90KB)."""
     try:
         img = Image.open(BytesIO(data))
-        if max(img.size) <= _MAX_IMAGE_EDGE and len(data) <= 1_800_000:
+        if max(img.size) <= max_edge and mime == "image/jpeg" and len(data) <= 85_000:
             return data, mime
-        ratio = min(1.0, _MAX_IMAGE_EDGE / max(img.size))
+        ratio = min(1.0, max_edge / max(img.size))
         target_size = (max(1, round(img.width * ratio)), max(1, round(img.height * ratio)))
         rgb = img.convert("RGB")
         if ratio < 1.0:
             rgb = rgb.resize(target_size, Image.Resampling.LANCZOS)
         buf = BytesIO()
-        rgb.save(buf, format="JPEG", quality=88)
-        return buf.getvalue(), "image/jpeg"
+        rgb.save(buf, format="JPEG", quality=quality, optimize=True)
+        out = buf.getvalue()
+        # Extra guard: if a very noisy page still exceeds 120KB, re-encode slightly smaller
+        if len(out) > 120_000 and max(rgb.size) > 480:
+            rgb.thumbnail((540, 540), Image.Resampling.LANCZOS)
+            buf2 = BytesIO()
+            rgb.save(buf2, format="JPEG", quality=62, optimize=True)
+            out = buf2.getvalue()
+        return out, "image/jpeg"
     except Exception:
         logger.warning("Image downscale failed, sending original bytes", exc_info=True)
         return data, mime
+
+
+def _build_byte_budgeted_windows(
+    page_blocks: list[tuple[str, str]],
+    ref_blocks: list[tuple[str, str]],
+) -> list[list[tuple[str, str]]]:
+    """Pack manga pages into chunks respecting both page count and base64 byte budget."""
+    if not page_blocks:
+        return []
+    ref_chars = sum(len(url) for _, url in ref_blocks)
+    page_budget = max(80_000, _MAX_CHUNK_B64_CHARS - ref_chars)
+    windows: list[list[tuple[str, str]]] = []
+    current: list[tuple[str, str]] = []
+    current_chars = 0
+    for block in page_blocks:
+        b_len = len(block[1])
+        if current and (len(current) >= _CHUNK_SIZE or current_chars + b_len > page_budget):
+            windows.append(current)
+            current = []
+            current_chars = 0
+        current.append(block)
+        current_chars += b_len
+    if current:
+        windows.append(current)
+    return windows
 
 
 def _prepare_page_blocks(page_number: int, data: bytes, object_key: str) -> list[tuple[str, str]]:
@@ -171,6 +243,21 @@ def _merge_chunk_understandings(chunks: list[dict]) -> dict:
     world_rules: list[str] = []
     art_style = ""
 
+    def _char_keys(char_obj: dict) -> set[str]:
+        ks: set[str] = set()
+        if char_obj.get("asset_id"):
+            ks.add(f"id:{char_obj['asset_id']}")
+        nm = generation_service._normalize_name(char_obj.get("name", ""))
+        if nm:
+            ks.add(f"n:{nm}")
+        for al in char_obj.get("aliases") or []:
+            na = generation_service._normalize_name(str(al))
+            if na:
+                ks.add(f"n:{na}")
+        return ks
+
+    char_entries: list[tuple[set[str], dict]] = []
+
     for chunk in chunks:
         events.extend(chunk.get("events") or [])
         state_changes.extend(chunk.get("state_changes") or [])
@@ -187,13 +274,19 @@ def _merge_chunk_understandings(chunks: list[dict]) -> dict:
             art_style = chunk["art_style_notes"]
 
         for char in chunk.get("characters") or []:
-            key = char.get("asset_id") or generation_service._normalize_name(char.get("name", ""))
-            if not key:
+            ckeys = _char_keys(char)
+            if not ckeys:
                 continue
-            prev = characters_by_key.get(key)
-            if prev is None:
-                characters_by_key[key] = dict(char)
+            matched_entry = None
+            for existing_keys, existing_char in char_entries:
+                if existing_keys & ckeys:
+                    matched_entry = (existing_keys, existing_char)
+                    break
+            if matched_entry is None:
+                char_entries.append((set(ckeys), dict(char)))
             else:
+                existing_keys, prev = matched_entry
+                existing_keys.update(ckeys)
                 if not prev.get("asset_id") and char.get("asset_id"):
                     prev["asset_id"] = char["asset_id"]
                 if char.get("appearance") and len(char["appearance"]) > len(prev.get("appearance") or ""):
@@ -205,7 +298,10 @@ def _merge_chunk_understandings(chunks: list[dict]) -> dict:
                     prev["source_page"] = char.get("source_page")
                 if char.get("vital_status"):
                     prev["vital_status"] = char["vital_status"]
-                prev["aliases"] = list(dict.fromkeys([*(prev.get("aliases") or []), *(char.get("aliases") or [])]))
+                extra_alias = [char["name"]] if char.get("name") and char["name"] != prev.get("name") else []
+                prev["aliases"] = list(
+                    dict.fromkeys([*(prev.get("aliases") or []), *(char.get("aliases") or []), *extra_alias])
+                )
 
         for sight in chunk.get("asset_sightings") or []:
             aid = sight.get("asset_id") or sight.get("name", "")
@@ -213,19 +309,60 @@ def _merge_chunk_understandings(chunks: list[dict]) -> dict:
                 asset_sightings_by_id[aid] = sight
 
         for na in chunk.get("new_assets") or []:
-            nkey = f"{na.get('asset_type', 'item')}:{generation_service._normalize_name(na.get('name', ''))}"
-            if nkey not in new_assets_by_key:
+            atype = na.get("asset_type", "item")
+            na_norm = generation_service._normalize_name(na.get("name", ""))
+            na_aliases = {
+                generation_service._normalize_name(str(a))
+                for a in (na.get("aliases") or [])
+                if str(a).strip()
+            }
+            na_all = {k for k in ({na_norm} | na_aliases) if k}
+            if not na_all:
+                continue
+            matched_nkey = None
+            for k, existing in new_assets_by_key.items():
+                if not k.startswith(f"{atype}:"):
+                    continue
+                ex_all = {
+                    generation_service._normalize_name(existing.get("name", "")),
+                    *(generation_service._normalize_name(str(a)) for a in (existing.get("aliases") or [])),
+                }
+                if ex_all & na_all:
+                    matched_nkey = k
+                    break
+            if matched_nkey is None:
+                nkey = f"{atype}:{na_norm}"
                 new_assets_by_key[nkey] = dict(na)
             else:
-                existing = new_assets_by_key[nkey]
+                existing = new_assets_by_key[matched_nkey]
                 if len(na.get("description") or "") > len(existing.get("description") or ""):
                     existing["description"] = na["description"]
                 existing["visual_tags"] = list(
                     dict.fromkeys([*(existing.get("visual_tags") or []), *(na.get("visual_tags") or [])])
                 )
+                extra_a = [na["name"]] if na.get("name") and na["name"] != existing.get("name") else []
+                existing["aliases"] = list(
+                    dict.fromkeys([*(existing.get("aliases") or []), *(na.get("aliases") or []), *extra_a])
+                )
                 if na.get("bbox") and not existing.get("bbox"):
                     existing["bbox"] = na["bbox"]
                     existing["source_page"] = na.get("source_page")
+
+    characters_by_key = {str(i): c for i, (_, c) in enumerate(char_entries)}
+
+    # Keep only the highest-priority, non-duplicate foreshadowing threads (strictly capped per episode)
+    prio_rank = {"high": 0, "medium": 1, "low": 2}
+    dedup_pits: list[dict] = []
+    seen_pit_sigs: set[str] = set()
+    for p in sorted(pit_discoveries, key=lambda item: prio_rank.get(str(item.get("priority") or "medium").lower(), 1)):
+        sig = generation_service._normalize_name(p.get("title") or p.get("description", "")[:32])
+        if not sig or sig in seen_pit_sigs:
+            continue
+        seen_pit_sigs.add(sig)
+        dedup_pits.append(p)
+        if len(dedup_pits) >= _MAX_NEW_PITS_PER_EPISODE:
+            break
+    pit_discoveries = dedup_pits
 
     # Last chunk holds the latest main_plot progression and exact ending_state
     last_mp = dict(chunks[-1].get("main_plot") or {})
@@ -252,8 +389,22 @@ def _merge_chunk_understandings(chunks: list[dict]) -> dict:
     }
 
 
-def _crop_bbox_bytes(page_bytes: bytes, bbox: list | None) -> bytes | None:
-    """Crop [ymin, xmin, ymax, xmax] (0..1000 or 0..1 normalized) from page_bytes with slight margin."""
+def _is_meaningful_crop(cropped: Image.Image) -> bool:
+    """Reject nearly blank white speech bubbles or solid dark sky patches."""
+    gray = cropped.convert("L")
+    stat = ImageStat.Stat(gray)
+    stddev = stat.stddev[0] if stat.stddev else 0.0
+    return stddev >= 22.0
+
+
+def _crop_bbox_bytes(
+    page_bytes: bytes,
+    bbox: list | None,
+    *,
+    pad_ratio: float = 0.14,
+    square_portrait: bool = False,
+) -> bytes | None:
+    """Crop [ymin, xmin, ymax, xmax] (0..1000 or 0..1 normalized) from page_bytes with margin & variance check."""
     if not bbox or len(bbox) != 4:
         return None
     try:
@@ -265,7 +416,6 @@ def _crop_bbox_bytes(page_bytes: bytes, bbox: list | None) -> bytes | None:
     ymin, xmin, ymax, xmax = [v / scale for v in vals]
     if xmax <= xmin or ymax <= ymin:
         return None
-    # Reject implausibly tiny or full-page boxes
     bw, bh = xmax - xmin, ymax - ymin
     if bw < 0.04 or bh < 0.04:
         return None
@@ -273,15 +423,34 @@ def _crop_bbox_bytes(page_bytes: bytes, bbox: list | None) -> bytes | None:
     try:
         img = Image.open(BytesIO(page_bytes)).convert("RGB")
         w, h = img.size
-        pad_x = bw * 0.08
-        pad_y = bh * 0.08
+        raw_px_w = bw * w
+        raw_px_h = bh * h
+        if square_portrait:
+            aspect = raw_px_w / max(1.0, raw_px_h)
+            if aspect < 0.48 or aspect > 2.3:
+                return None
+
+        pad_x = max(bw * pad_ratio, 0.035)
+        pad_y = max(bh * pad_ratio, 0.035)
         x0 = max(0, int((xmin - pad_x) * w))
         y0 = max(0, int((ymin - pad_y) * h))
         x1 = min(w, int((xmax + pad_x) * w))
         y1 = min(h, int((ymax + pad_y) * h))
-        if (x1 - x0) < 48 or (y1 - y0) < 48:
+
+        # Gently widen overly narrow portrait boxes toward ~0.88:1 so face sides/glasses aren't clipped
+        if square_portrait:
+            cw, ch = x1 - x0, y1 - y0
+            target_w = int(ch * 0.88)
+            if cw < target_w:
+                delta = (target_w - cw) // 2
+                x0 = max(0, x0 - delta)
+                x1 = min(w, x1 + delta)
+
+        if (x1 - x0) < 64 or (y1 - y0) < 64:
             return None
         cropped = img.crop((x0, y0, x1, y1))
+        if not _is_meaningful_crop(cropped):
+            return None
         if max(cropped.size) > 768:
             r = 768 / max(cropped.size)
             cropped = cropped.resize((round(cropped.width * r), round(cropped.height * r)), Image.Resampling.LANCZOS)
@@ -293,6 +462,332 @@ def _crop_bbox_bytes(page_bytes: bytes, bbox: list | None) -> bytes | None:
         return None
 
 
+def _render_outer_ruler_grid(page_bytes: bytes) -> bytes:
+    """Render a compact JPEG copy of a manga page framed by an outer 0..1000 coordinate ruler
+    so multimodal LLMs can read exact face coordinates without covering artwork."""
+    orig = Image.open(BytesIO(page_bytes)).convert("RGB")
+    orig.thumbnail((760, 760), Image.Resampling.LANCZOS)
+    w, h = orig.size
+    margin = 34
+    canvas = Image.new("RGBA", (w + margin * 2, h + margin * 2), (24, 24, 27, 255))
+    canvas.paste(orig.convert("RGBA"), (margin, margin))
+
+    overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    # Border around the exact 0..1000 artwork rectangle
+    draw.rectangle([margin, margin, margin + w, margin + h], outline=(230, 75, 53, 210), width=2)
+    for step in range(0, 1001, 100):
+        x = margin + int(w * step / 1000)
+        y = margin + int(h * step / 1000)
+        if 0 < step < 1000:
+            draw.line([(x, margin), (x, margin + h)], fill=(230, 75, 53, 95), width=1)
+            draw.line([(margin, y), (margin + w, y)], fill=(230, 75, 53, 95), width=1)
+        lbl = str(step)
+        draw.text((max(2, x - 10), 10), lbl, fill=(244, 244, 245, 255))
+        draw.text((max(2, x - 10), margin + h + 10), lbl, fill=(244, 244, 245, 255))
+        draw.text((4, max(2, y - 6)), lbl, fill=(244, 244, 245, 255))
+        draw.text((margin + w + 5, max(2, y - 6)), lbl, fill=(244, 244, 245, 255))
+
+    combined = Image.alpha_composite(canvas, overlay).convert("RGB")
+    buf = BytesIO()
+    combined.save(buf, format="JPEG", quality=74, optimize=True)
+    return buf.getvalue()
+
+
+async def _verify_same_character_as_anchor(
+    anchor_bytes: bytes,
+    candidate_bytes: bytes,
+    character_name: str,
+    character_desc: str,
+    project_id: str | None = None,
+    episode_id: str | None = None,
+) -> bool:
+    """Side-by-side visual identity guard: reject candidate crops that depict a different character
+    (e.g. Mabel vs Elf, Fujimiya vs Elf, Uncle vs Takafumi) BEFORE polluting the character's image pool."""
+    try:
+        a_im = Image.open(BytesIO(anchor_bytes)).convert("RGB")
+        c_im = Image.open(BytesIO(candidate_bytes)).convert("RGB")
+        cell = 260
+        pad = 14
+        a_im.thumbnail((cell, cell), Image.Resampling.LANCZOS)
+        c_im.thumbnail((cell, cell), Image.Resampling.LANCZOS)
+        pair = Image.new("RGB", (cell * 2 + pad * 3, cell + pad * 2 + 24), (24, 24, 27))
+        draw = ImageDraw.Draw(pair)
+        pair.paste(a_im, (pad + (cell - a_im.width) // 2, 24 + pad + (cell - a_im.height) // 2))
+        pair.paste(c_im, (pad * 2 + cell + (cell - c_im.width) // 2, 24 + pad + (cell - c_im.height) // 2))
+        draw.text((pad, 6), "LEFT: ESTABLISHED ANCHOR", fill=(244, 244, 245))
+        draw.text((pad * 2 + cell, 6), "RIGHT: NEW CANDIDATE", fill=(230, 75, 53))
+        buf = BytesIO()
+        pair.save(buf, format="JPEG", quality=76, optimize=True)
+        b64 = base64.b64encode(buf.getvalue()).decode()
+
+        llm_cfg = get_active_llm_config("main_llm")
+        client = get_raw_openai_client()
+        extra_kwargs: dict = {}
+        if llm_cfg.provider_key in ("glm_coding", "glm") or "glm-" in (llm_cfg.model or "").lower():
+            extra_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+
+        prompt = (
+            f"Verify visual identity for manga character '{character_name}' ({character_desc[:100]}).\n"
+            "LEFT is the confirmed anchor portrait of this character. RIGHT is a newly cropped candidate.\n"
+            "Does RIGHT clearly show the EXACT SAME character's face as LEFT "
+            "(matching gender, age, hair style/tone, face shape, ear shape, glasses)?\n"
+            "Be STRICT: reject if RIGHT is a different character, a cropped half-face of someone else, or scenery.\n"
+            'Return ONLY valid JSON: {"same_character": true, "reason": "short reason"}'
+        )
+
+        from app.core.telemetry import usage_context
+
+        with usage_context(project_id=project_id, episode_id=episode_id, operation="portrait_verify"):
+            resp = await client.chat.completions.create(
+                model=llm_cfg.model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                        ],
+                    }
+                ],
+                max_tokens=160,
+                **extra_kwargs,
+            )
+        raw_txt = (resp.choices[0].message.content or "").strip()
+        if raw_txt.startswith("```"):
+            raw_txt = re.sub(r"^```(?:json)?\s*", "", raw_txt)
+            raw_txt = re.sub(r"\s*```$", "", raw_txt)
+        parsed = json.loads(raw_txt)
+        return bool(parsed.get("same_character", False))
+    except Exception:
+        logger.debug("Anchor visual verification failed for %s", character_name, exc_info=True)
+        return False
+
+
+async def _ground_assets_on_page(
+    page_bytes: bytes,
+    targets: list[tuple[Asset, str]],
+    project_id: str | None = None,
+    episode_id: str | None = None,
+) -> dict[str, dict]:
+    """Use a single-page outer-ruler-grid call to locate faces (characters) or clear visual crops
+    (items, locations, outfits) with quality scores."""
+    if not targets:
+        return {}
+    try:
+        grid_bytes = _render_outer_ruler_grid(page_bytes)
+        b64 = base64.b64encode(grid_bytes).decode()
+        lines = "\n".join(f"- id={a.id} | type={a.type} | {a.name} ({desc[:95]})" for a, desc in targets)
+        prompt = (
+            "The manga page inside the red border is framed by an outer 0..1000 coordinate ruler "
+            "(horizontal X from 0 left to 1000 right; vertical Y from 0 top to 1000 bottom).\n"
+            "For each listed visual asset, locate its CLEAREST visual appearance on this page:\n"
+            "- For type=character: frame the character's FULL HEAD & FACE (both eyes, nose, mouth, hair), "
+            "NOT speech bubbles, NOT scenery, NOT a narrow 1-eye strip, NOT a different character.\n"
+            "- For type=item|outfit|location: frame the panel or tight region clearly showing that object, "
+            "outfit, or setting.\n"
+            "- Score visual clarity 0..10 (9-10 = iconic clear view; 6-8 = clear; <6 = occluded/tiny/unclear).\n"
+            "- If an asset is NOT clearly drawn on this page, OMIT it completely.\n"
+            "- Return ONLY valid JSON:\n"
+            '{"crops": [{"id": "<asset_id>", "xmin": 0, "ymin": 0, "xmax": 0, "ymax": 0, '
+            '"score": 8.5, "full_view": true, "classic_look": true}]}\n\n'
+            f"Assets to locate:\n{lines}"
+        )
+        llm_cfg = get_active_llm_config("main_llm")
+        client = get_raw_openai_client()
+        extra_kwargs: dict = {}
+        if llm_cfg.provider_key in ("glm_coding", "glm") or "glm-" in (llm_cfg.model or "").lower():
+            extra_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+
+        from app.core.telemetry import usage_context
+
+        with usage_context(project_id=project_id, episode_id=episode_id, operation="asset_ground"):
+            resp = await client.chat.completions.create(
+                model=llm_cfg.model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                        ],
+                    }
+                ],
+                max_tokens=800,
+                **extra_kwargs,
+            )
+        raw_txt = (resp.choices[0].message.content or "").strip()
+        if raw_txt.startswith("```"):
+            raw_txt = re.sub(r"^```(?:json)?\s*", "", raw_txt)
+            raw_txt = re.sub(r"\s*```$", "", raw_txt)
+        parsed = json.loads(raw_txt)
+        type_by_id = {a.id: a.type for a, _ in targets}
+        out: dict[str, dict] = {}
+        for item in parsed.get("crops") or []:
+            aid = str(item.get("id") or "")
+            if not aid or aid not in type_by_id:
+                continue
+            xmin = int(item.get("xmin", 0))
+            ymin = int(item.get("ymin", 0))
+            xmax = int(item.get("xmax", 0))
+            ymax = int(item.get("ymax", 0))
+            score = float(item.get("score") or 0.0)
+            full_view = bool(item.get("full_view", item.get("full_face", True)))
+            classic_look = bool(item.get("classic_look", True))
+            min_score = _MIN_PORTRAIT_SCORE if type_by_id[aid] == "character" else _MIN_ASSET_SCORE
+            if xmax > xmin and ymax > ymin and full_view and score >= min_score:
+                out[aid] = {
+                    "bbox": [ymin, xmin, ymax, xmax],
+                    "score": score,
+                    "classic_look": classic_look,
+                }
+        return out
+    except Exception:
+        logger.debug("Grid asset grounding skipped/failed", exc_info=True)
+        return {}
+
+
+# Backward-compatible alias
+_ground_character_portraits_on_page = _ground_assets_on_page
+
+
+async def elect_best_character_portrait(db: AsyncSession, asset: Asset) -> AssetImage | None:
+    """Run a fast 2x2 contact-sheet tournament over a character's candidate portraits
+    to promote the clearest, most iconic front/3/4 face to primary `reference`."""
+    images = list(
+        (await db.execute(select(AssetImage).where(AssetImage.asset_id == asset.id).order_by(AssetImage.created_at)))
+        .scalars()
+        .all()
+    )
+    if len(images) < 2:
+        return images[0] if images else None
+
+    # Respect manual user-selected primary or user-uploaded reference sheets
+    for im in images:
+        meta = im.meta or {}
+        if meta.get("manual_primary") or (im.kind in ("reference", "turnaround") and not meta.get("auto_cropped")):
+            return im
+
+    candidates = images[:4]
+    tiles: list[tuple[int, AssetImage, Image.Image]] = []
+    for idx, im in enumerate(candidates, start=1):
+        raw = storage_service.get_object_bytes(settings.MINIO_BUCKET, im.image_path)
+        if not raw:
+            continue
+        try:
+            pil = Image.open(BytesIO(raw)).convert("RGB")
+            tiles.append((idx, im, pil))
+        except Exception:
+            continue
+
+    if len(tiles) < 2:
+        return candidates[0]
+
+    # Build a crisp 2x2 contact sheet (~70-100KB JPEG) with #1..#4 badges
+    cell = 280
+    pad = 16
+    cols = 2
+    rows = (len(tiles) + 1) // 2
+    sheet = Image.new("RGB", (cols * cell + (cols + 1) * pad, rows * cell + (rows + 1) * pad), (24, 24, 27))
+    draw = ImageDraw.Draw(sheet)
+    for pos_i, (num, _im, pil) in enumerate(tiles):
+        r, c = divmod(pos_i, cols)
+        ox = pad + c * (cell + pad)
+        oy = pad + r * (cell + pad)
+        thumb = pil.copy()
+        thumb.thumbnail((cell, cell), Image.Resampling.LANCZOS)
+        px = ox + (cell - thumb.width) // 2
+        py = oy + (cell - thumb.height) // 2
+        sheet.paste(thumb, (px, py))
+        draw.rectangle([ox, oy, ox + 42, oy + 24], fill=(230, 75, 53))
+        draw.text((ox + 10, oy + 5), f"#{num}", fill=(255, 255, 255))
+
+    buf = BytesIO()
+    sheet.save(buf, format="JPEG", quality=76, optimize=True)
+    b64 = base64.b64encode(buf.getvalue()).decode()
+
+    try:
+        llm_cfg = get_active_llm_config("main_llm")
+        client = get_raw_openai_client()
+        extra_kwargs: dict = {}
+        if llm_cfg.provider_key in ("glm_coding", "glm") or "glm-" in (llm_cfg.model or "").lower():
+            extra_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+
+        prompt = (
+            f"Audit these candidate portraits (#1 to #{len(tiles)}) for manga character '{asset.name}' "
+            f"({(asset.description or '')[:140]}).\n"
+            "Step 1: For EACH tile (#1..#N), briefly describe what is ACTUALLY visible in that tile "
+            "(scenery/buildings/bubbles, a DIFFERENT character of wrong gender/hair, or THIS character's face?).\n"
+            "Step 2: Put any tile with scenery/no-face, the wrong character, or heavy clipping in `invalid_nums`.\n"
+            "Step 3: Among the VALID tiles showing THIS character's clear, unclipped front or 3/4 face with classic "
+            "normal appearance, pick the SINGLE BEST `winner` (or null if none are valid).\n"
+            'Return ONLY valid JSON: {"audit": [{"num": 1, "what": "...", "valid": true}], '
+            '"invalid_nums": [3], "winner": 2}'
+        )
+
+        from app.core.telemetry import usage_context
+
+        with usage_context(project_id=asset.project_id, operation="portrait_elect"):
+            resp = await client.chat.completions.create(
+                model=llm_cfg.model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                        ],
+                    }
+                ],
+                max_tokens=500,
+                **extra_kwargs,
+            )
+        raw_txt = (resp.choices[0].message.content or "").strip()
+        if raw_txt.startswith("```"):
+            raw_txt = re.sub(r"^```(?:json)?\s*", "", raw_txt)
+            raw_txt = re.sub(r"\s*```$", "", raw_txt)
+        parsed = json.loads(raw_txt)
+        invalid_nums = {int(n) for n in (parsed.get("invalid_nums") or []) if str(n).isdigit()}
+        win_num = parsed.get("winner")
+        valid_tiles = [(num, im) for num, im, _ in tiles if num not in invalid_nums]
+        winner = (
+            next((im for num, im in valid_tiles if num == int(win_num)), None)
+            if win_num is not None
+            else None
+        )
+        if winner is None and valid_tiles:
+            winner = valid_tiles[0][1]
+
+        # Auto-purge clearly invalid auto-cropped tiles (buildings / wrong character / blank)
+        deleted_ids: set[str] = set()
+        for num, im, _ in tiles:
+            if num in invalid_nums and (im.meta or {}).get("auto_cropped"):
+                if winner is None or im.id != winner.id:
+                    await db.delete(im)
+                    deleted_ids.add(im.id)
+        if winner is None:
+            await db.commit()
+            return None
+        images = [im for im in images if im.id not in deleted_ids]
+    except Exception:
+        logger.debug("Portrait election fell back to highest score for asset %s", asset.id, exc_info=True)
+        winner = min(candidates, key=_image_rank_key)
+
+    for im in images:
+        meta = dict(im.meta or {})
+        if im.id == winner.id:
+            im.kind = "reference"
+            meta["is_primary"] = True
+            meta["auto_elected"] = True
+        else:
+            if meta.get("auto_cropped"):
+                im.kind = "thumbnail"
+            meta["is_primary"] = False
+        im.meta = meta
+    await db.commit()
+    return winner
+
+
 async def _auto_crop_asset_thumbnails(
     db: AsyncSession,
     episode_id: str,
@@ -301,41 +796,136 @@ async def _auto_crop_asset_thumbnails(
     matched_chars_by_name: dict[str, Asset],
     raw_pages: dict[int, bytes],
 ) -> int:
-    """Automatically crop and attach visual reference thumbnails for assets that have no images yet."""
+    """Collect up to _MAX_AUTO_PORTRAITS high-quality portraits per character across episodes,
+    and automatically elect the most iconic front/3/4 face as primary reference."""
     if not raw_pages:
         return 0
 
-    candidates: list[tuple[Asset, int | None, list | None]] = []
+    candidates: list[tuple[Asset, int | None, list | None, str]] = []
     seen_ids: set[str] = set()
 
     for asset, meta in discovered_pairs:
         if asset.id not in seen_ids:
             seen_ids.add(asset.id)
-            candidates.append((asset, meta.get("source_page"), meta.get("bbox")))
+            candidates.append((asset, meta.get("source_page"), meta.get("bbox"), asset.description or ""))
 
     for cs in character_sightings:
         norm = generation_service._normalize_name(cs.get("name", ""))
         asset = matched_chars_by_name.get(norm)
-        if asset and asset.id not in seen_ids and cs.get("bbox"):
+        if asset and asset.id not in seen_ids and (cs.get("source_page") or cs.get("bbox")):
             seen_ids.add(asset.id)
-            candidates.append((asset, cs.get("source_page"), cs.get("bbox")))
+            desc = cs.get("appearance") or asset.description or ""
+            candidates.append((asset, cs.get("source_page"), cs.get("bbox"), desc))
+
+    pending: list[tuple[Asset, int, list | None, str, list[AssetImage]]] = []
+    for asset, source_page, bbox, desc in candidates:
+        if not source_page or int(source_page) not in raw_pages:
+            continue
+        existing_imgs = list(
+            (await db.execute(select(AssetImage).where(AssetImage.asset_id == asset.id))).scalars().all()
+        )
+        if asset.type == "character":
+            # Stop auto-collecting once user manually uploaded a reference or set manual primary
+            has_manual = any(
+                (im.meta or {}).get("manual_primary")
+                or (im.kind in ("reference", "turnaround") and not (im.meta or {}).get("auto_cropped"))
+                for im in existing_imgs
+            )
+            if has_manual:
+                continue
+            # Avoid duplicate crops from the same episode
+            if any((im.meta or {}).get("episode_id") == episode_id for im in existing_imgs):
+                continue
+            auto_imgs = [im for im in existing_imgs if (im.meta or {}).get("auto_cropped")]
+            top_score = max((float((im.meta or {}).get("portrait_score") or 0.0) for im in auto_imgs), default=0.0)
+            if len(auto_imgs) >= _MAX_AUTO_PORTRAITS and top_score >= 8.5:
+                continue
+            pending.append((asset, int(source_page), bbox, desc, existing_imgs))
+        else:
+            if not existing_imgs:
+                pending.append((asset, int(source_page), bbox, desc, existing_imgs))
+
+    if not pending:
+        return 0
+
+    # Group ALL pending visual assets (characters + items + locations + outfits) by page
+    assets_by_page: dict[int, list[tuple[Asset, str]]] = {}
+    for asset, page_num, _bbox, desc, _existing in pending:
+        if asset.type in ("character", "item", "location", "outfit"):
+            assets_by_page.setdefault(page_num, []).append((asset, desc))
+
+    grounded_map: dict[str, dict] = {}
+    for page_num, targets in list(assets_by_page.items())[:6]:
+        page_boxes = await _ground_assets_on_page(
+            raw_pages[page_num],
+            targets,
+            project_id=targets[0][0].project_id if targets else None,
+            episode_id=episode_id,
+        )
+        grounded_map.update(page_boxes)
 
     created = 0
-    for asset, source_page, bbox in candidates:
-        if not source_page or not bbox:
-            continue
-        page_bytes = raw_pages.get(int(source_page))
+    assets_to_elect: list[Asset] = []
+    for asset, page_num, fallback_bbox, desc, existing_imgs in pending:
+        page_bytes = raw_pages.get(page_num)
         if not page_bytes:
             continue
-        existing_count = (
-            await db.execute(select(func.count()).select_from(AssetImage).where(AssetImage.asset_id == asset.id))
-        ).scalar() or 0
-        if existing_count > 0:
-            continue
-
-        cropped = _crop_bbox_bytes(page_bytes, bbox)
-        if not cropped:
-            continue
+        ginfo = grounded_map.get(asset.id)
+        if asset.type == "character":
+            if not ginfo:
+                continue
+            cropped = _crop_bbox_bytes(page_bytes, ginfo["bbox"], pad_ratio=0.25, square_portrait=True)
+            if not cropped:
+                continue
+            # Visual anchor guard: if this character already has a confirmed portrait, verify same identity!
+            if existing_imgs:
+                anchor = min(existing_imgs, key=_image_rank_key)
+                anchor_bytes = storage_service.get_object_bytes(settings.MINIO_BUCKET, anchor.image_path)
+                if anchor_bytes:
+                    same = await _verify_same_character_as_anchor(
+                        anchor_bytes,
+                        cropped,
+                        asset.name,
+                        desc,
+                        project_id=asset.project_id,
+                        episode_id=episode_id,
+                    )
+                    if not same:
+                        logger.info(
+                            "Rejected mismatched candidate portrait for %s on ep=%s p=%s",
+                            asset.name,
+                            episode_id,
+                            page_num,
+                        )
+                        continue
+            auto_imgs = [im for im in existing_imgs if (im.meta or {}).get("auto_cropped")]
+            if len(auto_imgs) >= _MAX_AUTO_PORTRAITS:
+                worst = min(auto_imgs, key=lambda im: float((im.meta or {}).get("portrait_score") or 0.0))
+                if ginfo["score"] <= float((worst.meta or {}).get("portrait_score") or 0.0):
+                    continue
+                await db.delete(worst)
+            meta_payload = {
+                "auto_cropped": True,
+                "grounded": True,
+                "episode_id": episode_id,
+                "page_number": page_num,
+                "portrait_score": ginfo["score"],
+                "classic_look": ginfo["classic_look"],
+            }
+        else:
+            use_box = ginfo["bbox"] if ginfo else fallback_bbox
+            if not use_box:
+                continue
+            cropped = _crop_bbox_bytes(page_bytes, use_box, pad_ratio=0.14)
+            if not cropped:
+                continue
+            meta_payload = {
+                "auto_cropped": True,
+                "grounded": bool(ginfo),
+                "episode_id": episode_id,
+                "page_number": page_num,
+                "portrait_score": ginfo["score"] if ginfo else 0.0,
+            }
 
         object_key = storage_service.generate_object_key(f"assets/{asset.id}", "auto_ref.png")
         storage_service.upload_file(settings.MINIO_BUCKET, object_key, cropped, content_type="image/png")
@@ -345,13 +935,17 @@ async def _auto_crop_asset_thumbnails(
                 asset_id=asset.id,
                 kind="thumbnail",
                 image_path=object_key,
-                meta={"auto_cropped": True, "episode_id": episode_id, "page_number": int(source_page)},
+                meta=meta_payload,
             )
         )
         created += 1
+        if asset.type == "character" and len(existing_imgs) + 1 >= 2:
+            assets_to_elect.append(asset)
 
     if created:
         await db.commit()
+    for char_asset in assets_to_elect:
+        await elect_best_character_portrait(db, char_asset)
     return created
 
 
@@ -616,68 +1210,127 @@ async def run_multimodal_understanding(
     vision_cfg = get_active_llm_config("vision_llm")
     client = get_llm_client(role="vision_llm")
 
-    # Windowed multimodal analysis when a chapter has many pages (> _MAX_PAGES_PER_CHUNK)
-    if len(page_blocks) <= _MAX_PAGES_PER_CHUNK:
-        windows = [page_blocks]
-    else:
-        windows = [page_blocks[i : i + _CHUNK_SIZE] for i in range(0, len(page_blocks), _CHUNK_SIZE)]
+    # Windowed multimodal analysis respecting both page count and payload byte budget
+    windows = _build_byte_budgeted_windows(page_blocks, reference_blocks)
 
-    chunk_results: list[dict] = []
-    intra_context_lines: list[str] = []
+    from app.core.telemetry import usage_context
 
-    for idx, window_blocks in enumerate(windows):
-        chunk_info = f"Part {idx + 1}/{len(windows)}" if len(windows) > 1 else ""
-        user_prompt = Template(SUMMARIZE_USER_PROMPT).render(
-            episode_number=episode.label or episode.number,
-            episode_title=episode.title or "",
+    extra_kwargs: dict = {}
+    if vision_cfg.provider_key in ("glm_coding", "glm") or "glm-" in (vision_cfg.model or "").lower():
+        # Disable long hidden reasoning traces during high-volume manga page vision extraction
+        extra_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+
+    sem = asyncio.Semaphore(_CHUNK_CONCURRENCY)
+
+    preferred_language = resolve_language_label(project.language if project else "zh")
+
+    def _is_content_filter_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return any(k in msg for k in ("contentfilter", "content_filter", "1301", "敏感内容", "inappropriate"))
+
+    # Render the episode-wide shared prefix ONCE so every chunk sends byte-identical
+    # prefix blocks (text + character reference portraits) for maximum LLM Prompt Cache hits!
+    shared_prefix_text = Template(SUMMARIZE_SHARED_PREFIX_PROMPT).render(
+        preferred_language=preferred_language,
+        episode_number=episode.label or episode.number,
+        episode_title=episode.title or "",
+        main_plot=current_main_plot,
+        previous_summary=previous_summary,
+        known_characters=known_characters,
+        known_other_assets=known_other_assets,
+        has_reference_sheets=bool(reference_blocks),
+        open_pits=open_pit_refs,
+    )
+    shared_prefix_blocks: list[dict] = [{"type": "text", "text": shared_prefix_text}]
+    for label, url in reference_blocks:
+        shared_prefix_blocks.append({"type": "text", "text": label})
+        shared_prefix_blocks.append({"type": "image_url", "image_url": {"url": url}})
+
+    async def _call_window_once(chunk_info: str, blocks: list[tuple[str, str]]) -> dict:
+        tail_prompt = Template(SUMMARIZE_CHUNK_TAIL_PROMPT).render(
+            preferred_language=preferred_language,
             chunk_info=chunk_info,
-            main_plot=current_main_plot,
-            previous_summary=previous_summary,
-            intra_episode_context="\n".join(intra_context_lines) if intra_context_lines else "",
-            known_characters=known_characters,
-            known_other_assets=known_other_assets,
-            has_reference_sheets=bool(reference_blocks),
-            open_pits=open_pit_refs,
-            pages=window_blocks,
+            intra_episode_context="",
+            pages=blocks,
             ocr_text="",
-            raw_text=fallback_text if (authoritative_storyboard or not window_blocks) else "",
+            raw_text=fallback_text if (authoritative_storyboard or not blocks) else "",
         )
 
-        content: list[dict] = [{"type": "text", "text": user_prompt}]
-        for label, url in reference_blocks:
-            content.append({"type": "text", "text": label})
-            content.append({"type": "image_url", "image_url": {"url": url}})
-        for label, url in window_blocks:
+        content: list[dict] = [*shared_prefix_blocks, {"type": "text", "text": tail_prompt}]
+        for label, url in blocks:
             content.append({"type": "text", "text": label})
             content.append({"type": "image_url", "image_url": {"url": url}})
 
-        logger.info(
-            "Understanding episode %s (%s) with %d image blocks and %d character refs",
-            episode.id,
-            chunk_info or "full",
-            len(window_blocks),
-            len(reference_blocks),
-        )
-
-        from app.core.telemetry import usage_context
-
-        with usage_context(project_id=episode.project_id, episode_id=episode.id, operation="understand"):
-            chunk_model = await client.chat.completions.create(
-                model=vision_cfg.model,
-                messages=[
-                    {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT},
-                    {"role": "user", "content": content},
-                ],
-                response_model=EpisodeUnderstanding,
-                max_tokens=vision_cfg.max_tokens,
-                max_retries=2,
+        async with sem:
+            logger.info(
+                "Understanding episode %s (%s) with %d image blocks and %d character refs",
+                episode.id,
+                chunk_info or "full",
+                len(blocks),
+                len(reference_blocks),
             )
-        chunk_dict = chunk_model.model_dump()
-        chunk_results.append(chunk_dict)
-        if len(windows) > 1 and chunk_dict.get("summary"):
-            intra_context_lines.append(f"- Segment {idx + 1}: {chunk_dict['summary']}")
+            with usage_context(project_id=episode.project_id, episode_id=episode.id, operation="understand"):
+                chunk_model = await client.chat.completions.create(
+                    model=vision_cfg.model,
+                    messages=[
+                        {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT},
+                        {"role": "user", "content": content},
+                    ],
+                    response_model=EpisodeUnderstanding,
+                    max_tokens=vision_cfg.max_tokens,
+                    max_retries=2,
+                    **extra_kwargs,
+                )
+            return chunk_model.model_dump()
+
+    async def _analyze_window(idx: int, window_blocks: list[tuple[str, str]]) -> dict:
+        chunk_info = f"Part {idx + 1}/{len(windows)}" if len(windows) > 1 else ""
+        try:
+            return await _call_window_once(chunk_info, window_blocks)
+        except Exception as exc:
+            if not _is_content_filter_error(exc):
+                raise
+            # Content-filter resilience: isolate and skip ONLY the single flagged page(s)
+            if len(window_blocks) <= 1:
+                logger.warning("Skipping single page %s due to upstream content filter", window_blocks[0][0])
+                return {}
+            logger.warning(
+                "Window %s hit upstream content filter; retrying %d pages individually to isolate flagged page",
+                chunk_info or "full",
+                len(window_blocks),
+            )
+            sub_results: list[dict] = []
+            for p_idx, single_block in enumerate(window_blocks):
+                try:
+                    sub_results.append(await _call_window_once(f"{chunk_info}.{p_idx + 1}", [single_block]))
+                except Exception as sub_exc:
+                    if _is_content_filter_error(sub_exc):
+                        logger.warning("Skipped flagged page %s (content filter)", single_block[0])
+                    else:
+                        raise
+            return _merge_chunk_understandings(sub_results) if sub_results else {}
+
+    # Warm the provider's KV prefix cache with Part 1 first, then run Part 2..N in parallel
+    # so every subsequent chunk reuses the cached Story Bible + history + character portraits!
+    raw_results: list[dict] = []
+    if windows:
+        first_res = await _analyze_window(0, windows[0])
+        if first_res:
+            raw_results.append(first_res)
+        if len(windows) > 1:
+            rest = await asyncio.gather(*(_analyze_window(i, wb) for i, wb in enumerate(windows[1:], start=1)))
+            raw_results.extend(r for r in rest if r)
+    chunk_results: list[dict] = raw_results
 
     understanding_dict = _merge_chunk_understandings(chunk_results)
+    # Hard guard on single-chunk episodes too: keep at most _MAX_NEW_PITS_PER_EPISODE new pits
+    if len(understanding_dict.get("pit_discoveries") or []) > _MAX_NEW_PITS_PER_EPISODE:
+        prio_rank = {"high": 0, "medium": 1, "low": 2}
+        understanding_dict["pit_discoveries"] = sorted(
+            understanding_dict["pit_discoveries"],
+            key=lambda item: prio_rank.get(str(item.get("priority") or "medium").lower(), 1),
+        )[:_MAX_NEW_PITS_PER_EPISODE]
+
     return await persist_episode_understanding(
         db=db,
         episode=episode,
