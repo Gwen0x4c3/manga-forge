@@ -9,7 +9,19 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.config import settings
 from app.database import init_db
 from app.middleware.response_wrapper import ResponseWrapperMiddleware
-from app.routers import assets, branches, episodes, generation, imports, memory, pits, projects, storage, usage
+from app.routers import (
+    assets,
+    branches,
+    episodes,
+    generation,
+    imports,
+    memory,
+    pits,
+    projects,
+    providers,
+    storage,
+    usage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +86,7 @@ app.include_router(generation.router, prefix="/api/v1/generation", tags=["Genera
 app.include_router(storage.router, prefix="/api/v1/storage", tags=["Storage"])
 app.include_router(imports.router, prefix="/api/v1/imports", tags=["Imports"])
 app.include_router(usage.router, prefix="/api/v1/usage", tags=["Usage"])
+app.include_router(providers.router, prefix="/api/v1/providers", tags=["Providers"])
 
 
 @app.get("/health")

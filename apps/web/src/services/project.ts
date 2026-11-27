@@ -802,14 +802,57 @@ export const memoryService = {
         projectId: string,
         data: { question: string; branch_id?: string; max_episode_number?: number },
     ) => api.post<StoryBibleQAResponse>(`/projects/${projectId}/memory/ask`, data, { timeout: 120000 }),
+    consolidate: (projectId: string) =>
+        api.post<{
+            merged_assets: number
+            pruned_assets: number
+            pruned_pits: number
+            remaining_assets: number
+            remaining_open_pits: number
+            summary: string
+        }>(`/projects/${projectId}/memory/consolidate`, null, { timeout: 120000 }),
+}
+
+export interface UnderstandProgressResponse {
+    project_id: string
+    branch_id?: string | null
+    active: boolean
+    overall_pct: number
+    total_episodes: number
+    understood_count: number
+    imported_count: number
+    active_runs_count: number
+    concurrency: number
+    current_episode_id?: string | null
+    current_episode_label?: string | null
+    phase?: string | null
+    phase_label?: string | null
+    episode_pct: number
+    batch_index?: number | null
+    batch_completed?: number | null
+    batch_total?: number | null
+    batch_failed: number
+    active_episode_ids?: string[]
+    queued_episode_ids?: string[]
+    elapsed_sec?: number | null
+    recent_error?: string | null
 }
 
 export const generationService = {
-    triggerUnderstand: (episodeId: string) =>
-        api.post<{ task_id: string; episode_id: string; status: string }>('/generation/understand', {
-            episode_id: episodeId,
-        }),
-    triggerBatchUnderstand: (data: { project_id: string; branch_id?: string; force?: boolean }) =>
+    triggerUnderstand: (episodeId: string, concurrency?: number) =>
+        api.post<{ task_id: string; episode_id: string; status: string; concurrency: number }>(
+            '/generation/understand',
+            {
+                episode_id: episodeId,
+                ...(concurrency ? { concurrency } : {}),
+            },
+        ),
+    triggerBatchUnderstand: (data: {
+        project_id: string
+        branch_id?: string
+        force?: boolean
+        concurrency?: number
+    }) =>
         api.post<{
             task_id: string
             project_id: string
@@ -817,7 +860,12 @@ export const generationService = {
             episode_ids: string[]
             total: number
             status: string
+            concurrency: number
         }>('/generation/understand-batch', data),
+    getUnderstandProgress: (projectId: string, branchId?: string) =>
+        api.get<UnderstandProgressResponse>(`/generation/projects/${projectId}/understand-progress`, {
+            params: branchId ? { branch_id: branchId } : undefined,
+        }),
     triggerScriptGeneration: (data: {
         episode_id: string
         branch_id: string
@@ -927,6 +975,7 @@ export const assetImageService = {
         assetId: string,
         data: { episode_id: string; page_index: number; bbox: [number, number, number, number]; kind?: string },
     ) => api.post<AssetImage>(`/projects/assets/${assetId}/crop-from-page`, data),
+    setPrimary: (imageId: string) => api.post<AssetImage>(`/projects/asset-images/${imageId}/set-primary`),
     remove: (imageId: string) => api.delete(`/projects/asset-images/${imageId}`),
 }
 
@@ -1044,4 +1093,121 @@ export const usageService = {
         page?: number
         page_size?: number
     }) => api.get<UsageRecordListResponse>('/usage/records', { params }),
+}
+
+export interface ModelPresetInfo {
+    id: string
+    label: string
+    context_window?: number | null
+    supports_vision: boolean
+    supports_tools: boolean
+    supports_image_gen: boolean
+    supports_embedding: boolean
+}
+
+export interface ProviderPreset {
+    key: string
+    name: string
+    category: 'aggregator' | 'global' | 'china' | 'image' | 'custom' | string
+    interface_type: string
+    base_url: string
+    default_model: string
+    description: string
+    requires_api_key: boolean
+    supports_llm: boolean
+    supports_vision: boolean
+    supports_image: boolean
+    supports_embedding: boolean
+    api_key_placeholder: string
+    docs_url: string
+    extra_headers: Record<string, string>
+    models: ModelPresetInfo[]
+}
+
+export interface ModelProviderItem {
+    id: string
+    preset_key: string
+    name: string
+    interface_type: string
+    base_url: string
+    has_api_key: boolean
+    api_key_masked: string
+    default_model: string
+    models_cache: string[]
+    extra_headers: Record<string, string>
+    enabled: boolean
+    last_test_status?: string | null
+    last_test_message?: string | null
+    last_tested_at?: string | null
+    created_at: string
+    updated_at: string
+}
+
+export interface RoleBindingItem {
+    role: 'main_llm' | 'vision_llm' | 'image_gen' | 'embedding' | string
+    provider_id?: string | null
+    provider_name?: string | null
+    preset_key?: string | null
+    model_id?: string | null
+    params: Record<string, unknown>
+    effective_source: 'database' | 'env' | string
+    effective_provider: string
+    effective_model: string
+    effective_base_url?: string | null
+}
+
+export interface ProviderOverviewResponse {
+    presets: ProviderPreset[]
+    providers: ModelProviderItem[]
+    roles: RoleBindingItem[]
+}
+
+export interface ProviderTestResponse {
+    ok: boolean
+    latency_ms: number
+    message: string
+    models: string[]
+}
+
+export const providerService = {
+    overview: () => api.get<ProviderOverviewResponse>('/providers'),
+    create: (data: {
+        preset_key: string
+        name: string
+        interface_type?: string
+        base_url?: string
+        api_key?: string
+        default_model?: string
+        models_cache?: string[]
+        extra_headers?: Record<string, string>
+        enabled?: boolean
+        activate_roles?: string[]
+    }) => api.post<ModelProviderItem>('/providers', data),
+    update: (
+        providerId: string,
+        data: {
+            name?: string
+            interface_type?: string
+            base_url?: string
+            api_key?: string
+            default_model?: string
+            models_cache?: string[]
+            extra_headers?: Record<string, string>
+            enabled?: boolean
+        },
+    ) => api.put<ModelProviderItem>(`/providers/${providerId}`, data),
+    remove: (providerId: string) => api.delete(`/providers/${providerId}`),
+    test: (data: {
+        provider_id?: string
+        preset_key?: string
+        interface_type?: string
+        base_url?: string
+        api_key?: string
+        model?: string
+        extra_headers?: Record<string, string>
+    }) => api.post<ProviderTestResponse>('/providers/test', data, { timeout: 30000 }),
+    updateRole: (
+        role: string,
+        data: { provider_id?: string | null; model_id?: string | null; params?: Record<string, unknown> },
+    ) => api.put<RoleBindingItem>(`/providers/roles/${role}`, data),
 }

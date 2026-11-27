@@ -13,18 +13,25 @@
 
 </div>
 
-MangaForge 支持从本地图片/压缩包或 MangaDex 导入连载漫画，通过多模态模型提取结构化剧情图谱并裁剪角色与道具参考图，在交互式「故事宇宙图谱」中可视化人物关系、篇章记忆、伏笔泳道与多世界线分支，并支持基于参考图约束续画、传统日漫竖排/横排交互气泡排版以及 PDF / CBZ / 长条漫一键导出。
+MangaForge 支持从本地图片/压缩包或 MangaDex 导入连载漫画，通过两阶段多模态读图与精裁引擎提取结构化剧情图谱和核验视觉参考图，在交互式「故事宇宙图谱」中可视化人物关系、篇章记忆、伏笔泳道与多世界线分支，并支持基于参考图约束续画、传统日漫竖排/横排交互气泡排版以及 PDF / CBZ / 长条漫一键导出。
 
 ## 功能特性
 
-- **章节导入与多模态解析**：支持本地文件/ZIP 上传及 MangaDex 批量抓取；自动提取单话摘要、关键事件、人物状态变更、逐页台词与检测框资产裁图，并内置原作页面「框选裁图入资产库」工具（`POST /assets/{id}/crop-from-page`）。
-- **分层长程记忆与多路召回**：采用“10 话不可变篇章纪要 + 核心/演进分级世界观规则 + 近期章节滑窗 + 多路 RRF 检索（Qdrant 向量检索与中文关键词回退）”架构，支持 60～150+ 话长连载上下文组装且不丢失早期设定。
-- **角色生命状态迭代与死亡硬锁定**：按分支时间线顺序重放角色 `vital_status` 变更（`存活` / `重伤` / `失踪` / `封印` / `已故`）——角色战死后自动在后续章节的剧本生成与一致性校验中硬锁定禁活（即使跨越 50+ 话也不遗忘），同时在死亡前分叉的平行世界线中自动保持存活，并支持在图谱界面手动覆写。
+- **两阶段多模态剧情理解与 2 阶段像素精裁引擎**：
+  - **高清 WebP 与日漫 RTL 跨页自动拆分**：自动将原画预处理为带顶部页码角标的清晰 WebP，支持日漫跨页右→左（`R → L`）阅读顺序自动拆半与长条漫智能分片。
+  - **逐页笔记 → 整话统一合成**：Phase A 顺序流式（`stream=True`）产出逐页笔记（支持 `1360px` 高清放大复核、内容审核单页隔离与超时自动二分降级）；Phase B 一次性整话结构化合成（原生 JSON 模式 + 字符串内引号确定性修复 + 3 次校验修复），并按项目 **首选输出语言** 与 **作品官方通行译名** 锁定全库命名。
+  - **红青像素两阶段精裁与联系表自检**：在原图真实像素网格（红 X / 青 Y）粗定位后，对角色头像执行 `50px` 放大精修，通过联系表拼图做视觉自检（`ok` / `adjust` 自动修框 / `reject` 拦截），叠加视觉锚点防串脸守卫与多候选主头像自动竞选淘汰，实现资产库近 100% 核验配图。
+  - **实时整体进度条与可配置并发度（`1x～8x`）**：工作台提供全书/批次整体进度条、本话细分阶段条及章节列表 **`理解中 · XX%`** / **`排队等待理解`** 实时状态（`GET /generation/projects/{id}/understand-progress`）。话与话之间始终严格串行保障跨话记忆完整，单话内部读图与裁剪并发度可在页面与模型中心按服务商能力自由调整（`1x` 严格串行零盲区 ～ `8x` 高速并发）。
+- **网页端多服务商模型中心（`/models`）与全链路用量观测（`/usage`）**：
+  - 内置 11+ 主流平台一键预设（OpenRouter、OpenAI、Anthropic、Gemini、智谱 GLM / Coding Plan、Kimi、DeepSeek、通义千问、ComfyUI、Antigravity、自定义），API Key 经 Fernet 加密存储，支持连通性探测、模型拉取与 **4 角色动态路由**（`main_llm` / `vision_llm` / `image_gen` / `embedding`），免重启实时覆盖 `.env`。
+  - 完整记录流式与非流式 LLM、Embedding、生图的 Token 消耗、耗时与 Prompt Cache 命中率。
+- **分层长程记忆、多路召回与记忆园丁（Memory Gardener）**：采用“10 话不可变篇章纪要 + 核心/演进分级世界观规则 + 近期章节滑窗 + 多路 RRF 检索（Qdrant 向量检索与中文关键词回退）”架构，配合每 10 话自动触发及一键手动的 **记忆整理园丁**（`POST /projects/{id}/memory/consolidate`）合并重复资产、清理水伏笔并优选主角头像，支持 60～150+ 话长连载不丢失早期设定。
+- **角色生命状态迭代与死亡硬锁定**：按分支时间线顺序重放角色 `vital_status` 变更（`存活` / `重伤` / `失踪` / `封印` / `已故`）——角色战死后自动在后续章节的剧本生成与一致性校验中硬锁定禁活，同时在死亡前分叉的平行世界线中自动保持存活，并支持在图谱界面手动覆写。
 - **故事宇宙可视化（Story Atlas）与剧情侦探问答**：
   - **人物共现与命运演进星图**：交互式人物关系星图，节点大小按出场话数缩放并内嵌裁剪角色头像（已故角色自动转为黑白肖像并标注 `†`），支持查看服装造型、跨话状态演进轨迹与一键作者状态覆写（`GET /memory/graph`）。
   - **篇章压缩与伏笔生命周期泳道**：集中展示分层世界观法则、篇章纪要、连载时间轴封面与伏笔从埋设 → 线索推进 → 回收闭环的跨话泳道。
   - **平行世界线分支树**：可视化展示各条 `fork` 支线与章节缩略图，支线记忆与伏笔状态严格隔离，支持 `fork` / `diff` / `merge`。
-  - **剧情侦探 Story Bible 问答**：严格基于已入库原漫与续画记忆回答剧情考据问题（适配深度思考模型高 `OPENAI_MAX_TOKENS` 预算），返回匹配角色头像与可点击跳转的章节引证（`POST /memory/ask`）。
+  - **剧情侦探 Story Bible 问答**：严格基于已入库原漫与续画记忆回答剧情考据问题，返回匹配角色头像与可点击跳转的章节引证（`POST /memory/ask`）。
 - **精修生图工坊与交互式竖排嵌字**：
   - **`@角色` / `#伏笔` 导演指令芯片**：剧本策划阶段一键插入角色与待填伏笔，分镜生成后自动执行世界观与状态一致性校验。
   - **单格精修重绘、候选 A/B 切换与局部 Inpaint**：无需重跑整话，可单独修改任意分格 Prompt 与参考资产并保留历史候选版本一键切换（`POST /panels/{id}/rerender`、`POST /panels/{id}/select/{image_id}`、`POST /panels/{id}/inpaint`）。
@@ -35,7 +42,17 @@ MangaForge 支持从本地图片/压缩包或 MangaDex 导入连载漫画，通�
 
 ## 功能展示与生成示例
 
-以下为《异世界舅舅》(Isekai Ojisan) 真实端到端工作台运行效果：从 MangaDex 导入第 1～4 话（83 页），自动解析入库 43 项视觉资产、20 条世界观规则与 22 条伏笔，随后连续续画生成第 5 话与第 6 话。
+以下为《异世界舅舅》(Isekai Ojisan) 真实端到端工作台运行效果：从 MangaDex 批量抓取 118 话连载，按序解析前 10 话（第 1～9 话含 7.5 话，共 213 页），自动提取 6 名纯净核心角色（盲评均分 9.2/10）、18 项 100% 配图视觉资产与 4 条跨话核心伏笔，并支持续画成稿。
+
+### 项目工作台、视觉资产库与多服务商模型中心
+
+| 项目工作台（实时整体进度条与并发调节） | 100% 配图视觉资产库 |
+| :---: | :---: |
+| [<img src="docs/assets/showcase/project_workbench.jpg" width="420" />](docs/assets/showcase/project_workbench.jpg) | [<img src="docs/assets/showcase/asset_library.jpg" width="420" />](docs/assets/showcase/asset_library.jpg) |
+
+| 多服务商模型中心（4 角色路由与并发配置） | Token 用量与 Prompt Cache 观测面板 |
+| :---: | :---: |
+| [<img src="docs/assets/showcase/model_hub.jpg" width="420" />](docs/assets/showcase/model_hub.jpg) | [<img src="docs/assets/showcase/usage_dashboard.jpg" width="420" />](docs/assets/showcase/usage_dashboard.jpg) |
 
 ### 故事宇宙图谱与剧情侦探问答
 
@@ -59,11 +76,11 @@ MangaForge 支持从本地图片/压缩包或 MangaDex 导入连载漫画，通�
 | :---: | :---: |
 | [<img src="docs/assets/showcase/ep5_p1.jpg" width="380" />](docs/assets/showcase/ep5_p1.jpg) | [<img src="docs/assets/showcase/ep5_vertical_p1.jpg" width="380" />](docs/assets/showcase/ep5_vertical_p1.jpg) |
 
-### 自动提取视觉参考资产与参考图约束生图对比
+### 2 阶段自动精裁角色头像与参考图约束生图对比
 
-| 舅舅 | 敬文 | 傲娇精灵 | 梅贝尔 | SEGA 土星手柄 |
+| 舅舅 | 敬文 | 精灵 | 梅贝尔 | 藤宫澄夏 |
 | :---: | :---: | :---: | :---: | :---: |
-| <img src="docs/assets/showcase/ref_ojisan.jpg" width="145" /> | <img src="docs/assets/showcase/ref_takafumi.jpg" width="145" /> | <img src="docs/assets/showcase/ref_elf.jpg" width="145" /> | <img src="docs/assets/showcase/ref_mabel.jpg" width="145" /> | <img src="docs/assets/showcase/ref_saturn.jpg" width="145" /> |
+| <img src="docs/assets/showcase/ref_ojisan.jpg" width="145" /> | <img src="docs/assets/showcase/ref_takafumi.jpg" width="145" /> | <img src="docs/assets/showcase/ref_elf.jpg" width="145" /> | <img src="docs/assets/showcase/ref_mabel.jpg" width="145" /> | <img src="docs/assets/showcase/ref_fujimiya.jpg" width="145" /> |
 
 | 无参考图（仅文本 Prompt） | 挂载原漫裁剪的角色与道具参考图 |
 | :---: | :---: |
@@ -91,8 +108,8 @@ MangaForge 支持从本地图片/压缩包或 MangaDex 导入连载漫画，通�
 
 ```mermaid
 flowchart LR
-    Ingest["章节导入与裁图<br/>Local / MangaDex / Crop"] --> Understand["多模态解析<br/>事件 · 台词 · 资产裁图"]
-    Understand --> Memory["记忆与故事图谱<br/>MySQL · Qdrant · MinIO"]
+    Ingest["章节导入与裁图<br/>Local / MangaDex / Crop"] --> Understand["两阶段多模态解析<br/>RTL WebP · 流式读图 · 2阶段精裁"]
+    Understand --> Memory["分层记忆与记忆园丁<br/>MySQL · Qdrant · MinIO"]
     Memory --> Atlas["故事宇宙图谱与问答<br/>人物星图 · 伏笔泳道 · 分支树"]
     Memory --> Script["分镜生成与一致性校验<br/>Storyboard JSON"]
     Script --> Render["RenderAgent 与单格精修<br/>多参考图 · 候选 A/B · Inpaint"]

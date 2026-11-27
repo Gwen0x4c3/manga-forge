@@ -219,8 +219,108 @@ async def record_usage_event(
         logger.debug("Failed to persist usage record (non-fatal)", exc_info=True)
 
 
+class _TrackedAsyncStream:
+    """Async stream wrapper that transparently forwards OpenAI streaming chunks
+    while recording accurate token usage & elapsed duration on completion or error."""
+
+    def __init__(
+        self,
+        inner: Any,
+        *,
+        provider: str,
+        requested_model: str,
+        t0: float,
+        ctx: UsageAttribution,
+    ) -> None:
+        self._inner = inner
+        self._provider = provider
+        self._model = requested_model
+        self._t0 = t0
+        self._ctx = ctx
+        self._last_usage: Any = None
+        self._recorded = False
+
+    def __aiter__(self):
+        return self
+
+    async def __aenter__(self):
+        if hasattr(self._inner, "__aenter__"):
+            await self._inner.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if hasattr(self._inner, "__aexit__"):
+            await self._inner.__aexit__(exc_type, exc, tb)
+        if not self._recorded:
+            err_msg = f"{exc_type.__name__}: {exc}" if exc else None
+            await self._flush(status="failed" if exc else "succeeded", error=err_msg)
+
+    async def aclose(self) -> None:
+        if hasattr(self._inner, "aclose"):
+            await self._inner.aclose()
+        if not self._recorded:
+            await self._flush(status="succeeded", error=None)
+
+    async def _flush(self, *, status: str, error: str | None) -> None:
+        if self._recorded:
+            return
+        self._recorded = True
+        elapsed_ms = int((time.perf_counter() - self._t0) * 1000)
+        if self._last_usage is not None:
+            fake_resp = type("_StreamResp", (), {"usage": self._last_usage, "model": self._model})()
+            parsed = extract_llm_usage(fake_resp, fallback_model=self._model)
+        else:
+            parsed = {
+                "model": self._model,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "total_tokens": 0,
+                "reasoning_tokens": 0,
+            }
+        meta: dict[str, Any] = {"streamed": True}
+        if parsed["reasoning_tokens"]:
+            meta["reasoning_tokens"] = parsed["reasoning_tokens"]
+        await record_usage_event(
+            kind="llm",
+            operation=self._ctx.operation,
+            provider=self._provider,
+            model=parsed["model"],
+            input_tokens=parsed["input_tokens"],
+            output_tokens=parsed["output_tokens"],
+            cache_read_tokens=parsed["cache_read_tokens"],
+            cache_write_tokens=parsed["cache_write_tokens"],
+            total_tokens=parsed["total_tokens"],
+            duration_ms=elapsed_ms,
+            status=status,
+            error=error,
+            meta=meta,
+            project_id=self._ctx.project_id,
+            episode_id=self._ctx.episode_id,
+            generation_run_id=self._ctx.generation_run_id,
+        )
+
+    async def __anext__(self):
+        try:
+            chunk = await self._inner.__anext__()
+        except StopAsyncIteration:
+            await self._flush(status="succeeded", error=None)
+            raise
+        except Exception as exc:
+            await self._flush(status="failed", error=f"{type(exc).__name__}: {exc}")
+            raise
+        c_model = _read_attr(chunk, "model")
+        if c_model:
+            self._model = str(c_model)
+        c_usage = _read_attr(chunk, "usage")
+        if c_usage is not None:
+            self._last_usage = c_usage
+        return chunk
+
+
 def instrument_openai_client(client: AsyncOpenAI, provider: str = "openai") -> AsyncOpenAI:
-    """Wrap AsyncOpenAI chat.completions.create so every LLM call (raw or instructor) is recorded."""
+    """Wrap AsyncOpenAI chat.completions.create so every LLM call (raw, streamed, or instructor) is recorded."""
     completions = client.chat.completions
     if getattr(completions, "_mf_instrumented", False):
         return client
@@ -228,24 +328,59 @@ def instrument_openai_client(client: AsyncOpenAI, provider: str = "openai") -> A
     original_create = completions.create
 
     async def tracked_create(*args: Any, **kwargs: Any):
-        if kwargs.get("stream"):
-            return await original_create(*args, **kwargs)
-
         requested_model = str(kwargs.get("model") or "unknown")
         t0 = time.perf_counter()
-        try:
-            response = await original_create(*args, **kwargs)
-        except Exception as exc:
-            elapsed_ms = int((time.perf_counter() - t0) * 1000)
-            await record_usage_event(
-                kind="llm",
-                provider=provider,
-                model=requested_model,
-                duration_ms=elapsed_ms,
-                status="failed",
-                error=f"{type(exc).__name__}: {exc}",
-            )
-            raise
+
+        if kwargs.get("stream"):
+            ctx = get_usage_context()
+            call_kw = dict(kwargs)
+            injected_opts = "stream_options" not in call_kw
+            if injected_opts:
+                call_kw["stream_options"] = {"include_usage": True}
+            try:
+                stream_obj = await original_create(*args, **call_kw)
+            except Exception as exc:
+                if injected_opts and "stream_options" in str(exc).lower():
+                    call_kw.pop("stream_options", None)
+                    stream_obj = await original_create(*args, **call_kw)
+                else:
+                    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+                    await record_usage_event(
+                        kind="llm",
+                        operation=ctx.operation,
+                        provider=provider,
+                        model=requested_model,
+                        duration_ms=elapsed_ms,
+                        status="failed",
+                        error=f"{type(exc).__name__}: {exc}",
+                        project_id=ctx.project_id,
+                        episode_id=ctx.episode_id,
+                        generation_run_id=ctx.generation_run_id,
+                    )
+                    raise
+            if hasattr(stream_obj, "__aiter__"):
+                return _TrackedAsyncStream(
+                    stream_obj,
+                    provider=provider,
+                    requested_model=requested_model,
+                    t0=t0,
+                    ctx=ctx,
+                )
+            response = stream_obj
+        else:
+            try:
+                response = await original_create(*args, **kwargs)
+            except Exception as exc:
+                elapsed_ms = int((time.perf_counter() - t0) * 1000)
+                await record_usage_event(
+                    kind="llm",
+                    provider=provider,
+                    model=requested_model,
+                    duration_ms=elapsed_ms,
+                    status="failed",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                raise
 
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         parsed = extract_llm_usage(response, fallback_model=requested_model)

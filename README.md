@@ -13,18 +13,25 @@ Open-source manga continuation & story-intelligence platform with multimodal cha
 
 </div>
 
-MangaForge ingests serialized manga chapters (local archives/images or MangaDex), extracts structured narrative graphs and cropped visual reference sheets via multimodal LLMs, visualizes characters, arcs, foreshadowing, and story branches in an interactive Story Atlas, and produces reference-locked continuation chapters with traditional vertical CJK or horizontal typesetting exportable as PDF, CBZ, or Webtoon strips.
+MangaForge ingests serialized manga chapters (local archives/images or MangaDex), runs a two-phase multimodal reading & precision cropping engine to extract structured narrative graphs and verified visual reference sheets, visualizes characters, arcs, foreshadowing, and story branches in an interactive Story Atlas, and produces reference-locked continuation chapters with traditional vertical CJK or horizontal typesetting exportable as PDF, CBZ, or Webtoon strips.
 
 ## Features
 
-- **Chapter Ingestion & Multimodal Analysis**: Batch import from local files/ZIPs or MangaDex; extracts synopses, chronological events, character state transitions, page-level dialogue, and bounding-box crops for characters, outfits, and recurring props — plus an interactive page-to-asset visual cropper (`POST /assets/{id}/crop-from-page`).
-- **Hierarchical Long-Series Memory**: Combines immutable 10-episode arc digests, tiered world rules (`core_rules` + rolling `discovered_rules`), recent episode windows, and multi-query RRF RAG (Qdrant vector search with CJK-aware keyword fallback) to support 60–150+ episode series without context truncation.
-- **Iterative Character Lifecycle & Death Locks**: Replays character `vital_status` transitions (`alive` / `injured` / `missing` / `sealed` / `deceased`) chronologically per branch up to the target episode — pinning deceased/unavailable characters into script generation and consistency validation (even 50+ chapters later) while keeping forked what-if timelines strictly isolated, with manual author override in the Story Atlas UI.
+- **Two-Phase Multimodal Understanding & 2-Stage Precision Cropping**:
+  - **High-Res WebP & RTL Spread Splitting**: Preprocesses pages into crisp WebP blocks with stamped page headers, automatic Right-to-Left (`R → L`) double-page spread splitting, and vertical webtoon strip slicing.
+  - **Sequential Notes → Whole-Episode Synthesis**: Phase A reads ordered page windows with streaming (`stream=True`), optional `1360px` HD zoom re-reads, content-filter single-page isolation, and timeout auto-bisection; Phase B synthesizes a single coherent whole-episode JSON (native JSON mode + inner-quote recovery + validation repair) locked to the project's **Preferred Output Language** and series canonical character names.
+  - **2-Stage RED/CYAN Pixel-Grid Cropping & Self-Inspection**: Locates faces, items, locations, and outfits on true original-pixel grids, runs `50px` zoomed refinement for character avatars, visually audits all crops via a contact sheet (`ok` / `adjust` / `reject`), guards against cross-character mixups with side-by-side anchor verification, and automatically elects the best primary portrait.
+  - **Live Progress Bar & Configurable Concurrency (`1x–8x`)**: Real-time overall/batch progress bar and episode-row `理解中 · XX%` / `排队等待理解` badges (`GET /generation/projects/{id}/understand-progress`). Episodes always execute strictly sequentially to preserve cross-chapter continuity, while intra-episode reading & cropping concurrency can be dialed from `1x` (strict sequential zero blind spots) up to `8x` for high-concurrency API providers.
+- **Web-Based Multi-Provider Model Hub (`/models`) & Usage Telemetry (`/usage`)**:
+  - Configure 11+ presets (OpenRouter, OpenAI, Anthropic, Gemini, Zhipu GLM / Coding Plan, Kimi, DeepSeek, Qwen, ComfyUI, Antigravity, Custom) in the Web UI with Fernet-encrypted API keys, live connection testing, model discovery, and **4-role routing** (`main_llm`, `vision_llm`, `image_gen`, `embedding`) that overrides `.env` dynamically without restarts.
+  - Full token, latency, and Prompt Cache observability across streaming & non-streaming LLM, embedding, and image calls.
+- **Hierarchical Long-Series Memory & Memory Gardener**: Combines immutable 10-episode arc digests, tiered world rules (`core_rules` + rolling `discovered_rules`), recent episode windows, multi-query RRF RAG (Qdrant vector search with CJK-aware keyword fallback), and periodic/one-click **Memory Gardener** consolidation (`POST /projects/{id}/memory/consolidate`) to deduplicate assets, prune noise/pits, and re-elect primary portraits across 60–150+ episodes.
+- **Iterative Character Lifecycle & Death Locks**: Replays character `vital_status` transitions (`alive` / `injured` / `missing` / `sealed` / `deceased`) chronologically per branch up to the target episode — pinning deceased/unavailable characters into script generation and consistency validation while keeping forked what-if timelines strictly isolated, with manual author override in the Story Atlas UI.
 - **Visual Story Atlas & Grounded Story Bible Q&A**:
   - **Character Co-Occurrence & Evolution Graph**: Interactive character constellation graph sized by appearances and weighted by shared scenes, with cropped circular avatars (monochrome `†` portraits for deceased characters), outfit galleries, per-episode state timelines, and one-click vital-status locks (`GET /memory/graph`).
   - **Arc Memory & Foreshadowing Swimlanes**: Timeline ribbon displaying sealed/active arcs, tiered world rules, episode covers, and pit lifecycles (introduction → clue progressions → resolution).
   - **Multiverse Branch DAG**: Visual branch lanes showing forked what-if timelines with per-branch isolated memory and `fork` / `diff` / `merge`.
-  - **Story Detective Q&A**: Grounded natural-language search over the ingested manga with thinking-model `OPENAI_MAX_TOKENS` support, matched character avatars, and clickable episode citations (`POST /memory/ask`).
+  - **Story Detective Q&A**: Grounded natural-language search over the ingested manga with matched character avatars and clickable episode citations (`POST /memory/ask`).
 - **Precision Generation Studio**:
   - **`@Character` / `#Pit` Director Chips**: Click-to-insert character and open foreshadowing references directly into script instructions, followed by automated continuity validation.
   - **Single-Panel Re-render, Candidate A/B History & Inpainting**: Re-roll individual panels with explicit reference asset overrides while preserving prior versions for one-click A/B switching (`POST /panels/{id}/rerender`, `POST /panels/{id}/select/{image_id}`, `POST /panels/{id}/inpaint`).
@@ -35,7 +42,17 @@ MangaForge ingests serialized manga chapters (local archives/images or MangaDex)
 
 ## Showcase
 
-End-to-end live workspace on ***Isekai Ojisan* (*Uncle from Another World*)**: Chapters 1–4 (83 pages) imported from MangaDex, analyzed into 43 visual assets, 20 world rules, and 22 tracked plot threads, followed by two consecutive generated continuation chapters (Episodes 5 & 6).
+End-to-end live workspace on ***Isekai Ojisan* (*Uncle from Another World*)**: 118 MangaDex chapters imported, with the first 10 chapters (Chapters 1–9 incl. 7.5, 213 pages) analyzed sequentially into 6 clean characters (9.0–9.5/10 blind-scored portraits), 18 100%-illustrated visual assets, and 4 consolidated high-signal plot threads, alongside generated continuation chapters.
+
+### Project Workbench, Asset Library & Model Hub
+
+| Project Workbench (Live Progress Bar & Concurrency) | 100%-Illustrated Visual Asset Library |
+| :---: | :---: |
+| [<img src="docs/assets/showcase/project_workbench.jpg" width="420" />](docs/assets/showcase/project_workbench.jpg) | [<img src="docs/assets/showcase/asset_library.jpg" width="420" />](docs/assets/showcase/asset_library.jpg) |
+
+| Multi-Provider Model Hub (4-Role Routing & Concurrency) | Token Usage & Prompt Cache Telemetry |
+| :---: | :---: |
+| [<img src="docs/assets/showcase/model_hub.jpg" width="420" />](docs/assets/showcase/model_hub.jpg) | [<img src="docs/assets/showcase/usage_dashboard.jpg" width="420" />](docs/assets/showcase/usage_dashboard.jpg) |
 
 ### Visual Story Atlas & Story Detective Q&A
 
@@ -59,11 +76,11 @@ End-to-end live workspace on ***Isekai Ojisan* (*Uncle from Another World*)**: C
 | :---: | :---: |
 | [<img src="docs/assets/showcase/ep5_p1.jpg" width="380" />](docs/assets/showcase/ep5_p1.jpg) | [<img src="docs/assets/showcase/ep5_vertical_p1.jpg" width="380" />](docs/assets/showcase/ep5_vertical_p1.jpg) |
 
-### Extracted Visual Assets & Reference-Locked Rendering
+### Automated 2-Stage Character Portraits & Reference-Locked Rendering
 
-| Uncle | Takafumi | Tsundere Elf | Mabel | SEGA Saturn Pad |
+| Uncle (舅舅) | Takafumi (敬文) | Elf (精灵) | Mabel (梅贝尔) | Fujimiya (藤宫澄夏) |
 | :---: | :---: | :---: | :---: | :---: |
-| <img src="docs/assets/showcase/ref_ojisan.jpg" width="145" /> | <img src="docs/assets/showcase/ref_takafumi.jpg" width="145" /> | <img src="docs/assets/showcase/ref_elf.jpg" width="145" /> | <img src="docs/assets/showcase/ref_mabel.jpg" width="145" /> | <img src="docs/assets/showcase/ref_saturn.jpg" width="145" /> |
+| <img src="docs/assets/showcase/ref_ojisan.jpg" width="145" /> | <img src="docs/assets/showcase/ref_takafumi.jpg" width="145" /> | <img src="docs/assets/showcase/ref_elf.jpg" width="145" /> | <img src="docs/assets/showcase/ref_mabel.jpg" width="145" /> | <img src="docs/assets/showcase/ref_fujimiya.jpg" width="145" /> |
 
 | Unconditioned (text prompt only) | Reference-conditioned (cropped character & prop sheets) |
 | :---: | :---: |
@@ -91,8 +108,8 @@ Episode 5 continues directly from Episode 4's ending; Episode 6 is generated aft
 
 ```mermaid
 flowchart LR
-    Ingest["Ingestion<br/>Local / MangaDex / Crop"] --> Understand["Multimodal Understanding<br/>Events · Dialogue · Asset Crops"]
-    Understand --> Memory["Memory & Story Graph<br/>MySQL · Qdrant · MinIO"]
+    Ingest["Ingestion<br/>Local / MangaDex / Crop"] --> Understand["2-Phase Understanding<br/>RTL WebP · Stream · 2-Stage Crop"]
+    Understand --> Memory["Memory & Gardener<br/>MySQL · Qdrant · MinIO"]
     Memory --> Atlas["Story Atlas & Q&A<br/>Char Graph · Pit Swimlanes · DAG"]
     Memory --> Script["Script & Continuity Check<br/>Structured Storyboard JSON"]
     Script --> Render["RenderAgent & Single-Panel Rerender<br/>Multi-Ref · Candidate A/B · Inpaint"]

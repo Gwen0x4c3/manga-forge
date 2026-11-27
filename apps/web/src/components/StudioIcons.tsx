@@ -264,3 +264,20 @@ export function IconTelemetry({ size = 15, ...props }: IconProps) {
         </svg>
     )
 }
+
+export function IconModelHub({ size = 15, ...props }: IconProps) {
+    return (
+        <svg {...baseProps(size, props)}>
+            <rect x="5" y="5" width="10" height="10" rx="1.8" />
+            <rect x="8" y="8" width="4" height="4" rx="0.6" />
+            <line x1="7.5" y1="2.5" x2="7.5" y2="5" />
+            <line x1="12.5" y1="2.5" x2="12.5" y2="5" />
+            <line x1="7.5" y1="15" x2="7.5" y2="17.5" />
+            <line x1="12.5" y1="15" x2="12.5" y2="17.5" />
+            <line x1="2.5" y1="7.5" x2="5" y2="7.5" />
+            <line x1="2.5" y1="12.5" x2="5" y2="12.5" />
+            <line x1="15" y1="7.5" x2="17.5" y2="7.5" />
+            <line x1="15" y1="12.5" x2="17.5" y2="12.5" />
+        </svg>
+    )
+}

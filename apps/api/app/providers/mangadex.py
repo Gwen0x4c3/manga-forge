@@ -168,6 +168,16 @@ def extract_chapter_ids_from_read_response(payload: dict[str, Any], manga_id: st
     return deduped
 
 
+def _normalize_aggregate_chapter_label(chapter_label: Any, volume_label: str | None) -> str:
+    raw = str(chapter_label).strip() if chapter_label is not None else ""
+    if not raw or raw.lower() in {"none", "null"}:
+        vol = str(volume_label).strip() if volume_label is not None else ""
+        if vol and vol.lower() not in {"none", "null"}:
+            return f"Vol.{vol} 番外"
+        return "番外"
+    return raw
+
+
 def extract_chapters_from_aggregate_response(payload: dict[str, Any]) -> list[dict[str, Any]]:
     volumes = payload.get("volumes") or {}
     flattened: list[dict[str, Any]] = []
@@ -183,7 +193,7 @@ def extract_chapters_from_aggregate_response(payload: dict[str, Any]) -> list[di
                 continue
             chapter_label = (chapter_data or {}).get("chapter")
             if primary_id:
-                normalized_label = str(chapter_label) if chapter_label is not None else f"id:{primary_id}"
+                normalized_label = _normalize_aggregate_chapter_label(chapter_label, volume_label)
                 flattened.append(
                     {
                         "chapter": normalized_label,
@@ -194,7 +204,7 @@ def extract_chapters_from_aggregate_response(payload: dict[str, Any]) -> list[di
                 )
             for extra_id in (chapter_data or {}).get("others") or []:
                 if extra_id:
-                    normalized_label = str(chapter_label) if chapter_label is not None else f"id:{extra_id}"
+                    normalized_label = _normalize_aggregate_chapter_label(chapter_label, volume_label)
                     flattened.append(
                         {
                             "chapter": normalized_label,

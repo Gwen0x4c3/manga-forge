@@ -13,7 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.core.llm import ensure_llm_configured
+from app.core.llm import ensure_llm_configured, get_active_llm_config
+from app.core.provider_runtime import resolve_role_config
 from app.dependencies import get_db
 from app.models.branch import Branch
 from app.models.episode import Episode
@@ -35,6 +36,7 @@ from app.schemas.generation import (
     ScriptGenerateRequest,
     ScriptGenerateResponse,
     StoryboardUpdateRequest,
+    UnderstandProgressResponse,
     UnderstandRequest,
     UnderstandResponse,
 )
@@ -102,16 +104,19 @@ async def continue_from_episode(request: ContinueFromEpisodeRequest, db: AsyncSe
     await db.commit()
     await db.refresh(new_episode)
 
+    main_cfg = get_active_llm_config("main_llm")
+    img_cfg = resolve_role_config("image_gen")
     run = await generation_service.create_generation_run(
         db,
         episode_id=str(new_episode.id),
         stage="continue",
-        backend="openai",
-        model=settings.OPENAI_MODEL,
+        backend=main_cfg.provider_key,
+        model=main_cfg.model,
         params={
             "tone": request.tone,
             "base_episode_number": float(request.base_episode_number),
-            "image_backend": request.image_backend or settings.IMAGE_BACKEND,
+            "image_backend": request.image_backend or img_cfg.provider_key,
+            "image_model": request.image_model or img_cfg.model,
             "image_size": request.image_size,
             "context_profile": request.context_profile or settings.DEFAULT_CONTEXT_PROFILE,
         },
@@ -151,11 +156,21 @@ async def trigger_understand(request: UnderstandRequest, db: AsyncSession = Depe
         raise HTTPException(status_code=404, detail="Episode not found")
     if await generation_service.has_active_run(db, episode.id, "understand"):
         raise HTTPException(status_code=409, detail="该章节已有正在运行的剧情理解任务")
+    vision_cfg = get_active_llm_config("vision_llm")
+    eff_conc = max(1, min(8, int(request.concurrency or getattr(vision_cfg, "concurrency", 1) or 1)))
     run = await generation_service.create_generation_run(
-        db, episode_id=episode.id, stage="understand", backend="openai", model=settings.OPENAI_MODEL
+        db,
+        episode_id=episode.id,
+        stage="understand",
+        backend=vision_cfg.provider_key,
+        model=vision_cfg.model,
+        params={
+            "concurrency": eff_conc,
+            "progress": {"phase": "queued", "label": "已进入队列，等待 Worker 启动", "episode_pct": 0},
+        },
     )
     try:
-        task = _dispatch_task("workers.tasks.understand.summarize_episode", str(run.id), episode.id)
+        task = _dispatch_task("workers.tasks.understand.summarize_episode", str(run.id), episode.id, eff_conc)
     except Exception as exc:
         await generation_service.update_generation_run(db, str(run.id), "failed", error=str(exc))
         raise HTTPException(status_code=500, detail=f"提交 understand 任务失败: {exc}") from exc
@@ -163,6 +178,7 @@ async def trigger_understand(request: UnderstandRequest, db: AsyncSession = Depe
         task_id=task.id,
         episode_id=episode.id,
         status="queued",
+        concurrency=eff_conc,
     )
 
 
@@ -170,6 +186,8 @@ async def trigger_understand(request: UnderstandRequest, db: AsyncSession = Depe
 async def trigger_batch_understand(request: BatchUnderstandRequest, db: AsyncSession = Depends(get_db)):
     """Understand all episodes in a branch strictly in ascending Episode.number order."""
     ensure_llm_configured()
+    vision_cfg = get_active_llm_config("vision_llm")
+    eff_conc = max(1, min(8, int(request.concurrency or getattr(vision_cfg, "concurrency", 1) or 1)))
 
     branch_id = request.branch_id
     if not branch_id:
@@ -201,6 +219,7 @@ async def trigger_batch_understand(request: BatchUnderstandRequest, db: AsyncSes
             episode_ids=[],
             total=0,
             status="empty",
+            concurrency=eff_conc,
         )
 
     try:
@@ -210,6 +229,7 @@ async def trigger_batch_understand(request: BatchUnderstandRequest, db: AsyncSes
             branch_id,
             ep_ids,
             request.force,
+            eff_conc,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"提交批量理解任务失败: {exc}") from exc
@@ -221,6 +241,147 @@ async def trigger_batch_understand(request: BatchUnderstandRequest, db: AsyncSes
         episode_ids=ep_ids,
         total=len(ep_ids),
         status="queued",
+        concurrency=eff_conc,
+    )
+
+
+@router.get("/projects/{project_id}/understand-progress", response_model=UnderstandProgressResponse)
+async def get_project_understand_progress(
+    project_id: str,
+    branch_id: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return live overall & active-episode understanding progress for a project/branch."""
+    from datetime import UTC, datetime
+
+    resolved_branch_id = branch_id
+    if not resolved_branch_id:
+        branch = (
+            await db.execute(
+                select(Branch).where(Branch.project_id == project_id, Branch.is_default.is_(True)).limit(1)
+            )
+        ).scalar_one_or_none()
+        if branch:
+            resolved_branch_id = branch.id
+
+    ep_stmt = select(Episode).where(Episode.project_id == project_id)
+    if resolved_branch_id:
+        ep_stmt = ep_stmt.where(Episode.branch_id == resolved_branch_id)
+    episodes = list((await db.execute(ep_stmt)).scalars().all())
+    ep_by_id = {e.id: e for e in episodes}
+    total_episodes = len(episodes)
+    understood_count = sum(1 for e in episodes if e.status in ("understood", "published"))
+    imported_count = sum(1 for e in episodes if e.status == "imported")
+
+    vision_cfg = get_active_llm_config("vision_llm")
+    default_conc = max(1, min(8, int(getattr(vision_cfg, "concurrency", 1) or 1)))
+
+    active_runs: list[GenerationRun] = []
+    recent_error: str | None = None
+    if ep_by_id:
+        active_runs = list(
+            (
+                await db.execute(
+                    select(GenerationRun)
+                    .where(
+                        GenerationRun.episode_id.in_(list(ep_by_id.keys())),
+                        GenerationRun.stage == "understand",
+                        GenerationRun.status.in_(["queued", "running"]),
+                    )
+                    .order_by(GenerationRun.created_at.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not active_runs:
+            last_failed = (
+                await db.execute(
+                    select(GenerationRun)
+                    .where(
+                        GenerationRun.episode_id.in_(list(ep_by_id.keys())),
+                        GenerationRun.stage == "understand",
+                        GenerationRun.status == "failed",
+                    )
+                    .order_by(GenerationRun.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if last_failed and last_failed.error:
+                recent_error = last_failed.error[:240]
+
+    active_run = active_runs[0] if active_runs else None
+    phase: str | None = None
+    phase_label: str | None = None
+    episode_pct = 0
+    batch_index: int | None = None
+    batch_completed: int | None = None
+    batch_total: int | None = None
+    batch_failed = 0
+    active_episode_ids: list[str] = [r.episode_id for r in active_runs]
+    queued_episode_ids: list[str] = []
+    elapsed_sec: int | None = None
+    eff_conc = default_conc
+    cur_ep_id: str | None = None
+    cur_ep_label: str | None = None
+
+    if active_run:
+        params = active_run.params or {}
+        prog = params.get("progress") or {}
+        batch = params.get("batch") or {}
+        cur_ep_id = active_run.episode_id
+        cur_ep = ep_by_id.get(cur_ep_id)
+        cur_ep_label = (cur_ep.label or str(cur_ep.number)) if cur_ep else None
+        phase = str(prog.get("phase") or active_run.status)
+        phase_label = str(prog.get("label") or ("正在多模态理解..." if active_run.status == "running" else "排队中"))
+        episode_pct = max(0, min(100, int(prog.get("episode_pct") or 0)))
+        if params.get("concurrency") is not None:
+            eff_conc = max(1, min(8, int(params["concurrency"])))
+        if batch:
+            batch_index = int(batch.get("index") or 1)
+            batch_completed = int(batch.get("completed") or 0)
+            batch_total = int(batch.get("total") or 0) or None
+            batch_failed = int(batch.get("failed") or 0)
+            queued_episode_ids = [str(eid) for eid in (batch.get("queued_episode_ids") or []) if eid]
+        if active_run.created_at:
+            now_utc = datetime.now(UTC).replace(tzinfo=None)
+            delta = (now_utc - active_run.created_at).total_seconds()
+            if delta < -60:
+                delta = (datetime.now() - active_run.created_at).total_seconds()
+            elapsed_sec = max(0, int(delta))
+
+    if batch_total and batch_total > 0:
+        overall_pct = round(min(100.0, (((batch_completed or 0) + (episode_pct / 100.0)) / batch_total) * 100.0), 1)
+    elif total_episodes > 0:
+        cur_ep_obj = ep_by_id.get(active_run.episode_id) if active_run else None
+        cur_contrib = (episode_pct / 100.0) if (cur_ep_obj and cur_ep_obj.status == "imported") else 0.0
+        overall_pct = round(min(100.0, ((understood_count + cur_contrib) / total_episodes) * 100.0), 1)
+    else:
+        overall_pct = 0.0
+
+    return UnderstandProgressResponse(
+        project_id=project_id,
+        branch_id=resolved_branch_id,
+        active=bool(active_run),
+        overall_pct=overall_pct,
+        total_episodes=total_episodes,
+        understood_count=understood_count,
+        imported_count=imported_count,
+        active_runs_count=len(active_runs),
+        concurrency=eff_conc,
+        current_episode_id=cur_ep_id,
+        current_episode_label=cur_ep_label,
+        phase=phase,
+        phase_label=phase_label,
+        episode_pct=episode_pct,
+        batch_index=batch_index,
+        batch_completed=batch_completed,
+        batch_total=batch_total,
+        batch_failed=batch_failed,
+        active_episode_ids=active_episode_ids,
+        queued_episode_ids=queued_episode_ids,
+        elapsed_sec=elapsed_sec,
+        recent_error=recent_error,
     )
 
 
@@ -233,12 +394,13 @@ async def trigger_script_generation(request: ScriptGenerateRequest, db: AsyncSes
         raise HTTPException(status_code=404, detail="Episode not found")
     if await generation_service.has_active_run(db, episode.id, "script"):
         raise HTTPException(status_code=409, detail="该章节已有正在运行的分镜生成任务")
+    main_cfg = get_active_llm_config("main_llm")
     run = await generation_service.create_generation_run(
         db,
         episode_id=episode.id,
         stage="script",
-        backend="openai",
-        model=settings.OPENAI_MODEL,
+        backend=main_cfg.provider_key,
+        model=main_cfg.model,
         params={
             "tone": request.tone,
             "base_episode_number": float(request.base_episode_number),
@@ -319,12 +481,13 @@ async def trigger_render(request: RenderRequest, db: AsyncSession = Depends(get_
         if not memory or memory.type != "storyboard_json":
             raise HTTPException(status_code=400, detail="Invalid storyboard memory ID")
 
+    img_cfg = resolve_role_config("image_gen")
     run = await generation_service.create_generation_run(
         db,
         episode_id=episode.id,
         stage="render",
-        backend=request.image_backend or settings.IMAGE_BACKEND,
-        model=request.image_model or settings.IMAGE_MODEL,
+        backend=request.image_backend or img_cfg.provider_key,
+        model=request.image_model or img_cfg.model,
         params={"image_size": request.image_size},
     )
 
@@ -364,12 +527,13 @@ async def rerender_single_panel(
     storyboard_mem = await generation_service.get_latest_storyboard(db, episode_id)
     storyboard = storyboard_mem.content if storyboard_mem else None
 
+    img_cfg = resolve_role_config("image_gen")
     run = await generation_service.create_generation_run(
         db,
         episode_id=episode.id,
         stage="render",
-        backend=request.image_backend or settings.IMAGE_BACKEND,
-        model=request.image_model or settings.IMAGE_MODEL,
+        backend=request.image_backend or img_cfg.provider_key,
+        model=request.image_model or img_cfg.model,
         params={"panel_id": panel_id, "single_panel": True, "image_size": request.image_size or "1024x1024"},
     )
     await generation_service.update_generation_run(db, run.id, "running")
@@ -461,12 +625,13 @@ async def inpaint_single_panel(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid mask_base64: {exc}") from exc
 
+    img_cfg = resolve_role_config("image_gen")
     run = await generation_service.create_generation_run(
         db,
         episode_id=episode.id,
         stage="render",
-        backend=request.image_backend or settings.IMAGE_BACKEND,
-        model=request.image_model or settings.IMAGE_MODEL,
+        backend=request.image_backend or img_cfg.provider_key,
+        model=request.image_model or img_cfg.model,
         params={"panel_id": panel_id, "inpaint": True},
     )
     await generation_service.update_generation_run(db, run.id, "running")

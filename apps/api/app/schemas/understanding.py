@@ -107,7 +107,13 @@ class AssetSighting(_CoercedBaseModel):
 
 
 class NewAsset(_CoercedBaseModel):
-    name: str = Field(description="Asset name (keep in the manga's language)")
+    name: str = Field(
+        description="Canonical asset name in the project's preferred output language (never raw scanlation credits)"
+    )
+    aliases: list[str] = Field(
+        default_factory=list,
+        description="Original Japanese/English names, nicknames, or alternate readings for cross-chapter matching",
+    )
     asset_type: str = Field(description="character|outfit|location|item|style")
     description: str = Field(
         description="Rich visual & narrative description detailed enough to reproduce consistently in image prompts"

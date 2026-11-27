@@ -88,17 +88,23 @@ class OpenAIImageBackend(ImageBackend):
     OpenAI Images API: /images/generations for text-to-image, /images/edits when
     reference images (character sheets etc.) are supplied."""
 
-    def __init__(self, model: str | None = None) -> None:
-        raw_url = settings.IMAGE_API_URL or settings.OPENAI_BASE_URL
-        if raw_url and "open.bigmodel.cn/api/coding/paas/v4" in raw_url and not settings.IMAGE_API_URL:
+    def __init__(
+        self,
+        model: str | None = None,
+        *,
+        api_key: str | None = None,
+        base_url: str | None = None,
+    ) -> None:
+        raw_url = base_url or settings.IMAGE_API_URL or settings.OPENAI_BASE_URL
+        if raw_url and "open.bigmodel.cn/api/coding/paas/v4" in raw_url and not base_url and not settings.IMAGE_API_URL:
             raw_url = raw_url.replace("/api/coding/paas/v4", "/api/paas/v4")
         self._base_url = raw_url
         self._client = AsyncOpenAI(
-            api_key=settings.IMAGE_API_KEY or settings.OPENAI_API_KEY,
+            api_key=api_key or settings.IMAGE_API_KEY or settings.OPENAI_API_KEY,
             base_url=raw_url,
             http_client=httpx.AsyncClient(trust_env=False, timeout=600.0),
         )
-        self._model = model or settings.IMAGE_MODEL or "gpt-image-2"
+        self._model = model or settings.IMAGE_MODEL or "gpt-image-1"
         self._edits_supported = not bool(raw_url and "open.bigmodel.cn" in raw_url)
 
     @staticmethod
@@ -145,6 +151,16 @@ class OpenAIImageBackend(ImageBackend):
         full_prompt = _compose_prompt(prompt, negative_prompt, context)
         model = kwargs.get("model") or self._model
         size_str = self._size_to_str(size, model)
+
+        # OpenRouter image models use /chat/completions with modalities=["image", "text"]
+        if "openrouter.ai" in (self._base_url or "").lower():
+            return await self._generate_via_openrouter_chat(
+                full_prompt=full_prompt,
+                model=model,
+                size=size,
+                seed=seed,
+                reference_images=reference_images,
+            )
 
         used_edits = False
         response = None
@@ -215,6 +231,71 @@ class OpenAIImageBackend(ImageBackend):
             },
         )
 
+    async def _generate_via_openrouter_chat(
+        self,
+        *,
+        full_prompt: str,
+        model: str,
+        size: tuple[int, int],
+        seed: int | None,
+        reference_images: list[tuple[bytes, str]] | None,
+    ) -> ImageResult:
+        content: list[dict] = [{"type": "text", "text": full_prompt}]
+        for data, mime in (reference_images or [])[:6]:
+            b64 = base64.b64encode(data).decode()
+            content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+
+        headers = {
+            "Authorization": f"Bearer {self._client.api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/Gwen0x4c3/manga-forge",
+            "X-Title": "MangaForge",
+        }
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": content}],
+            "modalities": ["image", "text"],
+            "image_config": {"aspect_ratio": _nearest_ratio(size)},
+        }
+        url = f"{self._base_url.rstrip('/')}/chat/completions"
+        async with httpx.AsyncClient(trust_env=False, timeout=240.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            body = resp.json()
+
+        img_bytes = b""
+        choices = body.get("choices") or []
+        if choices:
+            msg = choices[0].get("message") or {}
+            images = msg.get("images") or []
+            for item in images:
+                img_url = ""
+                if isinstance(item, dict):
+                    img_url = (item.get("image_url") or {}).get("url") or item.get("url") or ""
+                if img_url.startswith("data:") and "," in img_url:
+                    img_bytes = base64.b64decode(img_url.split(",", 1)[1])
+                    break
+                if img_url.startswith("http"):
+                    async with httpx.AsyncClient(trust_env=False, timeout=120.0) as dl:
+                        r = await dl.get(img_url)
+                        r.raise_for_status()
+                        img_bytes = r.content
+                        break
+        if not img_bytes:
+            raise RuntimeError(f"OpenRouter model {model} did not return image data")
+        return ImageResult(
+            image_data=img_bytes,
+            seed=seed,
+            meta={
+                "model": model,
+                "size": f"{size[0]}x{size[1]}",
+                "aspect_ratio": _nearest_ratio(size),
+                "prompt": full_prompt,
+                "references": len(reference_images or []),
+                "endpoint": "openrouter_chat_image",
+            },
+        )
+
     async def inpaint(
         self,
         image_data: bytes,
@@ -263,9 +344,17 @@ class GeminiImageBackend(ImageBackend):
 
     DEFAULT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions"
 
-    def __init__(self, model: str | None = None) -> None:
-        self._endpoint = settings.IMAGE_API_URL or self.DEFAULT_ENDPOINT
-        self._api_key = settings.IMAGE_API_KEY or settings.GEMINI_API_KEY
+    def __init__(
+        self,
+        model: str | None = None,
+        *,
+        api_key: str | None = None,
+        endpoint: str | None = None,
+    ) -> None:
+        self._endpoint = endpoint or settings.IMAGE_API_URL or self.DEFAULT_ENDPOINT
+        if self._endpoint and "/openai" in self._endpoint:
+            self._endpoint = self.DEFAULT_ENDPOINT
+        self._api_key = api_key or settings.IMAGE_API_KEY or settings.GEMINI_API_KEY
         self._model = model or settings.IMAGE_MODEL or "gemini-3.1-flash-image"
 
     async def generate(
@@ -542,10 +631,17 @@ class AntigravityImageBackend(ImageBackend):
     Supports passing local character/item/style reference crops (`ImagePaths`) directly
     to Antigravity's native `generate_image` tool for multi-reference manga consistency."""
 
-    def __init__(self, model: str | None = None) -> None:
+    def __init__(self, model: str | None = None, *, endpoint: str | None = None) -> None:
+        from pathlib import Path
+
         self._model = model or "antigravity-image-generator"
-        self._cli_bin = settings.AGY_CLI_BIN or "agy"
-        self._bridge_dir = settings.AGY_BRIDGE_DIR
+        raw = (endpoint or "").strip()
+        if raw and Path(raw).is_dir():
+            self._bridge_dir = raw
+            self._cli_bin = settings.AGY_CLI_BIN or "agy"
+        else:
+            self._bridge_dir = settings.AGY_BRIDGE_DIR
+            self._cli_bin = raw or settings.AGY_CLI_BIN or "agy"
 
     async def generate(
         self,
@@ -958,17 +1054,47 @@ class InstrumentedImageBackend(ImageBackend):
 
 
 def get_image_backend(backend_name: str | None = None, model: str | None = None) -> ImageBackend:
-    backend = backend_name or settings.IMAGE_BACKEND
+    from app.core.provider_runtime import resolve_role_config
+
+    resolved = resolve_role_config("image_gen")
+    if backend_name:
+        backend = backend_name
+        eff_model = model
+        eff_key = None
+        eff_url = None
+    elif resolved.source == "database":
+        if resolved.interface_type == "gemini_image" or resolved.provider_key == "gemini":
+            backend = "gemini"
+        elif resolved.interface_type == "comfyui" or resolved.provider_key == "comfyui":
+            backend = "comfyui"
+        elif resolved.interface_type == "mock":
+            backend = "mock"
+        elif resolved.interface_type == "antigravity":
+            backend = "antigravity"
+        else:
+            backend = "openai"
+        eff_model = model or resolved.model or None
+        eff_key = resolved.api_key or None
+        eff_url = resolved.base_url or None
+    else:
+        backend = settings.IMAGE_BACKEND
+        eff_model = model
+        eff_key = None
+        eff_url = None
+
     if backend == "antigravity":
-        inner: ImageBackend = AntigravityImageBackend(model=model)
+        inner: ImageBackend = AntigravityImageBackend(model=eff_model, endpoint=eff_url)
     elif backend == "comfyui":
-        inner = ComfyUIImageBackend(model=model)
+        inner = ComfyUIImageBackend(model=eff_model)
+        if eff_url:
+            inner._base_url = eff_url.rstrip("/")
     elif backend == "openai":
-        inner = OpenAIImageBackend(model=model)
+        inner = OpenAIImageBackend(model=eff_model, api_key=eff_key, base_url=eff_url)
     elif backend in ("gemini", "nano-banana"):
-        inner = GeminiImageBackend(model=model)
+        inner = GeminiImageBackend(model=eff_model, api_key=eff_key)
     elif backend == "custom":
-        inner = CustomHttpBackend(model=model)
+        inner = CustomHttpBackend(model=eff_model)
     else:
         inner = MockImageBackend()
-    return InstrumentedImageBackend(inner, backend_name=backend, default_model=model)
+    provider_label = resolved.provider_key if (not backend_name and resolved.source == "database") else backend
+    return InstrumentedImageBackend(inner, backend_name=provider_label, default_model=eff_model)

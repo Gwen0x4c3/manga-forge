@@ -9,6 +9,7 @@ from PIL import Image as PILImage
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.llm import get_active_llm_config
 from app.dependencies import get_db
 from app.schemas.episode import (
     EpisodeImport,
@@ -144,8 +145,13 @@ async def import_episode_files(
     await db.refresh(episode)
 
     if auto_understand and page_index > 0:
+        vision_cfg = get_active_llm_config("vision_llm")
         run = await generation_service.create_generation_run(
-            db, episode_id=str(episode.id), stage="understand", backend="openai", model=settings.OPENAI_MODEL
+            db,
+            episode_id=str(episode.id),
+            stage="understand",
+            backend=vision_cfg.provider_key,
+            model=vision_cfg.model,
         )
         celery_client = Celery("mangaforge-api", broker=settings.CELERY_BROKER_URL)
         try:
@@ -199,8 +205,9 @@ async def trigger_understand(episode_id: str, db: AsyncSession = Depends(get_db)
     episode = await episode_service.get_episode(db, episode_id)
     if not episode:
         raise HTTPException(status_code=404, detail="Episode not found")
+    vision_cfg = get_active_llm_config("vision_llm")
     run = await generation_service.create_generation_run(
-        db, episode_id=episode.id, stage="understand", backend="openai", model=settings.OPENAI_MODEL
+        db, episode_id=episode.id, stage="understand", backend=vision_cfg.provider_key, model=vision_cfg.model
     )
     celery_client = Celery("mangaforge-api", broker=settings.CELERY_BROKER_URL)
     task = celery_client.send_task("workers.tasks.understand.summarize_episode", args=[str(run.id), episode.id])

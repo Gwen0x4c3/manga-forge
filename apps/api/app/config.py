@@ -1,4 +1,8 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class Settings(BaseSettings):
@@ -27,10 +31,11 @@ class Settings(BaseSettings):
     OPENAI_BASE_URL: str | None = None
     DEFAULT_CONTEXT_PROFILE: str = "quality"  # quality (200K+) | balanced (128K) | cost (32K)
     MAX_CONTEXT_TOKENS: int | None = None
+    APP_SECRET_KEY: str = ""
     QDRANT_API_KEY: str = ""
 
     IMAGE_BACKEND: str = "openai"
-    IMAGE_MODEL: str = "gpt-image-2"
+    IMAGE_MODEL: str = "gpt-image-1"
     IMAGE_API_KEY: str = ""
     IMAGE_API_URL: str = ""
     IMAGE_DEFAULT_SIZE: str = "1024x1024"
@@ -55,7 +60,11 @@ class Settings(BaseSettings):
     def mysql_sync_dsn(self) -> str:
         return f"mysql+pymysql://{self.MYSQL_USER}:{self.MYSQL_PASSWORD}@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DATABASE}"
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
+    model_config = {
+        "env_file": (str(_REPO_ROOT / ".env"), ".env"),
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
 
 
 settings = Settings()

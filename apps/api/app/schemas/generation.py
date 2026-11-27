@@ -7,12 +7,19 @@ from pydantic import BaseModel, Field
 
 class UnderstandRequest(BaseModel):
     episode_id: str
+    concurrency: int | None = Field(
+        default=None,
+        ge=1,
+        le=8,
+        description="Intra-episode vision concurrency (1 = strict sequential, 2-8 = concurrent windows/crops)",
+    )
 
 
 class UnderstandResponse(BaseModel):
     task_id: str
     episode_id: str
     status: str = "queued"
+    concurrency: int = 1
 
 
 class BatchUnderstandRequest(BaseModel):
@@ -21,6 +28,12 @@ class BatchUnderstandRequest(BaseModel):
     force: bool = Field(
         default=False,
         description="Re-understand all episodes in order if True; only status='imported' if False",
+    )
+    concurrency: int | None = Field(
+        default=None,
+        ge=1,
+        le=8,
+        description="Intra-episode vision concurrency override (episodes still run strictly sequentially)",
     )
 
 
@@ -31,6 +44,32 @@ class BatchUnderstandResponse(BaseModel):
     episode_ids: list[str] = Field(default_factory=list)
     total: int = 0
     status: str = "queued"
+    concurrency: int = 1
+
+
+class UnderstandProgressResponse(BaseModel):
+    project_id: str
+    branch_id: str | None = None
+    active: bool = False
+    overall_pct: float = 0.0
+    total_episodes: int = 0
+    understood_count: int = 0
+    imported_count: int = 0
+    active_runs_count: int = 0
+    concurrency: int = 1
+    current_episode_id: str | None = None
+    current_episode_label: str | None = None
+    phase: str | None = None
+    phase_label: str | None = None
+    episode_pct: int = 0
+    batch_index: int | None = None
+    batch_completed: int | None = None
+    batch_total: int | None = None
+    batch_failed: int = 0
+    active_episode_ids: list[str] = Field(default_factory=list)
+    queued_episode_ids: list[str] = Field(default_factory=list)
+    elapsed_sec: int | None = None
+    recent_error: str | None = None
 
 
 class StoryboardUpdateRequest(BaseModel):

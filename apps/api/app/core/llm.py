@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import time
-from functools import lru_cache
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -11,7 +10,7 @@ import instructor
 from fastapi import HTTPException
 from openai import AsyncOpenAI
 
-from app.config import settings
+from app.core.provider_runtime import ResolvedModelConfig, normalize_base_url, resolve_role_config
 from app.core.telemetry import extract_llm_usage, instrument_openai_client, record_usage_event
 
 if TYPE_CHECKING:
@@ -20,36 +19,49 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _build_openai_client() -> AsyncOpenAI:
+def get_active_llm_config(role: str = "main_llm") -> ResolvedModelConfig:
+    return resolve_role_config(role)
+
+
+def get_active_model(role: str = "main_llm") -> str:
+    return resolve_role_config(role).model
+
+
+def _build_openai_client(role: str = "main_llm") -> AsyncOpenAI:
     # httpx's default trust_env=True crashes when no_proxy contains bare IPv6
     # literals (e.g. "::1"); build the transport explicitly instead.
-    base_url = _normalize_openai_base_url(settings.OPENAI_BASE_URL)
+    cfg = resolve_role_config(role)
+    base_url = _normalize_openai_base_url(cfg.base_url)
+    extra_headers = dict(cfg.extra_headers or {})
+    if cfg.provider_key == "anthropic" and cfg.api_key:
+        extra_headers.setdefault("anthropic-version", "2023-06-01")
     client = AsyncOpenAI(
-        api_key=settings.OPENAI_API_KEY,
+        api_key=cfg.api_key or "no-key",
         base_url=base_url,
-        http_client=httpx.AsyncClient(trust_env=False, timeout=600.0),
+        default_headers=extra_headers or None,
+        http_client=httpx.AsyncClient(trust_env=False, timeout=240.0),
     )
-    return instrument_openai_client(client, provider=settings.LLM_BACKEND or "openai")
+    return instrument_openai_client(client, provider=cfg.provider_key or "openai")
 
 
-@lru_cache
-def get_llm_client() -> instructor.Instructor:
-    config_error = get_llm_config_error()
+def get_llm_client(role: str = "main_llm") -> instructor.Instructor:
+    config_error = get_llm_config_error(role=role)
     if config_error:
         raise RuntimeError(config_error)
-    return instructor.from_openai(_build_openai_client())
+    return instructor.from_openai(_build_openai_client(role=role))
 
 
-def get_raw_openai_client() -> AsyncOpenAI:
+def get_raw_openai_client(role: str = "main_llm") -> AsyncOpenAI:
     """Raw chat-completions client (no instructor) for multi-turn tool-calling loops."""
-    config_error = get_llm_config_error()
+    config_error = get_llm_config_error(role=role)
     if config_error:
         raise RuntimeError(config_error)
-    return _build_openai_client()
+    return _build_openai_client(role=role)
 
 
 def embeddings_configured() -> bool:
-    return bool((settings.OPENAI_EMBEDDING_MODEL or "").strip())
+    cfg = resolve_role_config("embedding")
+    return bool((cfg.model or "").strip())
 
 
 async def get_embeddings(texts: list[str]) -> list[list[float]]:
@@ -59,16 +71,17 @@ async def get_embeddings(texts: list[str]) -> list[list[float]]:
     (skip vectorization, fall back to keyword retrieval).
     """
     if not embeddings_configured():
-        logger.warning("OPENAI_EMBEDDING_MODEL is not set — embeddings disabled, RAG falls back to keyword search")
+        logger.warning("Embedding model is not configured — embeddings disabled, RAG falls back to keyword search")
         return []
-    config_error = get_llm_config_error()
+    cfg = resolve_role_config("embedding")
+    config_error = get_llm_config_error(role="embedding")
     if config_error:
         raise RuntimeError(config_error)
-    client = _build_openai_client()
+    client = _build_openai_client(role="embedding")
     t0 = time.perf_counter()
     try:
         response = await client.embeddings.create(
-            model=settings.OPENAI_EMBEDDING_MODEL,
+            model=cfg.model,
             input=texts,
         )
     except Exception as e:
@@ -76,8 +89,8 @@ async def get_embeddings(texts: list[str]) -> list[list[float]]:
         await record_usage_event(
             kind="embedding",
             operation="embedding",
-            provider=settings.LLM_BACKEND or "openai",
-            model=settings.OPENAI_EMBEDDING_MODEL,
+            provider=cfg.provider_key or "openai",
+            model=cfg.model,
             duration_ms=elapsed_ms,
             status="failed",
             error=f"{type(e).__name__}: {e}",
@@ -85,11 +98,11 @@ async def get_embeddings(texts: list[str]) -> list[list[float]]:
         )
         _raise_llm_error(e)
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
-    parsed = extract_llm_usage(response, fallback_model=settings.OPENAI_EMBEDDING_MODEL)
+    parsed = extract_llm_usage(response, fallback_model=cfg.model)
     await record_usage_event(
         kind="embedding",
         operation="embedding",
-        provider=settings.LLM_BACKEND or "openai",
+        provider=cfg.provider_key or "openai",
         model=parsed["model"],
         input_tokens=parsed["input_tokens"],
         output_tokens=0,
@@ -104,31 +117,25 @@ async def get_embeddings(texts: list[str]) -> list[list[float]]:
 
 
 def _normalize_openai_base_url(base_url: str | None) -> str | None:
-    if not base_url:
-        return None
-    normalized = base_url.strip()
-    parsed = urlparse(normalized)
-    if parsed.scheme:
-        return normalized
-    return f"https://{normalized.lstrip('/')}"
+    return normalize_base_url(base_url)
 
 
-def get_llm_config_error() -> str | None:
-    if settings.LLM_BACKEND != "openai":
-        return None
-    api_key = (settings.OPENAI_API_KEY or "").strip()
-    if not api_key or api_key == "sk-xxx":
-        return "LLM 未配置：请在 .env 中设置有效的 OPENAI_API_KEY"
-    base_url = (settings.OPENAI_BASE_URL or "").strip()
+def get_llm_config_error(role: str = "main_llm") -> str | None:
+    cfg = resolve_role_config(role)
+    if cfg.provider_key not in ("custom", "ollama", "comfyui", "mock"):
+        api_key = (cfg.api_key or "").strip()
+        if not api_key or api_key == "sk-xxx":
+            return "LLM 未配置：请在「模型与服务商」页面添加 API Key，或在 .env 中设置 OPENAI_API_KEY"
+    base_url = (cfg.base_url or "").strip()
     if base_url:
         parsed = urlparse(base_url)
         if parsed.scheme not in ("http", "https", ""):
-            return "LLM 配置错误：OPENAI_BASE_URL 必须以 http:// 或 https:// 开头"
+            return "LLM 配置错误：服务商 Base URL 必须以 http:// 或 https:// 开头"
     return None
 
 
-def ensure_llm_configured() -> None:
-    config_error = get_llm_config_error()
+def ensure_llm_configured(role: str = "main_llm") -> None:
+    config_error = get_llm_config_error(role=role)
     if config_error:
         raise HTTPException(status_code=400, detail=config_error)
 

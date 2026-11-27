@@ -19,6 +19,7 @@ import {
     IconMoon,
     IconPlus,
     IconTelemetry,
+    IconModelHub,
 } from '@/components/StudioIcons'
 
 const PROJECT_VIEW_ITEMS = [
@@ -73,11 +74,13 @@ export default function AppLayout() {
             ? 'MangaDex 导入'
             : activeProjectId
               ? VIEW_LABELS[currentView] || '章节目录'
-              : location.pathname.startsWith('/usage')
-                ? '模型用量与作图日志'
-                : location.pathname.startsWith('/projects')
-                  ? '连载作品库'
-                  : '工作台概览'
+              : location.pathname.startsWith('/models')
+                ? '模型与服务商'
+                : location.pathname.startsWith('/usage')
+                  ? '模型用量与作图日志'
+                  : location.pathname.startsWith('/projects')
+                    ? '连载作品库'
+                    : '工作台概览'
 
     const isFullBleedWorkspace =
         isEditorRoute ||
@@ -153,7 +156,7 @@ export default function AppLayout() {
                         </button>
                     )}
 
-                    {(activeProject || location.pathname.startsWith('/usage')) && (
+                    {(activeProject || location.pathname.startsWith('/usage') || location.pathname.startsWith('/models')) && (
                         <>
                             <span style={{ color: 'var(--border)' }}>/</span>
                             <span
@@ -238,6 +241,12 @@ export default function AppLayout() {
                                     label: '连载作品库',
                                     icon: IconBook,
                                     active: location.pathname === '/projects',
+                                },
+                                {
+                                    path: '/models',
+                                    label: '模型与服务商',
+                                    icon: IconModelHub,
+                                    active: location.pathname === '/models',
                                 },
                                 {
                                     path: '/usage',

@@ -1,18 +1,27 @@
 import io
 import uuid
 from datetime import timedelta
+from functools import lru_cache
 
+import urllib3
 from minio import Minio
 
 from app.config import settings
 
 
+@lru_cache(maxsize=1)
 def get_minio_client() -> Minio:
+    http_client = urllib3.PoolManager(
+        maxsize=32,
+        timeout=urllib3.Timeout(connect=3.0, read=15.0),
+        retries=urllib3.Retry(total=1, backoff_factor=0.1),
+    )
     return Minio(
         settings.MINIO_ENDPOINT,
         access_key=settings.MINIO_ACCESS_KEY,
         secret_key=settings.MINIO_SECRET_KEY,
         secure=settings.MINIO_SECURE,
+        http_client=http_client,
     )
 
 
