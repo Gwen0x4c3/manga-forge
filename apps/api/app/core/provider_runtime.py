@@ -33,6 +33,7 @@ class ResolvedModelConfig:
     max_tokens: int = 16384
     extra_headers: dict[str, str] = field(default_factory=dict)
     image_size: str = "1024x1024"
+    concurrency: int = 1
 
 
 _CACHE_TTL_SEC = 5.0
@@ -207,6 +208,12 @@ def _load_db_snapshot() -> dict[str, ResolvedModelConfig]:
                 if any(k in eff_model.lower() for k in ("glm-5.4", "reasoner", "thinking", "r1", "o3", "o4")):
                     default_max_tokens = max(default_max_tokens, 32768)
 
+                raw_conc = params.get("concurrency")
+                try:
+                    eff_conc = max(1, min(8, int(raw_conc))) if raw_conc is not None else 1
+                except (TypeError, ValueError):
+                    eff_conc = 1
+
                 resolved[b.role] = ResolvedModelConfig(
                     role=b.role,
                     source="database",
@@ -220,6 +227,7 @@ def _load_db_snapshot() -> dict[str, ResolvedModelConfig]:
                     max_tokens=int(params.get("max_tokens") or default_max_tokens),
                     extra_headers=headers,
                     image_size=str(params.get("image_size") or settings.IMAGE_DEFAULT_SIZE or "1024x1024"),
+                    concurrency=eff_conc,
                 )
     except Exception:
         logger.debug("Provider DB lookup skipped; falling back to .env", exc_info=True)

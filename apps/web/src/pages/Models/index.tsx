@@ -64,7 +64,9 @@ export default function ModelsPage() {
     const [testResult, setTestResult] = useState<{ ok: boolean; latency_ms: number; message: string } | null>(null)
 
     // Per-role draft selections
-    const [roleDrafts, setRoleDrafts] = useState<Record<string, { provider_id: string; model_id: string }>>({})
+    const [roleDrafts, setRoleDrafts] = useState<
+        Record<string, { provider_id: string; model_id: string; concurrency: number }>
+    >({})
 
     const presets = data?.presets || []
     const providers = data?.providers || []
@@ -153,10 +155,16 @@ export default function ModelsPage() {
     })
 
     const roleMutation = useMutation({
-        mutationFn: (payload: { role: string; provider_id: string | null; model_id: string | null }) =>
+        mutationFn: (payload: {
+            role: string
+            provider_id: string | null
+            model_id: string | null
+            params?: Record<string, unknown>
+        }) =>
             providerService.updateRole(payload.role, {
                 provider_id: payload.provider_id,
                 model_id: payload.model_id,
+                params: payload.params,
             }),
         onSuccess: (updated) => {
             Toast.success(`${ROLE_META[updated.role]?.title || updated.role} 已实时切换至 ${updated.effective_model || updated.effective_provider}`)
@@ -206,13 +214,19 @@ export default function ModelsPage() {
 
     const getRoleDraft = (item: RoleBindingItem) => {
         if (roleDrafts[item.role]) return roleDrafts[item.role]
+        const rawConc = Number((item.params || {}).concurrency || 1)
+        const safeConc = Number.isFinite(rawConc) ? Math.max(1, Math.min(8, Math.round(rawConc))) : 1
         return {
             provider_id: item.provider_id || '',
             model_id: item.model_id || '',
+            concurrency: safeConc,
         }
     }
 
-    const setRoleDraft = (role: string, next: { provider_id: string; model_id: string }) => {
+    const setRoleDraft = (
+        role: string,
+        next: { provider_id: string; model_id: string; concurrency: number },
+    ) => {
         setRoleDrafts((prev) => ({ ...prev, [role]: next }))
     }
 
@@ -327,6 +341,7 @@ export default function ModelsPage() {
                                                 const pid = String(v || '')
                                                 const prov = providerById.get(pid)
                                                 setRoleDraft(r.role, {
+                                                    ...draft,
                                                     provider_id: pid,
                                                     model_id: prov?.default_model || '',
                                                 })
@@ -363,6 +378,10 @@ export default function ModelsPage() {
                                                     role: r.role,
                                                     provider_id: draft.provider_id || null,
                                                     model_id: draft.model_id.trim() || null,
+                                                    params:
+                                                        r.role === 'vision_llm'
+                                                            ? { ...(r.params || {}), concurrency: draft.concurrency }
+                                                            : r.params,
                                                 })
                                             }
                                         >
@@ -370,6 +389,34 @@ export default function ModelsPage() {
                                         </Button>
                                     </div>
                                 </div>
+
+                                {r.role === 'vision_llm' && (
+                                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-[4px] border border-[var(--border-subtle)] bg-[var(--bg-elevated)] px-3 py-2">
+                                        <div className="space-y-0.5">
+                                            <div className="text-xs font-medium text-[var(--text-primary)]">
+                                                单话视觉理解并发数 (Concurrency)
+                                            </div>
+                                            <div className="text-[11px] text-[var(--text-muted)]">
+                                                话间始终严格串行；若使用高并发 API 服务商（如 Gemini / OpenRouter / OpenAI），调大并发可成倍提速
+                                            </div>
+                                        </div>
+                                        <Select
+                                            size="small"
+                                            style={{ width: 204 }}
+                                            value={draft.concurrency}
+                                            onChange={(v) =>
+                                                setRoleDraft(r.role, { ...draft, concurrency: Number(v) || 1 })
+                                            }
+                                        >
+                                            <Select.Option value={1}>1x · 严格串行 (零盲区)</Select.Option>
+                                            <Select.Option value={2}>2x · 轻度并发</Select.Option>
+                                            <Select.Option value={3}>3x · 中等并发</Select.Option>
+                                            <Select.Option value={4}>4x · 高速并发</Select.Option>
+                                            <Select.Option value={6}>6x · 极速并发</Select.Option>
+                                            <Select.Option value={8}>8x · 最大并发</Select.Option>
+                                        </Select>
+                                    </div>
+                                )}
 
                                 {draft.provider_id && candidateModels.length > 0 && (
                                     <div className="flex flex-wrap gap-1.5">
@@ -441,7 +488,9 @@ export default function ModelsPage() {
                                             ))}
                                         </div>
                                         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs font-mono text-[var(--text-muted)]">
-                                            <span className="truncate max-w-md">{p.base_url || '(默认端点)'}</span>
+                                            <span className="truncate max-w-md">
+                                                {(p.base_url || '(默认端点)').replace(/^\/(?:home|Users)\/[^/]+\//, '~/')}
+                                            </span>
                                             <span>Key: {p.has_api_key ? p.api_key_masked : '无鉴权'}</span>
                                             {p.last_test_status && (
                                                 <span

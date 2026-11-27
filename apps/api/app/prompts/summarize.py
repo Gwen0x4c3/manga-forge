@@ -141,3 +141,185 @@ Produce a concise, high-signal structured EpisodeUnderstanding in **{{ preferred
 
 # Backward-compatible combined template
 SUMMARIZE_USER_PROMPT = SUMMARIZE_SHARED_PREFIX_PROMPT + "\n\n" + SUMMARIZE_CHUNK_TAIL_PROMPT
+
+
+# =============================================================================
+# Two-Phase Agentic Manga Understanding Prompts
+# Phase A: Sequential High-Res Page Reading Notes (90%+ Prefix Cache Hit!)
+# Phase B: Whole-Episode Coherent Structured Synthesis (Zero Fragmentation!)
+# =============================================================================
+
+READ_PAGES_SYSTEM_PROMPT = (
+    "You are an expert manga editor carefully reading a serialized manga episode page by page.\n"
+    "You will receive the series Story Bible, known cast (with visual reference portraits), open foreshadowing, "
+    "earlier page notes from THIS SAME episode, and the next 3-5 manga pages stamped with labels (e.g. `p04`, `p06 R`, `p06 L`).\n\n"
+    "Your ONLY job in this reading step is to write CRISP, FACTUAL, PAGE-BY-PAGE READING NOTES in the project's "
+    "Preferred Output Language (plain bullet points, NO JSON):\n"
+    "1. SKIP NON-STORY PAGES: If a page is a scanlation credit/recruitment page, Discord ad, blank page, table of contents, "
+    "or publisher copyright page, write ONLY `- pXX: 非正片页 -> 跳过` and NEVER mention scanlation group names.\n"
+    "2. READ CAREFULLY IN ORDER: For every story page, capture what happens visually, who appears (matching Known Characters "
+    "by face/hair/glasses/aliases!), key dialogue lines (translated concisely into Preferred Language), exact character "
+    "appearances/outfits/vital status changes, signature items/locations drawn, and any clues/payoffs for Open Pits.\n"
+    "3. MARK BEST VISUAL CROPS: Whenever a character has a clear, unclipped FRONT or 3/4 FACE (normal expression) or a "
+    "signature item/location/outfit is drawn clearly on a page, add a bullet:\n"
+    "   `- ★裁剪候选 [character|item|location|outfit] <标准名称> @ pXX: <画面特征与位置>`\n"
+    "4. OPTIONAL ZOOM RE-READ: ONLY if a single page has critical small/dense text you could not read clearly, add:\n"
+    "   `- ?需放大复核 @ pXX: <原因>`\n"
+    "Keep notes dense, accurate, strictly grounded in what is drawn on the pages — NEVER hallucinate or extrapolate."
+)
+
+READ_SHARED_PREFIX_PROMPT = """## Output Language & Canonical Naming (MANDATORY)
+- Series Title: **{{ project_title or 'Unknown Manga' }}**
+- Preferred Output Language: **{{ preferred_language }}**
+- Write ALL notes and character primary names strictly in **{{ preferred_language }}**.
+- CRITICAL NAMING RULE: When reading foreign/English-translated pages of a known manga series, ALWAYS use the official/canonical character names in **{{ preferred_language }}** for `{{ project_title or 'this series' }}` (NEVER invent arbitrary phonetic kanji transliterations — e.g. for 《异世界舅舅》 use 舅舅 / 敬文 / 精灵 / 梅贝尔 / 藤宫澄夏, NOT 敬一 / 富士宫). Put original JP/EN spellings in parentheses when first introduced.
+
+## Episode Information
+- Episode Number: {{ episode_number }}
+{% if episode_title %}- Title: {{ episode_title }}{% endif %}
+
+## Main Plotline & Story Bible So Far
+{% if main_plot %}
+- Core Conflict: {{ main_plot.get('core_conflict', '') }}
+- Current Arc: {{ main_plot.get('current_arc', '') }}
+- Protagonist Goal: {{ main_plot.get('protagonist_goal', '') }}
+- Previous Hook: {{ main_plot.get('next_hook', '') }}
+{% else %}
+(Not established yet — this is the beginning of the series)
+{% endif %}
+
+## Rolling Story Context (Prior Episodes)
+{% if previous_summary %}
+{{ previous_summary }}
+{% else %}
+(none — this is the first analyzed episode)
+{% endif %}
+
+{% if known_characters %}
+## Known Characters (match strictly by visual portrait + aliases; NEVER confuse different people!)
+{% for c in known_characters %}
+- [{{ c.asset_id }}] {{ c.name }}{% if c.aliases %} (aliases: {{ c.aliases | join(', ') }}){% endif %}: {{ c.description }}
+{% endfor %}
+{% else %}
+## Known Characters
+(none yet — identify every named or recurring main character cleanly)
+{% endif %}
+
+{% if known_other_assets %}
+## Known Signature Items, Locations & Outfits
+{% for a in known_other_assets %}
+- [{{ a.asset_id }}] ({{ a.type }}) {{ a.name }}: {{ a.description }}
+{% endfor %}
+{% endif %}
+
+{% if open_pits %}
+## Open Pits (Watch for Clues & Payoffs!)
+{% for p in open_pits %}
+- [{{ p.id }}] (priority={{ p.priority }}) {{ p.description }}{% if p.trigger_hint %} | Hint: {{ p.trigger_hint }}{% endif %}
+{% endfor %}
+{% endif %}"""
+
+READ_WINDOW_TAIL_PROMPT = """{% if earlier_notes %}## Notes From Earlier Pages of This Same Episode
+{{ earlier_notes }}
+
+{% endif %}## Next Pages to Read ({{ window_label }})
+Read the attached pages strictly in label order (`pXX`, right-to-left if marked `R` then `L`). Output crisp page-by-page bullet notes in **{{ preferred_language }}**."""
+
+
+SYNTHESIZE_EPISODE_SYSTEM_PROMPT = (
+    "You are a senior manga story editor synthesizing complete page-by-page reading notes of ONE serialized episode "
+    "into a single ultra-clean, coherent, deduplicated JSON `EpisodeUnderstanding`.\n\n"
+    "MANDATORY QUALITY RULES:\n"
+    "1. OUTPUT LANGUAGE LOCK: ALL narrative text (summary, main_plot, ending_state, events, state_changes, "
+    "character primary `name`, appearance, descriptions, world_rules_discovered, pit titles/descriptions) MUST be "
+    "in the Preferred Output Language. Put original JP/EN names in `aliases[]`. Keep `visual_tags[]` in English.\n"
+    "2. ZERO NON-STORY NOISE: Completely ignore any skipped scanlation/recruitment/blank/TOC pages. NEVER mention "
+    "scanlation groups or write 'this window only contains covers'.\n"
+    "3. COHERENT EPISODE SUMMARY: Write ONE fluent 3-5 sentence synopsis covering the ENTIRE episode from opening to ending.\n"
+    "4. STRICT ANTI-DUPLICATE & ANTI-NOISE CAST:\n"
+    "   - Reuse exact `asset_id` for every Known Character who appeared; NEVER split one person into two entries "
+    "(e.g. a known character wearing a hoodie or glasses is STILL that known character!).\n"
+    "   - Register ONLY named or recurring plot-relevant characters. NEVER register unnamed one-off extras (nurses, passers-by, crowds).\n"
+    "   - For every character, set `source_page` (integer 1-based page number) to the BEST `★裁剪候选` page from the notes!\n"
+    "5. STRICT VISUAL ASSET GATE: In `new_assets` (item|location|outfit), register ONLY plot-critical, magical/special, "
+    "or recurring signature items/locations/outfits that were VISUALLY DRAWN on a page (ALWAYS provide integer `source_page`!). "
+    "Never register mundane props (teacups, chairs, bags) or things merely mentioned in speech.\n"
+    "6. FORESHADOWING (LESS IS MORE — 0 TO 2 NEW PITS MAX): Routine comedy/slice-of-life episodes should emit 0 new pits! "
+    "ONLY record truly major cross-episode mysteries, curses, seals, hidden pasts, or looming threats. Actively emit "
+    "`pit_progressions` and `resolved_pits` (using exact open pit IDs!) whenever an existing pit advances or resolves.\n"
+    "7. VITAL STATUS: Always emit `state_changes` with `attribute='vital_status'` if any character dies, is sealed, goes missing, or revives.\n"
+    "8. Output ONLY a single valid JSON object matching the requested schema (no markdown fences or commentary). "
+    "NEVER use raw ASCII double quotes (\") inside Chinese/Japanese string values — use 『』 or 「」 instead."
+)
+
+SYNTHESIZE_EPISODE_USER_PROMPT = """Synthesize the complete reading notes of Episode {{ episode_number }} into one clean JSON object.
+
+## Output Language & Canonical Naming (MANDATORY)
+- Series Title: **{{ project_title or 'Unknown Manga' }}**
+- Preferred Output Language: **{{ preferred_language }}**
+- Use official/canonical character names in **{{ preferred_language }}** for `{{ project_title or 'this series' }}` (put original JP/EN names in `aliases[]`).
+
+## Story Bible & Context Prior to Episode {{ episode_number }}
+{% if main_plot %}
+- Core Conflict: {{ main_plot.get('core_conflict', '') }}
+- Current Arc: {{ main_plot.get('current_arc', '') }}
+- Protagonist Goal: {{ main_plot.get('protagonist_goal', '') }}
+- Previous Hook: {{ main_plot.get('next_hook', '') }}
+{% else %}
+(Not established yet — establish foundational main plotline & current arc from this episode)
+{% endif %}
+{% if previous_summary %}
+### Prior Episodes Rolling Summary
+{{ previous_summary }}
+{% endif %}
+
+## Known Characters (MUST reuse exact `asset_id`)
+{% if known_characters %}
+{% for c in known_characters %}
+- [{{ c.asset_id }}] {{ c.name }}{% if c.aliases %} (aliases: {{ c.aliases | join(', ') }}){% endif %}: {{ c.description }}
+{% endfor %}
+{% else %}
+(none yet)
+{% endif %}
+
+## Known Items, Locations & Outfits (match via `asset_sightings[].asset_id`, do NOT duplicate in `new_assets`)
+{% if known_other_assets %}
+{% for a in known_other_assets %}
+- [{{ a.asset_id }}] ({{ a.type }}) {{ a.name }}: {{ a.description }}
+{% endfor %}
+{% else %}
+(none yet)
+{% endif %}
+
+## Open Pits (Use exact `id` for `pit_progressions` and `resolved_pits`)
+{% if open_pits %}
+{% for p in open_pits %}
+- [{{ p.id }}] (priority={{ p.priority }}) {{ p.description }}
+{% endfor %}
+{% else %}
+(none yet)
+{% endif %}
+
+## Complete Sequential Page-by-Page Reading Notes of Episode {{ episode_number }}
+{{ episode_notes }}
+
+## Required JSON Schema
+```json
+{
+  "summary": "3-5 sentence fluent synopsis in {{ preferred_language }}",
+  "main_plot": {"core_conflict": "...", "current_arc": "...", "protagonist_goal": "...", "arc_progress": "...", "next_hook": "..."},
+  "ending_state": {"location": "...", "time_of_day": "...", "active_characters": ["..."], "emotional_tone": "...", "cliffhanger": "..."},
+  "art_style_notes": "...",
+  "world_rules_discovered": ["..."],
+  "events": [{"description": "...", "characters_involved": ["..."], "location": "...", "items_involved": ["..."], "significance": "normal|major|turning_point|cliffhanger"}],
+  "state_changes": [{"character": "...", "attribute": "vital_status|injury|relationship|location|possession|ability|knowledge|status", "before": "...", "after": "...", "reason": "..."}],
+  "characters": [{"name": "...", "asset_id": "<existing id or null>", "aliases": ["..."], "appearance": "...", "speech_style": "...", "role": "protagonist|support|antagonist|cameo", "vital_status": "alive|injured|missing|sealed|deceased", "source_page": 5}],
+  "asset_sightings": [{"asset_id": "...", "name": "...", "asset_type": "item|location|outfit", "state_note": "..."}],
+  "new_assets": [{"name": "...", "aliases": ["..."], "asset_type": "character|outfit|location|item", "description": "...", "visual_tags": ["english tags"], "owner_or_context": "...", "source_page": 5}],
+  "pit_discoveries": [{"title": "...", "description": "...", "priority": "high|medium", "trigger_hint": "...", "related_characters": ["..."]}],
+  "pit_progressions": [{"pit_id": "...", "clue": "..."}],
+  "resolved_pits": ["<open pit id>"],
+  "page_dialogues": [{"page_number": 5, "lines": [{"speaker": "...", "text": "...", "line_type": "speech|thought|narration"}]}]
+}
+```
+Return ONLY the valid JSON object."""

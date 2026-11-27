@@ -813,12 +813,46 @@ export const memoryService = {
         }>(`/projects/${projectId}/memory/consolidate`, null, { timeout: 120000 }),
 }
 
+export interface UnderstandProgressResponse {
+    project_id: string
+    branch_id?: string | null
+    active: boolean
+    overall_pct: number
+    total_episodes: number
+    understood_count: number
+    imported_count: number
+    active_runs_count: number
+    concurrency: number
+    current_episode_id?: string | null
+    current_episode_label?: string | null
+    phase?: string | null
+    phase_label?: string | null
+    episode_pct: number
+    batch_index?: number | null
+    batch_completed?: number | null
+    batch_total?: number | null
+    batch_failed: number
+    active_episode_ids?: string[]
+    queued_episode_ids?: string[]
+    elapsed_sec?: number | null
+    recent_error?: string | null
+}
+
 export const generationService = {
-    triggerUnderstand: (episodeId: string) =>
-        api.post<{ task_id: string; episode_id: string; status: string }>('/generation/understand', {
-            episode_id: episodeId,
-        }),
-    triggerBatchUnderstand: (data: { project_id: string; branch_id?: string; force?: boolean }) =>
+    triggerUnderstand: (episodeId: string, concurrency?: number) =>
+        api.post<{ task_id: string; episode_id: string; status: string; concurrency: number }>(
+            '/generation/understand',
+            {
+                episode_id: episodeId,
+                ...(concurrency ? { concurrency } : {}),
+            },
+        ),
+    triggerBatchUnderstand: (data: {
+        project_id: string
+        branch_id?: string
+        force?: boolean
+        concurrency?: number
+    }) =>
         api.post<{
             task_id: string
             project_id: string
@@ -826,7 +860,12 @@ export const generationService = {
             episode_ids: string[]
             total: number
             status: string
+            concurrency: number
         }>('/generation/understand-batch', data),
+    getUnderstandProgress: (projectId: string, branchId?: string) =>
+        api.get<UnderstandProgressResponse>(`/generation/projects/${projectId}/understand-progress`, {
+            params: branchId ? { branch_id: branchId } : undefined,
+        }),
     triggerScriptGeneration: (data: {
         episode_id: string
         branch_id: string

@@ -1,5 +1,5 @@
 import { formatEpisodeLabel } from '@/utils/episode'
-import { useState, useRef, useMemo } from 'react'
+import { useState, useRef, useMemo, useEffect } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import {
     Spin,
@@ -17,6 +17,7 @@ import {
     Checkbox,
     RadioGroup,
     Banner,
+    Tooltip,
 } from '@douyinfe/semi-ui'
 import type { TagColor } from '@douyinfe/semi-ui/lib/es/tag'
 import {
@@ -145,6 +146,9 @@ export default function ProjectDetail() {
     const [ragResults, setRagResults] = useState<Array<{ score: number; payload: Record<string, unknown> }>>([])
     const [pitStatusFilter, setPitStatusFilter] = useState<string | undefined>('open')
     const [batchTaskNotice, setBatchTaskNotice] = useState<string | null>(null)
+    const [understandConcurrency, setUnderstandConcurrency] = useState<number | undefined>(undefined)
+    const prevUnderstoodRef = useRef<number | null>(null)
+    const prevActiveUnderstandRef = useRef<boolean>(false)
 
     const [continueForm, setContinueForm] = useState({
         base_episode_id: '',
@@ -226,6 +230,41 @@ export default function ProjectDetail() {
         queryFn: () => assetImageService.list(imageAsset!.id),
         enabled: !!imageAsset,
     })
+
+    const activeBranchIdForProgress = selectedBranch || branches?.find((b) => b.is_default)?.id
+    const { data: understandProgress } = useQuery({
+        queryKey: ['understand-progress', projectId, activeBranchIdForProgress],
+        queryFn: () => generationService.getUnderstandProgress(projectId!, activeBranchIdForProgress),
+        enabled: !!projectId,
+        refetchInterval: (query) => {
+            const d = query.state.data
+            if (d?.active || batchTaskNotice) return 2500
+            return 15000
+        },
+    })
+
+    useEffect(() => {
+        if (!understandProgress) return
+        const curDone = understandProgress.understood_count
+        const curActive = understandProgress.active
+        if (prevUnderstoodRef.current !== null && curDone !== prevUnderstoodRef.current) {
+            queryClient.invalidateQueries({ queryKey: ['episodes', projectId] })
+            queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
+            queryClient.invalidateQueries({ queryKey: ['pits', projectId] })
+            queryClient.invalidateQueries({ queryKey: ['project', projectId] })
+        }
+        if (prevActiveUnderstandRef.current && !curActive) {
+            setBatchTaskNotice(null)
+            queryClient.invalidateQueries({ queryKey: ['episodes', projectId] })
+            queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
+            queryClient.invalidateQueries({ queryKey: ['pits', projectId] })
+            queryClient.invalidateQueries({ queryKey: ['project', projectId] })
+        }
+        prevUnderstoodRef.current = curDone
+        prevActiveUnderstandRef.current = curActive
+    }, [understandProgress, projectId, queryClient])
+
+    const effectiveConcurrency = understandConcurrency ?? understandProgress?.concurrency ?? 1
 
     const defaultCanonText = useMemo(() => {
         if (!project) return '{}'
@@ -339,25 +378,30 @@ export default function ProjectDetail() {
                 project_id: projectId!,
                 branch_id: selectedBranch || mainBranch?.id,
                 force,
+                concurrency: effectiveConcurrency,
             }),
         onSuccess: (res) => {
             if (res.total === 0) {
                 Toast.info('当前分支没有待理解的新章节')
                 return
             }
-            setBatchTaskNotice(`正在按话数顺序理解全书（共 ${res.total} 话），人物设定、主线脉络与伏笔将自动跨话传递...`)
-            Toast.success(`已提交 ${res.total} 话按序理解任务`)
+            setBatchTaskNotice(
+                `正在按话数顺序理解全书（共 ${res.total} 话 · 并发 x${res.concurrency}），人物设定、主线脉络与伏笔将自动跨话传递...`,
+            )
+            Toast.success(`已提交 ${res.total} 话按序理解任务（单话并发 x${res.concurrency}）`)
             queryClient.invalidateQueries({ queryKey: ['episodes', projectId] })
+            queryClient.invalidateQueries({ queryKey: ['understand-progress', projectId] })
         },
         onError: () => {},
     })
 
     const singleUnderstandMutation = useMutation({
-        mutationFn: (episodeId: string) => generationService.triggerUnderstand(episodeId),
+        mutationFn: (episodeId: string) => generationService.triggerUnderstand(episodeId, effectiveConcurrency),
         onSuccess: () => {
-            Toast.success('已启动本话多模态理解')
+            Toast.success(`已启动本话多模态理解（并发 x${effectiveConcurrency}）`)
             setBatchTaskNotice('正在执行章节多模态剧情与人物识别...')
             queryClient.invalidateQueries({ queryKey: ['episodes', projectId] })
+            queryClient.invalidateQueries({ queryKey: ['understand-progress', projectId] })
         },
         onError: () => {},
     })
@@ -663,8 +707,30 @@ export default function ProjectDetail() {
             title: '当前状态',
             dataIndex: 'status',
             key: 'status',
-            width: 140,
-            render: (text: string) => {
+            width: 170,
+            render: (text: string, record: Episode) => {
+                const isRunning =
+                    understandProgress?.active &&
+                    (understandProgress.current_episode_id === record.id ||
+                        (understandProgress.active_episode_ids || []).includes(record.id))
+                const isQueued =
+                    understandProgress?.active && (understandProgress.queued_episode_ids || []).includes(record.id)
+                if (isRunning) {
+                    const pct = understandProgress?.episode_pct ?? 0
+                    return (
+                        <Tooltip content={understandProgress?.phase_label || '正在执行多模态剧情理解...'}>
+                            <Tag color="violet">
+                                <span className="inline-flex items-center gap-1.5">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
+                                    理解中 · {pct}%
+                                </span>
+                            </Tag>
+                        </Tooltip>
+                    )
+                }
+                if (isQueued) {
+                    return <Tag color="amber">排队等待理解</Tag>
+                }
                 const m = STATUS_META[text]
                 return <Tag color={m?.color || ('default' as TagColor)}>{m?.label || text}</Tag>
             },
@@ -682,7 +748,14 @@ export default function ProjectDetail() {
             title: '操作',
             key: 'actions',
             width: 350,
-            render: (_: unknown, record: Episode) => (
+            render: (_: unknown, record: Episode) => {
+                const isRunning =
+                    understandProgress?.active &&
+                    (understandProgress.current_episode_id === record.id ||
+                        (understandProgress.active_episode_ids || []).includes(record.id))
+                const isQueued =
+                    understandProgress?.active && (understandProgress.queued_episode_ids || []).includes(record.id)
+                return (
                 <div className="flex flex-nowrap items-center gap-1.5 whitespace-nowrap">
                     <Button size="small" onClick={() => navigate(`/projects/${projectId}/episodes/${record.id}`)}>
                         阅读与解析
@@ -693,10 +766,11 @@ export default function ProjectDetail() {
                             theme="light"
                             type="primary"
                             icon={<IconBolt />}
-                            loading={singleUnderstandMutation.isPending}
+                            loading={isRunning || singleUnderstandMutation.isPending}
+                            disabled={isRunning || isQueued}
                             onClick={() => singleUnderstandMutation.mutate(record.id)}
                         >
-                            理解本话
+                            {isRunning ? '理解中...' : isQueued ? '排队中' : '理解本话'}
                         </Button>
                     )}
                     {record.source === 'generated' && (
@@ -731,7 +805,8 @@ export default function ProjectDetail() {
                         }}
                     />
                 </div>
-            ),
+                )
+            },
         },
     ]
 
@@ -995,6 +1070,21 @@ export default function ProjectDetail() {
                                 >
                                     导入章节
                                 </Button>
+                                <Tooltip content="单话内多模态读图与裁剪并发度（话间始终严格串行；高并发 API 服务商建议调至 3x～6x）">
+                                    <Select
+                                        size="default"
+                                        style={{ width: 142 }}
+                                        value={effectiveConcurrency}
+                                        onChange={(v) => setUnderstandConcurrency(Number(v) || 1)}
+                                    >
+                                        <Select.Option value={1}>并发 1x (串行)</Select.Option>
+                                        <Select.Option value={2}>并发 2x</Select.Option>
+                                        <Select.Option value={3}>并发 3x</Select.Option>
+                                        <Select.Option value={4}>并发 4x</Select.Option>
+                                        <Select.Option value={6}>并发 6x</Select.Option>
+                                        <Select.Option value={8}>并发 8x</Select.Option>
+                                    </Select>
+                                </Tooltip>
                                 <Button
                                     icon={<IconBolt />}
                                     loading={batchUnderstandMutation.isPending}
@@ -1016,7 +1106,7 @@ export default function ProjectDetail() {
                         {/* Inline Monospace Summary Strip (No KPI Card Grid) */}
                         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px] text-[var(--text-secondary)] font-mono pt-1">
                             <span>
-                                连载 <strong className="text-[var(--text-primary)]">{episodesData?.total || 0}</strong> 话（已理解 {understoodCount}）
+                                连载 <strong className="text-[var(--text-primary)]">{episodesData?.total || 0}</strong> 话（已理解 {understandProgress?.understood_count ?? understoodCount}）
                             </span>
                             <span className="text-[var(--border)]">/</span>
                             <span>
@@ -1037,7 +1127,97 @@ export default function ProjectDetail() {
                         </div>
                     </header>
 
-                    {activeBatchNotice && (
+                    {/* OVERALL UNDERSTANDING PROGRESS BAR */}
+                    {understandProgress && understandProgress.total_episodes > 0 && (
+                        <div
+                            className="rounded-[6px] border px-4 py-3 space-y-2 transition-colors"
+                            style={{
+                                borderColor: understandProgress.active ? 'var(--accent)' : 'var(--border)',
+                                backgroundColor: 'var(--bg-panel)',
+                            }}
+                        >
+                            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <span
+                                        className={`inline-block w-2 h-2 rounded-full ${understandProgress.active ? 'animate-pulse' : ''}`}
+                                        style={{
+                                            backgroundColor: understandProgress.active
+                                                ? 'var(--accent)'
+                                                : understandProgress.overall_pct >= 100
+                                                  ? 'var(--status-ok)'
+                                                  : 'var(--text-muted)',
+                                        }}
+                                    />
+                                    <span className="font-semibold text-[var(--text-primary)]">
+                                        {understandProgress.active ? '正在按序理解剧情' : '全书理解进度'}
+                                    </span>
+                                    <span className="font-mono text-[var(--text-secondary)]">
+                                        {understandProgress.batch_total
+                                            ? `批次 ${understandProgress.batch_completed ?? 0}/${understandProgress.batch_total} 话 · 总库 ${understandProgress.understood_count}/${understandProgress.total_episodes} 话`
+                                            : `${understandProgress.understood_count} / ${understandProgress.total_episodes} 话`}
+                                    </span>
+                                    <span className="px-1.5 py-0.5 rounded-[4px] border border-[var(--border)] bg-[var(--bg-elevated)] font-mono text-[11px] text-[var(--text-secondary)]">
+                                        并发 x{understandProgress.concurrency}
+                                    </span>
+                                </div>
+                                <div className="flex items-center gap-3 font-mono">
+                                    {understandProgress.active && understandProgress.current_episode_label && (
+                                        <span className="text-[var(--text-secondary)]">
+                                            当前：第 {understandProgress.current_episode_label} 话
+                                            {understandProgress.phase_label ? ` · ${understandProgress.phase_label}` : ''}
+                                            {` (${understandProgress.episode_pct}%)`}
+                                            {typeof understandProgress.elapsed_sec === 'number'
+                                                ? ` · ${Math.floor(understandProgress.elapsed_sec / 60)}m${String(understandProgress.elapsed_sec % 60).padStart(2, '0')}s`
+                                                : ''}
+                                        </span>
+                                    )}
+                                    <strong
+                                        className="text-sm"
+                                        style={{
+                                            color:
+                                                understandProgress.overall_pct >= 100
+                                                    ? 'var(--status-ok)'
+                                                    : 'var(--accent)',
+                                        }}
+                                    >
+                                        {understandProgress.overall_pct.toFixed(1)}%
+                                    </strong>
+                                </div>
+                            </div>
+
+                            <div className="w-full h-2 rounded-full overflow-hidden bg-[var(--bg-elevated)]">
+                                <div
+                                    className="h-full rounded-full transition-all duration-500"
+                                    style={{
+                                        width: `${Math.max(understandProgress.active ? 2 : 0, Math.min(100, understandProgress.overall_pct))}%`,
+                                        backgroundColor:
+                                            understandProgress.overall_pct >= 100
+                                                ? 'var(--status-ok)'
+                                                : 'var(--accent)',
+                                    }}
+                                />
+                            </div>
+
+                            {understandProgress.active && (
+                                <div className="flex items-center gap-2 text-[11px] text-[var(--text-muted)]">
+                                    <span className="shrink-0 font-mono">本话阶段进度</span>
+                                    <div className="flex-1 h-1 rounded-full overflow-hidden bg-[var(--bg-elevated)]">
+                                        <div
+                                            className="h-full rounded-full transition-all duration-500"
+                                            style={{
+                                                width: `${Math.max(4, understandProgress.episode_pct)}%`,
+                                                backgroundColor: 'var(--accent)',
+                                                opacity: 0.7,
+                                            }}
+                                        />
+                                    </div>
+                                    <span className="font-mono shrink-0">{understandProgress.episode_pct}%</span>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {activeBatchNotice && !understandProgress?.active && (
                         <Banner
                             type="info"
                             description={activeBatchNotice}

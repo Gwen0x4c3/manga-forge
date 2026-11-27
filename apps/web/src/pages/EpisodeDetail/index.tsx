@@ -350,14 +350,46 @@ export default function EpisodeDetail() {
                 </div>
             </header>
 
-            {activeRuns.length > 0 && (
-                <div className="rounded-[6px] border border-[var(--border)] bg-[var(--bg-panel)] px-4 py-3 flex items-center gap-3 text-sm text-[var(--text-primary)]">
-                    <Spin size="small" />
-                    <span>
-                        正在执行：{activeRuns.map((r) => RUN_STAGE_LABELS[r.stage] || r.stage).join(' / ')}（页面将自动实时刷新）
-                    </span>
-                </div>
-            )}
+            {activeRuns.length > 0 && (() => {
+                const understandRun = activeRuns.find((r) => r.stage === 'understand')
+                const uParams = (understandRun?.params || {}) as Record<string, unknown>
+                const uProg = (uParams.progress || {}) as { label?: string; episode_pct?: number }
+                const uPct = typeof uProg.episode_pct === 'number' ? Math.max(0, Math.min(100, uProg.episode_pct)) : 0
+                const uConc = typeof uParams.concurrency === 'number' ? uParams.concurrency : 1
+                return (
+                    <div className="rounded-[6px] border border-[var(--accent)] bg-[var(--bg-panel)] px-4 py-3 space-y-2 text-sm text-[var(--text-primary)]">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center gap-2.5">
+                                <Spin size="small" />
+                                <span className="font-medium">
+                                    正在执行：{activeRuns.map((r) => RUN_STAGE_LABELS[r.stage] || r.stage).join(' / ')}
+                                </span>
+                                {understandRun && (
+                                    <span className="px-1.5 py-0.5 rounded-[4px] border border-[var(--border)] bg-[var(--bg-elevated)] font-mono text-[11px] text-[var(--text-secondary)]">
+                                        并发 x{uConc}
+                                    </span>
+                                )}
+                            </div>
+                            {understandRun && (
+                                <span className="font-mono text-xs text-[var(--text-secondary)]">
+                                    {uProg.label || '多模态理解进行中...'} · <strong className="text-[var(--accent)]">{uPct}%</strong>
+                                </span>
+                            )}
+                        </div>
+                        {understandRun && (
+                            <div className="w-full h-1.5 rounded-full overflow-hidden bg-[var(--bg-elevated)]">
+                                <div
+                                    className="h-full rounded-full transition-all duration-500"
+                                    style={{
+                                        width: `${Math.max(3, uPct)}%`,
+                                        backgroundColor: 'var(--accent)',
+                                    }}
+                                />
+                            </div>
+                        )}
+                    </div>
+                )
+            })()}
 
             {latestRun?.status === 'failed' && activeRuns.length === 0 && (
                 <div className="rounded-[6px] border border-[var(--accent)] bg-[var(--accent-soft)] p-4">

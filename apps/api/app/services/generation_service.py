@@ -301,26 +301,50 @@ def _normalize_name(name: str) -> str:
     return "".join(ch.lower() for ch in name if ch.isalnum())
 
 
-def _names_match(a: str, b: str) -> bool:
-    """Same-name heuristic: exact, containment (when meaningful length), or high string similarity."""
+_RELATIONAL_MARKERS = ("的", "の", "'s", "’s", " of ")
+
+
+def _is_relational_phrase(raw: str) -> bool:
+    low = (raw or "").strip().lower()
+    return any(m in low for m in _RELATIONAL_MARKERS)
+
+
+def _names_match(a: str, b: str, *, allow_containment: bool = True) -> bool:
+    """Same-name heuristic: exact, safe containment (never on possessive/relational phrases like
+    '敬一的小学同学'), or high string similarity."""
     na, nb = _normalize_name(a), _normalize_name(b)
     if not na or not nb:
         return False
     if na == nb:
         return True
-    # Avoid false positives on single-character names unless exact match
-    shorter = min(len(na), len(nb))
-    if shorter >= 2 and (na in nb or nb in na):
+    if _is_relational_phrase(a) or _is_relational_phrase(b):
+        return False
+    shorter, longer = min(len(na), len(nb)), max(len(na), len(nb))
+    if allow_containment and shorter >= 2 and (shorter / longer) >= 0.5 and (na in nb or nb in na):
         return True
-    return SequenceMatcher(None, na, nb).ratio() >= 0.88
+    return SequenceMatcher(None, na, nb).ratio() >= 0.90
 
 
 def _asset_matches_name(asset: Asset, candidate_name: str, candidate_aliases: list[str] | None = None) -> bool:
-    known_names = [asset.name, *((asset.tags or {}).get("aliases") or [])]
-    probe_names = [candidate_name, *(candidate_aliases or [])]
-    for kn in known_names:
-        for pn in probe_names:
-            if kn and pn and _names_match(str(kn), str(pn)):
+    known_primary = (asset.name or "").strip()
+    known_aliases = [str(x).strip() for x in ((asset.tags or {}).get("aliases") or []) if str(x).strip()]
+    cand_primary = (candidate_name or "").strip()
+    cand_aliases = [str(x).strip() for x in (candidate_aliases or []) if str(x).strip()]
+
+    # Primary <-> Primary allows safe containment (e.g. '藤宫' <-> '藤宫澄夏', '敬一' <-> '侄子敬一')
+    if known_primary and cand_primary and _names_match(known_primary, cand_primary, allow_containment=True):
+        return True
+    # Primary <-> Alias allows safe containment ONLY if neither is a relational phrase
+    for ka in known_aliases:
+        if cand_primary and _names_match(ka, cand_primary, allow_containment=True):
+            return True
+    for ca in cand_aliases:
+        if known_primary and _names_match(known_primary, ca, allow_containment=True):
+            return True
+    # Alias <-> Alias requires strict match (no loose substring containment)
+    for ka in known_aliases:
+        for ca in cand_aliases:
+            if _names_match(ka, ca, allow_containment=False):
                 return True
     return False
 
@@ -345,6 +369,7 @@ async def record_character_sightings(
     char_assets = list(result.scalars().all())
     by_id = {a.id: a for a in char_assets}
     matched_by_name: dict[str, Asset] = {}
+    claimed_ids: set[str] = {str(s.get("asset_id")) for s in sightings if s.get("asset_id") in by_id}
 
     for s in sightings:
         aid = s.get("asset_id")
@@ -354,8 +379,11 @@ async def record_character_sightings(
         # Only fall back to name matching if asset_id was omitted AND no other character already claimed it
         if asset is None and not aid and name:
             for cand in char_assets:
+                if cand.id in claimed_ids:
+                    continue
                 if _asset_matches_name(cand, name, aliases):
                     asset = cand
+                    claimed_ids.add(cand.id)
                     break
         if asset is None:
             continue
@@ -478,6 +506,7 @@ async def auto_discover_assets(
     existing_assets = list(existing_result.scalars().all())
 
     discovered: list[tuple[Asset, dict]] = []
+    claimed_existing_ids: set[str] = set()
     for asset_data in new_assets:
         asset_name = (asset_data.get("name") or "").strip()
         if not asset_name:
@@ -491,9 +520,11 @@ async def auto_discover_assets(
 
         matched_asset = None
         for existing in existing_assets:
-            if existing.type == asset_type and _asset_matches_name(existing, asset_name, aliases):
-                matched_asset = existing
-                break
+            if existing.type == asset_type and existing.id not in claimed_existing_ids:
+                if _asset_matches_name(existing, asset_name, aliases):
+                    matched_asset = existing
+                    claimed_existing_ids.add(existing.id)
+                    break
 
         new_embedding = None
         text_parts = [asset_name, asset_description, " ".join(visual_tags)]
