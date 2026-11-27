@@ -15,6 +15,9 @@ Open-source manga continuation & story-intelligence platform with multimodal cha
 
 MangaForge ingests serialized manga chapters (local archives/images or MangaDex), runs a two-phase multimodal reading & precision cropping engine to extract structured narrative graphs and verified visual reference sheets, visualizes characters, arcs, foreshadowing, and story branches in an interactive Story Atlas, and produces reference-locked continuation chapters with traditional vertical CJK or horizontal typesetting exportable as PDF, CBZ, or Webtoon strips.
 
+> [!CAUTION]
+> **Do not use MangaForge’s Google Flow browser automation to upload assets or generate images or videos.** During testing, Flow displayed “We noticed some unusual activity” and warned that browser extensions that modify the page may cause issues. [How to pause an installed connector](#pause-the-google-flow-connector)
+
 ## Features
 
 - **Two-Phase Multimodal Understanding & 2-Stage Precision Cropping**:
@@ -50,9 +53,9 @@ End-to-end live workspace on ***Isekai Ojisan* (*Uncle from Another World*)**: 1
 | :---: | :---: |
 | [<img src="docs/assets/showcase/project_workbench.jpg" width="420" />](docs/assets/showcase/project_workbench.jpg) | [<img src="docs/assets/showcase/asset_library.jpg" width="420" />](docs/assets/showcase/asset_library.jpg) |
 
-| Multi-Provider Model Hub (4-Role Routing & Concurrency) | Token Usage & Prompt Cache Telemetry |
+| Model Hub (Google Flow connection and four model roles) | Token Usage & Prompt Cache Telemetry |
 | :---: | :---: |
-| [<img src="docs/assets/showcase/model_hub.jpg" width="420" />](docs/assets/showcase/model_hub.jpg) | [<img src="docs/assets/showcase/usage_dashboard.jpg" width="420" />](docs/assets/showcase/usage_dashboard.jpg) |
+| [<img src="docs/assets/showcase/model_hub.jpg" width="420" alt="Model Hub showing an example Google Flow connection and model role settings" />](docs/assets/showcase/model_hub.jpg) | [<img src="docs/assets/showcase/usage_dashboard.jpg" width="420" />](docs/assets/showcase/usage_dashboard.jpg) |
 
 ### Visual Story Atlas & Story Detective Q&A
 
@@ -174,7 +177,16 @@ Configured via `IMAGE_BACKEND` in `.env` or per run/panel in the Studio UI. All 
 
 ---
 
-## Google Flow with your own browser
+<a id="google-flow-with-your-own-browser"></a>
+
+## Pause the Google Flow connector
+
+If the Chrome extension is connected, open **MangaForge · Google Flow** in the toolbar and click **暂停接收任务** (pause new tasks). When the popup shows **已暂停接收任务**, leave it paused. If you use the Python or Ego connector, stop its running process. For questions about a warning on your account, visit the [Google Flow Help Center](https://support.google.com/flow).
+
+<img src="docs/assets/showcase/flow_extension_paused.png" width="350" alt="MangaForge extension showing 已暂停接收任务 (new tasks paused) with an example connection" />
+
+<details>
+<summary>Archived setup instructions for maintainers</summary>
 
 Use **漫画转视频 → 配置 Flow 扩展** in a chapter, or manage browser connections under **Models → 漫画转视频 · Google Flow**. Video generation uses existing manga pages and the selected Flow video model. It requires no image-generation model.
 
@@ -184,7 +196,7 @@ Use **漫画转视频 → 配置 Flow 扩展** in a chapter, or manage browser c
 
 If Flow asks you to confirm your rights to an image, MangaForge shows the pending confirmation in the chapter. Choose **I agree** in the same Flow tab to continue the upload, or **Cancel** to stop.
 
-To upgrade an unpacked extension, overwrite the files in its existing directory and click **Reload** in `chrome://extensions`. This preserves the token and job records. If the previous version was paused, click **继续接收任务** in the popup.
+To upgrade an unpacked extension, overwrite the files in its existing directory and click **Reload** in `chrome://extensions`. This preserves the token, job records and pause setting.
 
 The revocable token is scoped to one Flow provider. Use HTTPS on shared networks and protect the Models dashboard with your deployment's access controls. [Google Flow](https://flow.google.com/)
 
@@ -200,6 +212,8 @@ Use a server address reachable from the Mac, and HTTPS on a shared network. Chec
 Open **漫画转视频** in a chapter and select the Flow connection and video model. Video uses the existing pages. Review the numbered references and edit the prompts. **仅同步素材** creates or reuses a Flow project for this manga and uploads its reference images. If the original connection was replaced, **用当前连接重新同步素材** starts a fresh upload. **生成本话视频** also generates eight-second clips using the credits of the account you selected in Flow. The worker joins the clips locally with FFmpeg and saves an MP4. Check any uncertain submission in the original Flow project before retrying. [Flow video controls](https://support.google.com/flow/answer/16353334?hl=en) · [Local browser automation reference](https://github.com/GTAI-1/flow-mcp)
 
 To draw new storyboard panels with Nano Banana, you can separately assign Flow to the **image_gen** role.
+
+</details>
 
 ## Documentation
 

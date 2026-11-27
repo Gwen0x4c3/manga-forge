@@ -15,6 +15,9 @@
 
 MangaForge 支持从本地图片/压缩包或 MangaDex 导入连载漫画，通过两阶段多模态读图与精裁引擎提取结构化剧情图谱和核验视觉参考图，在交互式「故事宇宙图谱」中可视化人物关系、篇章记忆、伏笔泳道与多世界线分支，并支持基于参考图约束续画、传统日漫竖排/横排交互气泡排版以及 PDF / CBZ / 长条漫一键导出。
 
+> [!CAUTION]
+> **请勿使用 MangaForge 的 Google Flow 浏览器自动化来上传素材、生图或生成视频。** 实测时，Flow 显示了异常活动提醒（“We noticed some unusual activity”），并提示修改页面的浏览器扩展可能引发问题。[如何暂停已安装的连接器](#暂停-google-flow-连接器)
+
 ## 功能特性
 
 - **两阶段多模态剧情理解与 2 阶段像素精裁引擎**：
@@ -50,9 +53,9 @@ MangaForge 支持从本地图片/压缩包或 MangaDex 导入连载漫画，通�
 | :---: | :---: |
 | [<img src="docs/assets/showcase/project_workbench.jpg" width="420" />](docs/assets/showcase/project_workbench.jpg) | [<img src="docs/assets/showcase/asset_library.jpg" width="420" />](docs/assets/showcase/asset_library.jpg) |
 
-| 多服务商模型中心（4 角色路由与并发配置） | Token 用量与 Prompt Cache 观测面板 |
+| 模型中心（Google Flow 连接与四类模型角色） | Token 用量与 Prompt Cache 观测面板 |
 | :---: | :---: |
-| [<img src="docs/assets/showcase/model_hub.jpg" width="420" />](docs/assets/showcase/model_hub.jpg) | [<img src="docs/assets/showcase/usage_dashboard.jpg" width="420" />](docs/assets/showcase/usage_dashboard.jpg) |
+| [<img src="docs/assets/showcase/model_hub.jpg" width="420" alt="模型中心的 Google Flow 示例连接和模型角色设置" />](docs/assets/showcase/model_hub.jpg) | [<img src="docs/assets/showcase/usage_dashboard.jpg" width="420" />](docs/assets/showcase/usage_dashboard.jpg) |
 
 ### 故事宇宙图谱与剧情侦探问答
 
@@ -174,7 +177,16 @@ cd apps/web && npm run build      # 前端生产构建检查
 
 ---
 
-## 用自己的 Google Flow 账号把单话漫画转为视频
+<a id="用自己的-google-flow-账号把单话漫画转为视频"></a>
+
+## 暂停 Google Flow 连接器
+
+如果 Chrome 扩展已连接，请在工具栏打开 **MangaForge · Google Flow**，点击 **暂停接收任务**。看到 **已暂停接收任务** 后，保持该状态即可。如果使用 Python 或 Ego 连接器，请停止对应的连接器进程。遇到账号提醒时，可查看 [Google Flow 帮助中心](https://support.google.com/flow)。
+
+<img src="docs/assets/showcase/flow_extension_paused.png" width="350" alt="MangaForge 扩展的示例连接，状态为「已暂停接收任务」" />
+
+<details>
+<summary>原接入步骤（仅供维护参考）</summary>
 
 在章节的 **漫画转视频 → 配置 Flow 扩展** 连接浏览器，也可在 **模型中心 → 漫画转视频 · Google Flow** 管理连接。视频使用已有漫画页和本次选择的 Flow 视频模型，无需配置作图引擎。
 
@@ -184,7 +196,7 @@ cd apps/web && npm run build      # 前端生产构建检查
 
 如果 Flow 弹出素材使用权确认，章节页会显示「等待确认素材使用权」。在弹窗所在的 Flow 标签页点 **I agree** 会继续当前上传，点 **Cancel** 会停止同步。
 
-升级已安装的扩展时，用新版 ZIP 的内容覆盖原目录，在 `chrome://extensions` 点击该扩展的 **重新加载**。现有令牌和任务记录保存在原安装中。若旧版已暂停，在扩展里点 **继续接收任务**。
+升级已安装的扩展时，用新版 ZIP 的内容覆盖原目录，在 `chrome://extensions` 点击该扩展的 **重新加载**。现有令牌、任务记录和暂停状态会保留。
 
 令牌仅授权该服务商的 Flow 任务，可在模型中心撤销。扩展通过你填写的地址直接访问 MangaForge。在共享网络上使用 HTTPS，并沿用部署对模型中心的访问控制。[Google Flow 官网](https://flow.google.com/)
 
@@ -200,6 +212,8 @@ cd apps/web && npm run build      # 前端生产构建检查
 在章节详情打开 **漫画转视频**，核对各镜头的参考图、修改提示词。**仅同步素材** 会为这部漫画在 Flow 网页新建或复用项目，并上传本话素材。原连接已更换时，点击 **用当前连接重新同步素材** 可重新开始。**生成本话视频** 还会逐镜生成 8 秒片段，消耗 Flow 网页里所选 Google 账号的积分。Worker 监听 `flow` 队列并用 FFmpeg 在本地拼接 MP4。若某个镜头的提交结果待确认，请先在原 Flow 项目核对，再决定是否重试。[Google 的视频生成说明](https://support.google.com/flow/answer/16353334?hl=zh-Hans) · [本地浏览器自动化参考实现](https://github.com/GTAI-1/flow-mcp)
 
 如需用 Nano Banana 绘制新的分镜原画，可以另外在 **原画渲染与作图引擎（image_gen）** 绑定 Flow。
+
+</details>
 
 ## 相关文档
 
