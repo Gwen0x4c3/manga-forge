@@ -3,17 +3,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "apps" / "api"))
 
-import os
-
+from app.config import settings
 from celery import Celery
-
-broker_url = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/1")
-result_backend = os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/2")
 
 celery_app = Celery(
     "mangaforge",
-    broker=broker_url,
-    backend=result_backend,
+    broker=settings.CELERY_BROKER_URL,
+    backend=settings.CELERY_RESULT_BACKEND,
 )
 
 celery_app.conf.update(
@@ -28,6 +24,7 @@ celery_app.conf.update(
 )
 
 import workers.pipelines.continue_pipeline  # noqa: E402, F401
+import workers.tasks.google_flow  # noqa: E402, F401
 import workers.tasks.layout  # noqa: E402, F401
 import workers.tasks.mangadex  # noqa: E402, F401
 import workers.tasks.render  # noqa: E402, F401

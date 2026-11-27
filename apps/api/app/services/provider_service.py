@@ -15,7 +15,9 @@ from app.core.provider_runtime import (
     resolve_role_config,
 )
 from app.core.secret_box import decrypt_secret, encrypt_secret, mask_api_key
+from app.models.google_flow import FlowBrowser
 from app.models.model_provider import ModelProvider, ModelRoleBinding
+from app.providers.google_flow import FLOW_URL, IMAGE_MODELS, LEGACY, PRESET, FlowError, connection_status
 from app.schemas.provider import (
     ModelProviderResponse,
     ProviderCreateRequest,
@@ -28,9 +30,10 @@ from app.schemas.provider import (
 )
 
 
-def _serialize_provider(p: ModelProvider) -> ModelProviderResponse:
+def _serialize_provider(p: ModelProvider, browser: FlowBrowser | None = None) -> ModelProviderResponse:
     return ModelProviderResponse(
         id=p.id,
+        flow_status=connection_status(browser) if p.preset_key == PRESET else None,
         preset_key=p.preset_key,
         name=p.name,
         interface_type=p.interface_type,
@@ -77,9 +80,14 @@ async def get_overview(db: AsyncSession) -> ProviderOverviewResponse:
             )
         )
 
+    flow_ids = [p.id for p in providers if p.preset_key == PRESET]
+    accounts = {}
+    if flow_ids:
+        result = await db.execute(select(FlowBrowser).where(FlowBrowser.provider_id.in_(flow_ids)))
+        accounts = {account.provider_id: account for account in result.scalars()}
     return ProviderOverviewResponse(
         presets=[preset.to_dict() for preset in PROVIDER_PRESETS],
-        providers=[_serialize_provider(p) for p in providers],
+        providers=[_serialize_provider(p, accounts.get(p.id)) for p in providers],
         roles=role_items,
     )
 
@@ -95,6 +103,14 @@ async def create_provider(db: AsyncSession, payload: ProviderCreateRequest) -> M
         headers.update(payload.extra_headers)
 
     raw_key = (payload.api_key or "").strip()
+    if payload.preset_key == LEGACY or payload.interface_type == LEGACY:
+        raise FlowError("旧中转连接已停用，请添加 Google Flow（浏览器直连）")
+    if payload.preset_key == PRESET:
+        if raw_key or payload.extra_headers:
+            raise FlowError("浏览器直连使用本机 Google 登录，请移除 API Key 和自定义请求头")
+        if default_model not in IMAGE_MODELS or set(payload.activate_roles or []) - {"image_gen"}:
+            raise FlowError("Flow 服务商可绑定 Nano Banana 作图模型")
+        interface_type, base_url, headers = PRESET, FLOW_URL, {}
     provider = ModelProvider(
         id=str(uuid.uuid4()),
         preset_key=payload.preset_key,
@@ -110,6 +126,8 @@ async def create_provider(db: AsyncSession, payload: ProviderCreateRequest) -> M
     )
     db.add(provider)
     await db.flush()
+    if provider.preset_key == PRESET:
+        db.add(FlowBrowser(provider_id=provider.id))
 
     if payload.activate_roles:
         for role in payload.activate_roles:
@@ -134,6 +152,17 @@ async def update_provider(
     provider = await db.get(ModelProvider, provider_id)
     if not provider:
         return None
+
+    browser = None
+    if provider.preset_key == LEGACY:
+        raise FlowError("旧中转连接已停用，请添加 Google Flow（浏览器直连）")
+    if provider.preset_key == PRESET:
+        if payload.api_key or payload.extra_headers:
+            raise FlowError("浏览器直连无需 API Key 或自定义请求头")
+        if payload.default_model is not None and payload.default_model not in IMAGE_MODELS:
+            raise FlowError("请选择 Nano Banana 作图模型")
+        browser = await db.get(FlowBrowser, provider_id)
+        payload = payload.model_copy(update={"interface_type": PRESET, "base_url": FLOW_URL, "extra_headers": {}})
 
     if payload.name is not None:
         provider.name = payload.name.strip()
@@ -164,7 +193,7 @@ async def update_provider(
     await db.commit()
     await db.refresh(provider)
     invalidate_provider_cache()
-    return _serialize_provider(provider)
+    return _serialize_provider(provider, browser)
 
 
 async def delete_provider(db: AsyncSession, provider_id: str) -> bool:
@@ -214,14 +243,18 @@ async def test_provider(db: AsyncSession, payload: ProviderTestRequest) -> Provi
             model = preset.default_model
         headers = {**preset.extra_headers, **headers}
 
-    result = await probe_provider_connection(
-        interface_type=interface_type,
-        base_url=base_url,
-        api_key=api_key,
-        model=model,
-        extra_headers=headers,
-        preset_key=preset_key,
-    )
+    if preset_key == PRESET:
+        status = connection_status(await db.get(FlowBrowser, provider.id) if provider else None)
+        messages = {
+            "unpaired": "请在浏览器扩展中填写 MangaForge 地址和扩展令牌", "offline": "浏览器已离线",
+            "login_required": "请打开要使用的 Google Flow 标签页并启用连接", "ready": "本地浏览器已连接到 Google Flow",
+        }
+        result = {"ok": status == "ready", "message": messages[status], "latency_ms": 0, "models": list(IMAGE_MODELS)}
+    else:
+        result = await probe_provider_connection(
+            interface_type=interface_type, base_url=base_url, api_key=api_key, model=model,
+            extra_headers=headers, preset_key=preset_key,
+        )
 
     if provider:
         provider.last_test_status = "ok" if result["ok"] else "error"
@@ -252,6 +285,10 @@ async def update_role_binding(
         if not provider:
             raise ValueError("Provider not found")
         model_id = (payload.model_id or provider.default_model or "").strip() or None
+        if provider.preset_key == LEGACY:
+            raise FlowError("请改为配对浏览器直连服务商")
+        if provider.preset_key == PRESET and (role != "image_gen" or model_id not in IMAGE_MODELS):
+            raise FlowError("Google Flow 只支持绑定到作图角色，请选择 Nano Banana 模型")
         if binding:
             binding.provider_id = provider.id
             binding.model_id = model_id

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
+from app.providers.google_flow import FLOW_URL, IMAGE_MODELS
+
 
 @dataclass(frozen=True)
 class ModelPresetInfo:
@@ -41,6 +43,16 @@ class ProviderPreset:
 
 PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
     ProviderPreset(
+        key="google_flow_browser", name="Google Flow（浏览器直连）", category="image",
+        interface_type="google_flow_browser",
+        base_url=FLOW_URL, default_model=IMAGE_MODELS[0],
+        description="连接已登录 Google Flow 的浏览器，在章节中使用已有漫画页和账号积分生成视频。",
+        requires_api_key=False, supports_llm=False, supports_vision=False, supports_image=True,
+        api_key_placeholder="", docs_url="https://support.google.com/flow/answer/16353333",
+        models=tuple(ModelPresetInfo(m, label, supports_tools=False, supports_image_gen=True)
+                     for m, label in zip(IMAGE_MODELS, ("Nano Banana 2 Lite", "Nano Banana 2.1", "Nano Banana Pro"))),
+    ),
+    ProviderPreset(
         key="openrouter",
         name="OpenRouter",
         category="aggregator",
@@ -54,7 +66,7 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
         supports_embedding=False,
         api_key_placeholder="sk-or-v1-...",
         docs_url="https://openrouter.ai/keys",
-        extra_headers={"HTTP-Referer": "https://github.com/Gwen0x4c3/manga-forge", "X-Title": "MangaForge"},
+        extra_headers={"X-Title": "MangaForge"},
         models=(
             ModelPresetInfo("anthropic/claude-sonnet-4.5", "Claude Sonnet 4.5", 200000, True, True),
             ModelPresetInfo("openai/gpt-4.1", "GPT-4.1", 1047576, True, True),

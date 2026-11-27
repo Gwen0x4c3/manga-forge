@@ -33,6 +33,9 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["app*"]
 
+[tool.setuptools.package-data]
+app = ["flow_extension/*.json", "flow_extension/*.html", "flow_extension/*.css", "flow_extension/*.js"]
+
 [build-system]
 requires = ["setuptools>=75.0"]
 build-backend = "setuptools.build_meta"

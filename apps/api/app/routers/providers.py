@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.provider_runtime import VALID_ROLES
 from app.database import get_db
+from app.providers.google_flow import FlowError
 from app.schemas.provider import (
     ModelProviderResponse,
     ProviderCreateRequest,
@@ -27,7 +28,10 @@ async def get_providers_overview(db: AsyncSession = Depends(get_db)):
 
 @router.post("", response_model=ModelProviderResponse)
 async def create_provider(payload: ProviderCreateRequest, db: AsyncSession = Depends(get_db)):
-    return await provider_service.create_provider(db, payload)
+    try:
+        return await provider_service.create_provider(db, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.put("/{provider_id}", response_model=ModelProviderResponse)
@@ -36,7 +40,10 @@ async def update_provider(
     payload: ProviderUpdateRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    updated = await provider_service.update_provider(db, provider_id, payload)
+    try:
+        updated = await provider_service.update_provider(db, provider_id, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(status_code=404, detail="Provider not found")
     return updated
@@ -65,5 +72,7 @@ async def update_role_binding(
         raise HTTPException(status_code=400, detail=f"Unsupported role: {role}")
     try:
         return await provider_service.update_role_binding(db, role, payload)
+    except FlowError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

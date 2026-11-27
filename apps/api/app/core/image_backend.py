@@ -248,7 +248,6 @@ class OpenAIImageBackend(ImageBackend):
         headers = {
             "Authorization": f"Bearer {self._client.api_key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/Gwen0x4c3/manga-forge",
             "X-Title": "MangaForge",
         }
         payload = {
@@ -441,6 +440,44 @@ class GeminiImageBackend(ImageBackend):
             reference_images=[(image_data, "image/png"), (mask_data, "image/png")],
             size=kwargs.get("size", (1024, 1024)),
             seed=kwargs.get("seed"),
+        )
+
+
+class GoogleFlowImageBackend(ImageBackend):
+    def __init__(self, model: str, provider_id: str):
+        self._model = model
+        self._provider_id = provider_id
+
+    async def generate(
+        self,
+        prompt: str,
+        negative_prompt: str | None = None,
+        size: tuple[int, int] = (1024, 1024),
+        seed: int | None = None,
+        reference_images: list[tuple[bytes, str]] | None = None,
+        context: dict | None = None,
+        **kwargs,
+    ) -> ImageResult:
+        from app.core.telemetry import get_usage_context
+        from app.providers.google_flow import generate_image
+
+        ratios = [(1, 1), (4, 3), (3, 4), (16, 9), (9, 16)]
+        w, h = min(ratios, key=lambda r: abs(math.log(r[0] * size[1] / (r[1] * size[0]))))
+        model = kwargs.get("model") or self._model
+        refs = reference_images or []
+        data = await generate_image(
+            self._provider_id, model, _compose_prompt(prompt, negative_prompt, context),
+            f"{w}:{h}", refs, get_usage_context().project_id or (context or {}).get("project_id"),
+        )
+        return ImageResult(data, None, {"model": model, "references": len(refs)})
+
+    async def inpaint(self, image_data: bytes, mask_data: bytes, prompt: str, **kwargs) -> ImageResult:
+        with Image.open(io.BytesIO(image_data)) as source:
+            kwargs.setdefault("size", source.size)
+        return await self.generate(
+            f"Edit the first image using the second image as the mask. Keep the unmarked area identical. {prompt}",
+            reference_images=[(image_data, "image/png"), (mask_data, "image/png")],
+            **kwargs,
         )
 
 
@@ -1071,6 +1108,8 @@ def get_image_backend(backend_name: str | None = None, model: str | None = None)
             backend = "mock"
         elif resolved.interface_type == "antigravity":
             backend = "antigravity"
+        elif resolved.interface_type in ("google_flow_browser", "google_flow"):
+            backend = resolved.interface_type
         else:
             backend = "openai"
         eff_model = model or resolved.model or None
@@ -1082,8 +1121,14 @@ def get_image_backend(backend_name: str | None = None, model: str | None = None)
         eff_key = None
         eff_url = None
 
-    if backend == "antigravity":
-        inner: ImageBackend = AntigravityImageBackend(model=eff_model, endpoint=eff_url)
+    if backend == "google_flow":
+        raise ValueError("旧中转连接已停用，请绑定 Google Flow（浏览器直连）")
+    if backend == "google_flow_browser":
+        if resolved.provider_key != backend or not resolved.provider_id:
+            raise ValueError("请先在模型中心绑定已配对的 Flow 浏览器")
+        inner: ImageBackend = GoogleFlowImageBackend(eff_model or resolved.model, resolved.provider_id)
+    elif backend == "antigravity":
+        inner = AntigravityImageBackend(model=eff_model, endpoint=eff_url)
     elif backend == "comfyui":
         inner = ComfyUIImageBackend(model=eff_model)
         if eff_url:

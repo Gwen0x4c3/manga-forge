@@ -1125,6 +1125,7 @@ export interface ProviderPreset {
 }
 
 export interface ModelProviderItem {
+    flow_status?: string | null
     id: string
     preset_key: string
     name: string

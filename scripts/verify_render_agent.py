@@ -3,6 +3,7 @@ server, (2) the tool-calling render agent end-to-end with the mock image
 backend (real glm-5.3-flash tool loop, real DB/MinIO)."""
 from __future__ import annotations
 
+import argparse
 import asyncio
 import base64
 import io
@@ -19,7 +20,6 @@ sys.path.insert(0, str(ROOT))
 
 from PIL import Image  # noqa: E402
 
-PROJECT_ID = "d9a0038e-3ec9-4c17-8e29-91bf1c17e1ab"
 
 PASS, FAIL = [], []
 
@@ -112,7 +112,7 @@ async def test_gemini_backend():
         server.shutdown()
 
 
-async def test_render_agent():
+async def test_render_agent(project_id: str):
     print("== Render agent e2e (glm tool loop + mock image backend) ==")
     from sqlalchemy import select
 
@@ -130,11 +130,11 @@ async def test_render_agent():
 
         branch = (
             await db.execute(
-                select(Branch).where(Branch.project_id == PROJECT_ID, Branch.is_default == True)  # noqa: E712
+                select(Branch).where(Branch.project_id == project_id, Branch.is_default == True)  # noqa: E712
             )
         ).scalars().first()
         xiaoying = (
-            await db.execute(select(Asset).where(Asset.project_id == PROJECT_ID, Asset.name.like("%小樱%")))
+            await db.execute(select(Asset).where(Asset.project_id == project_id, Asset.name.like("%小樱%")))
         ).scalars().first()
         check("asset 小樱 exists", xiaoying is not None)
 
@@ -143,7 +143,7 @@ async def test_render_agent():
         await asset_service.upload_asset_image(db, xiaoying, ref_png, "xiaoying_ref.png", kind="reference")
 
         ep = await episode_service.create_episode(
-            db, PROJECT_ID, EpisodeImport(branch_id=branch.id, number=Decimal("8"), title="渲染Agent测试")
+            db, project_id, EpisodeImport(branch_id=branch.id, number=Decimal("8"), title="渲染Agent测试")
         )
         db.add(
             EpisodeMemory(
@@ -219,9 +219,9 @@ async def test_render_agent():
         check("agent used research tools", agent_stats.get("tools_used", 0) >= 2, str(agent_stats))
 
 
-async def main():
+async def main(project_id: str):
     await test_gemini_backend()
-    await test_render_agent()
+    await test_render_agent(project_id)
     print(f"\n==== RENDER AGENT RESULT: {len(PASS)} passed, {len(FAIL)} failed ====")
     for f in FAIL:
         print(f"  FAILED: {f}")
@@ -229,4 +229,6 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("project_id", help="ID of the smoke-test project containing 小樱")
+    asyncio.run(main(parser.parse_args().project_id))

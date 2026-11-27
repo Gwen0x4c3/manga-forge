@@ -1,0 +1,122 @@
+:root {
+    color-scheme: dark;
+    font:
+        14px/1.5 Inter,
+        system-ui,
+        -apple-system,
+        sans-serif;
+    color: #f6f0e5;
+    background: #191b1c;
+}
+* {
+    box-sizing: border-box;
+}
+[hidden] {
+    display: none !important;
+}
+body {
+    width: 350px;
+    margin: 0;
+}
+header {
+    padding: 18px 20px 12px;
+    border-bottom: 1px solid #434440;
+}
+.brand {
+    font-weight: 650;
+    color: #b5c9ab;
+    letter-spacing: 0.03em;
+    font-size: 12px;
+}
+h1 {
+    font-family: Georgia, serif;
+    font-size: 25px;
+    font-weight: 500;
+    margin: 2px 0;
+}
+main {
+    padding: 12px 20px 15px;
+}
+p {
+    margin: 0 0 14px;
+    color: #d0cebe;
+    overflow-wrap: anywhere;
+}
+#notice[data-error="true"] {
+    color: #f3b384;
+}
+form {
+    display: grid;
+    gap: 6px;
+}
+label,
+dt {
+    color: #c4c4b7;
+    font-size: 12px;
+    font-weight: 600;
+}
+input {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #595b52;
+    border-radius: 5px;
+    background: #262827;
+    color: inherit;
+    font: inherit;
+    margin-bottom: 5px;
+}
+button {
+    cursor: pointer;
+    border: 1px solid #595b52;
+    border-radius: 5px;
+    color: inherit;
+    background: #292c29;
+    padding: 7px 10px;
+    font: inherit;
+}
+button:focus-visible,
+input:focus-visible {
+    outline: 2px solid #b9dcad;
+    outline-offset: 2px;
+}
+button:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+.primary {
+    background: #c4d9b8;
+    color: #182518;
+    border-color: #c4d9b8;
+    font-weight: 650;
+}
+.link {
+    border: none;
+    background: none;
+    padding: 0;
+    margin-top: 14px;
+    color: #c4d9b8;
+    font-size: 13px;
+}
+.row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    justify-content: space-between;
+}
+dd {
+    overflow-wrap: anywhere;
+}
+dl {
+    margin: 0 0 16px;
+}
+dd {
+    margin: 2px 0 9px;
+}
+@media (min-width: 520px) {
+    body {
+        width: 400px;
+        margin: 8vh auto;
+        border: 1px solid #434440;
+        border-radius: 8px;
+    }
+}

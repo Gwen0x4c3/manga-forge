@@ -69,4 +69,5 @@ class ResponseWrapperMiddleware(BaseHTTPMiddleware):
                 "data": None,
             }
 
-        return JSONResponse(content=wrapped, status_code=response.status_code)
+        headers = {"Cache-Control": response.headers["cache-control"]} if "cache-control" in response.headers else None
+        return JSONResponse(content=wrapped, status_code=response.status_code, headers=headers)

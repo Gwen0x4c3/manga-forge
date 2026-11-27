@@ -7,6 +7,7 @@ school uniform asking for directions.
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import io
 import sys
@@ -19,7 +20,6 @@ sys.path.insert(0, str(ROOT))
 
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
-PROJECT_ID = "d9a0038e-3ec9-4c17-8e29-91bf1c17e1ab"
 FONT = ImageFont.truetype("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", 20)
 
 PASS, FAIL = [], []
@@ -102,7 +102,7 @@ def draw_page() -> bytes:
     return buf.getvalue()
 
 
-async def main():
+async def main(project_id: str):
     from sqlalchemy import select
 
     from app.database import async_session
@@ -122,7 +122,7 @@ async def main():
 
     async with async_session() as db:
         xiaoying = (
-            await db.execute(select(Asset).where(Asset.project_id == PROJECT_ID, Asset.name.like("%小樱%")))
+            await db.execute(select(Asset).where(Asset.project_id == project_id, Asset.name.like("%小樱%")))
         ).scalars().first()
         check("小樱 asset exists", xiaoying is not None)
         xiaoying_id = xiaoying.id
@@ -131,18 +131,18 @@ async def main():
         await asset_service.upload_asset_image(db, xiaoying, draw_face("#ff9ecf"), "sakura_sheet.png", kind="reference")
 
         # direct check: reference block builder returns her sheet
-        known = list((await db.execute(select(Asset).where(Asset.project_id == PROJECT_ID))).scalars().all())
+        known = list((await db.execute(select(Asset).where(Asset.project_id == project_id))).scalars().all())
         blocks = await understanding_service._character_reference_blocks(db, known)
         check("reference sheet picked up", any(xiaoying_id in label for label, _ in blocks),
               str([label for label, _ in blocks]))
 
         branch = (
             await db.execute(
-                select(Branch).where(Branch.project_id == PROJECT_ID, Branch.is_default == True)  # noqa: E712
+                select(Branch).where(Branch.project_id == project_id, Branch.is_default == True)  # noqa: E712
             )
         ).scalars().first()
         ep = await episode_service.create_episode(
-            db, PROJECT_ID, EpisodeImport(branch_id=branch.id, number=Decimal("9"), title="走廊问路的同学")
+            db, project_id, EpisodeImport(branch_id=branch.id, number=Decimal("9"), title="走廊问路的同学")
         )
         key = storage_service.generate_object_key(f"smoke/{ep.id}", "p1.jpg")
         storage_service.upload_file(settings.MINIO_BUCKET, key, draw_page(), "image/jpeg")
@@ -185,4 +185,6 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("project_id", help="ID of the smoke-test project containing 小樱")
+    asyncio.run(main(parser.parse_args().project_id))

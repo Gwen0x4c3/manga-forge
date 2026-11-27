@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN" translate="no">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MangaForge · Google Flow</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header><span class="brand">MangaForge</span><h1>Google Flow</h1></header>
+  <main>
+    <p id="notice" role="status" aria-live="polite">正在读取连接状态…</p>
+    <section id="connected" hidden>
+      <dl><dt>MangaForge</dt><dd id="bound-server"></dd><dt>服务商</dt><dd id="provider"></dd></dl>
+      <div class="row"><button id="toggle" class="primary" type="button">暂停接收任务</button>
+        <button id="forget" type="button">移除连接</button></div>
+    </section>
+    <form id="setup" hidden>
+      <label for="server">MangaForge 地址</label>
+      <input id="server" type="url" placeholder="http://localhost:5173" autocomplete="url" required>
+      <label for="token">MangaForge 扩展令牌</label>
+      <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="mf_flow.…" required>
+      <button class="primary" id="connect" type="submit">连接 MangaForge</button>
+    </form>
+    <button type="button" class="link" id="open">打开 Google Flow ↗</button>
+  </main>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

@@ -174,6 +174,33 @@ cd apps/web && npm run build      # 前端生产构建检查
 
 ---
 
+## 用自己的 Google Flow 账号把单话漫画转为视频
+
+在章节的 **漫画转视频 → 配置 Flow 扩展** 连接浏览器，也可在 **模型中心 → 漫画转视频 · Google Flow** 管理连接。视频使用已有漫画页和本次选择的 Flow 视频模型，无需配置作图引擎。
+
+1. 下载 **MangaForge Flow 扩展（ZIP）** 并解压。在目标 Chrome profile 的 `chrome://extensions` 打开「开发者模式」，选择「加载已解压的扩展程序」并选中含 `manifest.json` 的目录。
+2. 点击模型中心的 **生成扩展令牌**。在扩展里填写 MangaForge 地址和令牌，点击 **连接 MangaForge**。
+3. 在想用的 Flow 标签页手动选好 Google 账号，再回到章节触发任务。保持浏览器和 Flow 标签页打开，扩展会领取任务、填入参考图与提示词，并回传生成结果。切换 Google 账号后可沿用原令牌。
+
+如果 Flow 弹出素材使用权确认，章节页会显示「等待确认素材使用权」。在弹窗所在的 Flow 标签页点 **I agree** 会继续当前上传，点 **Cancel** 会停止同步。
+
+升级已安装的扩展时，用新版 ZIP 的内容覆盖原目录，在 `chrome://extensions` 点击该扩展的 **重新加载**。现有令牌和任务记录保存在原安装中。若旧版已暂停，在扩展里点 **继续接收任务**。
+
+令牌仅授权该服务商的 Flow 任务，可在模型中心撤销。扩展通过你填写的地址直接访问 MangaForge。在共享网络上使用 HTTPS，并沿用部署对模型中心的访问控制。[Google Flow 官网](https://flow.google.com/)
+
+<details><summary>已有 Python / Ego 连接器</summary>
+
+- **已安装 Ego Lite 的 Mac**。在已连接该 Mac 的 Linux 主机上运行 `ego-browser bridge status`，进入 MangaForge 项目目录运行 `make flow-ego`，按提示粘贴配对串。要指定某个 profile，首次配对或切换时运行 `python3 scripts/flow_ego.py --profile '完整名称'`。同一 profile 可以登录多个 Google 账号。先在 Flow 的账号菜单选好要使用的账号，连接器会固定 profile，并在提交前核对所选账号。如需更换账号，选好后用新的配对串运行 `python3 scripts/flow_ego.py --pair`。Mac 直接向你的 MangaForge 传输素材，需能访问配对串中的服务地址。制作期间保持 Mac 唤醒、Ego Lite、Ego Bridge 和连接器在线。Flow 要求重新登录时，在专用标签页登录后运行 `make flow-ego-resume`。
+- **专用 Chrome**。从模型中心下载 Python 连接器，在装有 Chrome 和 Python 3.10+ 的电脑上依次运行 `python -m pip install playwright` 和 `python mangaforge_flow.py`，粘贴配对串，按提示在专用窗口登录 Google。登录失效时用 `--login` 重新登录。
+
+通过 Mac 访问服务器时请用 Mac 可达的局域网或 HTTPS 地址，共享网络请使用 HTTPS。在 Flow 的账号面板核对使用积分的 Google 账号。[Google 的项目与素材管理说明](https://support.google.com/flow/answer/16935308?hl=zh-Hans)
+
+</details>
+
+在章节详情打开 **漫画转视频**，核对各镜头的参考图、修改提示词。**仅同步素材** 会为这部漫画在 Flow 网页新建或复用项目，并上传本话素材。原连接已更换时，点击 **用当前连接重新同步素材** 可重新开始。**生成本话视频** 还会逐镜生成 8 秒片段，消耗 Flow 网页里所选 Google 账号的积分。Worker 监听 `flow` 队列并用 FFmpeg 在本地拼接 MP4。若某个镜头的提交结果待确认，请先在原 Flow 项目核对，再决定是否重试。[Google 的视频生成说明](https://support.google.com/flow/answer/16353334?hl=zh-Hans) · [本地浏览器自动化参考实现](https://github.com/GTAI-1/flow-mcp)
+
+如需用 Nano Banana 绘制新的分镜原画，可以另外在 **原画渲染与作图引擎（image_gen）** 绑定 Flow。
+
 ## 相关文档
 
 - 架构设计与演进路线：[`docs/architecture.md`](docs/architecture.md) · [`docs/design.md`](docs/design.md) · [`docs/ROADMAP.md`](docs/ROADMAP.md) · [`docs/PRD.md`](docs/PRD.md)

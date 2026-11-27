@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import {
     Spin,
     Empty,
@@ -21,6 +21,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { assetService, episodeService, generationService, storageFileUrl } from '@/services/project'
 import type { EpisodeMemory, EpisodePage, GenerationRun } from '@/services/project'
 import PageCropModal from '@/components/PageCropModal'
+import EpisodeFlowVideo from '@/components/EpisodeFlowVideo'
 import { formatEpisodeLabel } from '@/utils/episode'
 
 const STATUS_META: Record<string, { label: string; color: TagColor }> = {
@@ -34,6 +35,7 @@ const STATUS_META: Record<string, { label: string; color: TagColor }> = {
 }
 
 const RUN_STAGE_LABELS: Record<string, string> = {
+    google_flow: 'Google Flow 漫画视频',
     understand: '多模态剧情理解',
     script: '分镜剧本创作与审校',
     render: '角色一致原画渲染',
@@ -70,7 +72,12 @@ export default function EpisodeDetail() {
     const [continueInstructions, setContinueInstructions] = useState('')
     const [readerMode, setReaderMode] = useState<'scroll' | 'spread' | 'grid'>('scroll')
     const [spreadIndex, setSpreadIndex] = useState(0)
-    const [activeTab, setActiveTab] = useState<string | null>(null)
+    const [searchParams, setSearchParams] = useSearchParams()
+    const activeTab = searchParams.get('view')
+    const setActiveTab = (tab: string) => setSearchParams(prev => {
+        prev.set('view', tab)
+        return prev
+    }, { replace: true })
     const [cropPage, setCropPage] = useState<EpisodePage | null>(null)
     const [inspectRun, setInspectRun] = useState<GenerationRun | null>(null)
     const prevActiveCountRef = useRef(0)
@@ -280,6 +287,7 @@ export default function EpisodeDetail() {
                 </div>
 
                 <div className="flex flex-wrap gap-2">
+                    <Button size="small" onClick={() => setActiveTab('flow')}>漫画转视频</Button>
                     {pages && pages.length > 0 && (
                         <Button
                             size="small"
@@ -391,7 +399,7 @@ export default function EpisodeDetail() {
                 )
             })()}
 
-            {latestRun?.status === 'failed' && activeRuns.length === 0 && (
+            {latestRun?.status === 'failed' && activeRuns.length === 0 && !(latestRun.stage === 'google_flow' && currentTab === 'flow') && (
                 <div className="rounded-[6px] border border-[var(--accent)] bg-[var(--accent-soft)] p-4">
                     <div className="font-semibold text-[var(--accent)] text-sm">
                         最近一次任务失败：{RUN_STAGE_LABELS[latestRun.stage] || latestRun.stage}
@@ -699,6 +707,9 @@ export default function EpisodeDetail() {
                     </TabPane>
 
                     {/* EPISODE INTELLIGENCE: SUMMARY + MAIN PLOT + ENDING BRIDGE + EVENTS + STATE CHANGES */}
+                    <TabPane tab="漫画转视频" itemKey="flow">
+                        {currentTab === 'flow' && <EpisodeFlowVideo key={episode.id} episodeId={episode.id} />}
+                    </TabPane>
                     <TabPane tab="剧情与主线解析" itemKey="summary">
                         {memoriesLoading ? (
                             <Spin />

@@ -35,7 +35,7 @@ const api = {
     post: <T>(url: string, data?: unknown, config?: AxiosRequestConfig) => instance.post<never, T>(url, data, config),
     patch: <T>(url: string, data?: unknown, config?: AxiosRequestConfig) => instance.patch<never, T>(url, data, config),
     put: <T>(url: string, data?: unknown) => instance.put<never, T>(url, data),
-    delete: <T>(url: string) => instance.delete<never, T>(url),
+    delete: <T>(url: string, config?: AxiosRequestConfig) => instance.delete<never, T>(url, config),
 }
 
 export default api

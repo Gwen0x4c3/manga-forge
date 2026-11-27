@@ -7,6 +7,7 @@ from app.models.episode_memory import EpisodeMemory
 from app.models.episode_page import EpisodePage
 from app.models.generated_image import GeneratedImage
 from app.models.generation_run import GenerationRun
+from app.models.google_flow import FlowBrowser, FlowBrowserJob, FlowExtensionKey
 from app.models.import_job import ImportJob
 from app.models.import_job_item import ImportJobItem
 from app.models.model_provider import ModelProvider, ModelRoleBinding
@@ -22,4 +23,5 @@ __all__ = [
     "GenerationRun", "GeneratedImage", "SourceBinding",
     "ImportJob", "ImportJobItem", "EpisodeExternalRef",
     "UsageRecord", "ModelProvider", "ModelRoleBinding",
+    "FlowBrowser", "FlowBrowserJob", "FlowExtensionKey",
 ]

@@ -174,6 +174,33 @@ Configured via `IMAGE_BACKEND` in `.env` or per run/panel in the Studio UI. All 
 
 ---
 
+## Google Flow with your own browser
+
+Use **漫画转视频 → 配置 Flow 扩展** in a chapter, or manage browser connections under **Models → 漫画转视频 · Google Flow**. Video generation uses existing manga pages and the selected Flow video model. It requires no image-generation model.
+
+1. Download and unzip **MangaForge Flow**. In the intended Chrome profile, open `chrome://extensions`, enable Developer mode, click **Load unpacked** and select the directory containing `manifest.json`.
+2. Generate an **extension access token** in Models. Enter your MangaForge URL and token in the extension and click **连接 MangaForge**.
+3. Select your Google account in the Flow tab you want to use, then start the task in the chapter. Keep the browser and Flow tab open. The extension polls your instance, uploads references, enters the shot prompts and returns the generated media. You can switch Google accounts in Flow and keep the same MangaForge token.
+
+If Flow asks you to confirm your rights to an image, MangaForge shows the pending confirmation in the chapter. Choose **I agree** in the same Flow tab to continue the upload, or **Cancel** to stop.
+
+To upgrade an unpacked extension, overwrite the files in its existing directory and click **Reload** in `chrome://extensions`. This preserves the token and job records. If the previous version was paused, click **继续接收任务** in the popup.
+
+The revocable token is scoped to one Flow provider. Use HTTPS on shared networks and protect the Models dashboard with your deployment's access controls. [Google Flow](https://flow.google.com/)
+
+<details><summary>Existing Python and Ego connectors</summary>
+
+- **Ego Lite on a Mac**. On the Linux host paired to that Mac, check `ego-browser bridge status`, run `make flow-ego` from the MangaForge checkout and paste the pairing string. To choose a particular profile, run `python3 scripts/flow_ego.py --profile 'Exact profile name'` when pairing or switching. A profile can contain multiple Google accounts. Select the intended account in Flow before pairing. The connector pins the profile and checks the selected account before submitting. To change accounts, switch in Flow and run `python3 scripts/flow_ego.py --pair` with a fresh pairing string. The Mac transfers assets directly to and from your MangaForge server. Keep the Mac awake with Ego Lite, Ego Bridge and the connector running. If Flow asks you to sign in, complete login in the dedicated tab and run `make flow-ego-resume`.
+- **Dedicated Chrome**. Download the Python connector from Models. On a computer with Chrome and Python 3.10+, run `python -m pip install playwright` and then `python mangaforge_flow.py`. Paste the pairing string and sign in to Google in the dedicated window as prompted. Use `--login` to sign in again.
+
+Use a server address reachable from the Mac, and HTTPS on a shared network. Check the active Google account in Flow before spending credits. [Google’s project and asset guide](https://support.google.com/flow/answer/16935308?hl=en)
+
+</details>
+
+Open **漫画转视频** in a chapter and select the Flow connection and video model. Video uses the existing pages. Review the numbered references and edit the prompts. **仅同步素材** creates or reuses a Flow project for this manga and uploads its reference images. If the original connection was replaced, **用当前连接重新同步素材** starts a fresh upload. **生成本话视频** also generates eight-second clips using the credits of the account you selected in Flow. The worker joins the clips locally with FFmpeg and saves an MP4. Check any uncertain submission in the original Flow project before retrying. [Flow video controls](https://support.google.com/flow/answer/16353334?hl=en) · [Local browser automation reference](https://github.com/GTAI-1/flow-mcp)
+
+To draw new storyboard panels with Nano Banana, you can separately assign Flow to the **image_gen** role.
+
 ## Documentation
 
 - Architecture & roadmap: [`docs/architecture.md`](docs/architecture.md) · [`docs/design.md`](docs/design.md) · [`docs/ROADMAP.md`](docs/ROADMAP.md) · [`docs/PRD.md`](docs/PRD.md)

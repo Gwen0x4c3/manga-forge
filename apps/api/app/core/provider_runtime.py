@@ -275,6 +275,9 @@ async def probe_provider_connection(
 
     t0 = time.perf_counter()
 
+    if {preset_key, interface_type} & {"google_flow_browser", "google_flow"}:
+        return {"ok": False, "message": "请在模型中心配对 Google Flow 本地浏览器", "models": [], "latency_ms": 0}
+
     if interface_type == "antigravity":
         raw_target = (base_url or "").strip()
         bridge_dir = raw_target if (raw_target and Path(raw_target).is_dir()) else (settings.AGY_BRIDGE_DIR or "")

@@ -1,6 +1,6 @@
 VENV := $(CURDIR)/.venv/bin/
 
-.PHONY: help dev infra up down migrate api web worker install lint
+.PHONY: help dev infra up down migrate api web worker install lint flow-ego flow-ego-resume
 
 help:           ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -23,7 +23,13 @@ web:            ## Start React dev server
 	cd apps/web && npm run dev
 
 worker:         ## Start Celery worker
-	$(VENV)celery -A workers.celery_app worker --loglevel=info -Q celery,understand,render,script,layout,ocr
+	$(VENV)celery -A workers.celery_app worker --loglevel=info -Q celery,understand,render,script,layout,ocr,flow
+
+flow-ego:       ## Connect a local or bridged Ego Lite browser to Google Flow
+	python3 scripts/flow_ego.py
+
+flow-ego-resume: ## Return the dedicated Ego Flow tab to the connector after signing in
+	python3 scripts/flow_ego.py --resume
 
 install:        ## Install all dependencies (uv + npm)
 	uv venv --python 3.12

@@ -50,6 +50,7 @@ class ProviderTestResponse(BaseModel):
 
 
 class ModelProviderResponse(BaseModel):
+    flow_status: str | None = None
     id: str
     preset_key: str
     name: str

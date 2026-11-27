@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "MangaForge · Google Flow",
+  "version": "1.2.3",
+  "minimum_chrome_version": "120",
+  "description": "从你自己的 MangaForge 接收漫画素材和镜头，在当前 Google Flow 账号生成并回传图片和视频。",
+  "action": { "default_popup": "popup.html", "default_title": "MangaForge · Google Flow" },
+  "options_ui": { "page": "popup.html", "open_in_tab": true },
+  "background": { "service_worker": "background.js", "type": "module" },
+  "permissions": ["storage", "alarms", "scripting"],
+  "host_permissions": [
+    "https://flow.google.com/*", "https://flow.google/*", "https://labs.google/fx/*",
+    "https://*.googleusercontent.com/*", "https://storage.googleapis.com/*", "https://*.googlevideo.com/*"
+  ],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "content_scripts": [{
+    "matches": ["https://flow.google.com/*", "https://flow.google/*", "https://labs.google/fx/tools/flow*", "https://labs.google/fx/*/tools/flow*"],
+    "js": ["flow.js"],
+    "run_at": "document_idle"
+  }]
+}

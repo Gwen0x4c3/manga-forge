@@ -1,4 +1,6 @@
-import { useState } from 'react'
+import FlowBrowserPair, { browserStatus } from '@/components/FlowBrowserPair'
+import { useCallback, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Button, Checkbox, Empty, Input, Modal, Popconfirm, Select, Spin, Tag, Toast } from '@douyinfe/semi-ui'
 import { IconDelete, IconEdit, IconPlus, IconRefresh } from '@douyinfe/semi-icons'
@@ -19,7 +21,7 @@ const ROLE_META: Record<string, { title: string; subtitle: string; code: string 
     image_gen: {
         code: '03',
         title: '原画渲染与作图引擎',
-        subtitle: '支持 OpenAI GPT-Image、Google Gemini Nano Banana、智谱 CogView 或本地 ComfyUI',
+        subtitle: '用于绘制漫画分镜原画。漫画转视频直接使用章节中已有的画面。',
     },
     embedding: {
         code: '04',
@@ -32,7 +34,7 @@ const CATEGORY_SECTIONS: Array<{ key: string; label: string }> = [
     { key: 'aggregator', label: '全网聚合路由' },
     { key: 'global', label: '国际主流模型' },
     { key: 'china', label: '国内主流模型 & Coding Plan' },
-    { key: 'image', label: '本地作图工作流' },
+    { key: 'image', label: '图像与视频工作流' },
     { key: 'custom', label: '自定义 OpenAI 兼容网关' },
 ]
 
@@ -44,9 +46,11 @@ function formatCtx(ctx?: number | null): string {
 
 export default function ModelsPage() {
     const queryClient = useQueryClient()
+    const [searchParams, setSearchParams] = useSearchParams()
     const { data, isLoading, refetch, isFetching } = useQuery({
         queryKey: ['providers-overview'],
         queryFn: () => providerService.overview(),
+        refetchInterval: q => q.state.data?.providers.some(p => p.preset_key === 'google_flow_browser') ? 10000 : false,
     })
 
     // Modal state for Create / Edit provider
@@ -57,6 +61,7 @@ export default function ModelsPage() {
     const [formName, setFormName] = useState('')
     const [formBaseUrl, setFormBaseUrl] = useState('')
     const [formApiKey, setFormApiKey] = useState('')
+    const isFlow = activePreset?.key === 'google_flow_browser'
     const [formDefaultModel, setFormDefaultModel] = useState('')
     const [formModels, setFormModels] = useState<string[]>([])
     const [activateRoles, setActivateRoles] = useState<string[]>(['main_llm'])
@@ -73,8 +78,10 @@ export default function ModelsPage() {
     const roles = data?.roles || []
     const presetByKey = new Map(presets.map((p) => [p.key, p]))
     const providerById = new Map(providers.map((p) => [p.id, p]))
+    const flowPreset = presetByKey.get('google_flow_browser')
+    const flowAccounts = providers.filter(p => p.preset_key === 'google_flow_browser' && p.enabled)
 
-    const openPresetModal = (preset: ProviderPreset) => {
+    const openPresetModal = useCallback((preset: ProviderPreset) => {
         setEditingProvider(null)
         setActivePreset(preset)
         setFormName(preset.name)
@@ -84,14 +91,14 @@ export default function ModelsPage() {
         setFormModels(preset.models.map((m) => m.id))
         const defaultRoles: string[] = []
         if (preset.supports_llm) defaultRoles.push('main_llm')
-        else if (preset.supports_image) defaultRoles.push('image_gen')
+        else if (preset.supports_image && preset.key !== 'google_flow_browser') defaultRoles.push('image_gen')
         setActivateRoles(defaultRoles)
         setTestResult(null)
         setModalOpen(true)
-    }
+    }, [])
 
-    const openEditModal = (p: ModelProviderItem) => {
-        const preset = presetByKey.get(p.preset_key) || null
+    const openEditModal = useCallback((p: ModelProviderItem) => {
+        const preset = data?.presets.find(item => item.key === p.preset_key) || null
         setEditingProvider(p)
         setActivePreset(preset)
         setFormName(p.name)
@@ -110,16 +117,33 @@ export default function ModelsPage() {
                 : null,
         )
         setModalOpen(true)
-    }
+    }, [data?.presets])
+
+    useEffect(() => {
+        const target = searchParams.get('flow')
+        if (!target || !data) return
+        const existing = data.providers.find(p => p.preset_key === 'google_flow_browser' && p.id === target)
+        if (existing) openEditModal(existing)
+        else if (target === 'new' && flowPreset) openPresetModal(flowPreset)
+        const next = new URLSearchParams(searchParams)
+        next.delete('flow')
+        setSearchParams(next, { replace: true })
+    }, [data, flowPreset, searchParams, setSearchParams, openEditModal, openPresetModal])
 
     const saveMutation = useMutation({
         mutationFn: async () => {
             if (!formName.trim()) throw new Error('请填写服务商显示名称')
+            if (isFlow) {
+                const name = formName.trim()
+                return editingProvider
+                    ? providerService.update(editingProvider.id, { name })
+                    : providerService.create({ name, preset_key: 'google_flow_browser' })
+            }
             if (editingProvider) {
                 return providerService.update(editingProvider.id, {
                     name: formName.trim(),
                     base_url: formBaseUrl.trim(),
-                    api_key: formApiKey.trim() ? formApiKey.trim() : undefined,
+                    api_key: formApiKey.trim() || undefined,
                     default_model: formDefaultModel.trim(),
                     models_cache: formModels,
                 })
@@ -136,10 +160,12 @@ export default function ModelsPage() {
                 activate_roles: activateRoles,
             })
         },
-        onSuccess: () => {
+        onSuccess: saved => {
             Toast.success(editingProvider ? '服务商配置已更新（实时生效）' : '服务商已接入并实时生效')
-            setModalOpen(false)
+            if (isFlow && !editingProvider) openEditModal(saved)
+            else setModalOpen(false)
             queryClient.invalidateQueries({ queryKey: ['providers-overview'] })
+            if (isFlow) queryClient.invalidateQueries({ queryKey: ['flow-accounts'] })
         },
         onError: (err: unknown) => {
             Toast.error(err instanceof Error ? err.message : '保存失败')
@@ -151,6 +177,7 @@ export default function ModelsPage() {
         onSuccess: () => {
             Toast.success('服务商已移除')
             queryClient.invalidateQueries({ queryKey: ['providers-overview'] })
+            queryClient.invalidateQueries({ queryKey: ['flow-accounts'] })
         },
     })
 
@@ -181,7 +208,7 @@ export default function ModelsPage() {
                 preset_key: editingProvider?.preset_key || activePreset?.key || 'custom',
                 interface_type: editingProvider?.interface_type || activePreset?.interface_type || 'openai_compatible',
                 base_url: formBaseUrl.trim(),
-                api_key: formApiKey.trim() || undefined,
+                api_key: isFlow ? undefined : formApiKey.trim() || undefined,
                 model: formDefaultModel.trim() || undefined,
                 extra_headers: activePreset?.extra_headers,
             })
@@ -247,7 +274,7 @@ export default function ModelsPage() {
                         模型与服务商管理
                     </h1>
                     <p className="text-sm text-[var(--text-secondary)] m-0">
-                        无需修改 <code className="font-mono text-xs">.env</code> 或重启服务——直接填入 API Key 接入主流平台，并按角色分配推理、识图、作图与向量模型（未绑定时自动回退至环境变量）。
+                        在此配置服务商与 Flow 扩展，再按角色分配推理、识图、作图与向量模型。
                     </p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
@@ -266,6 +293,19 @@ export default function ModelsPage() {
                     </Button>
                 </div>
             </header>
+
+            {flowPreset && <section id="flow-accounts" className="flex flex-wrap items-center justify-between gap-3 rounded-[6px] border border-[var(--border)] bg-[var(--bg-panel)] p-4">
+                <div>
+                    <h2 className="m-0 text-sm font-semibold">漫画转视频 · Google Flow</h2>
+                    <p className="mt-1 mb-0 text-xs text-[var(--text-muted)]">在 Flow 网页中选择 Google 账号，在章节里选择连接和视频模型。</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                    {flowAccounts.map(p => <Button key={p.id} size="small" onClick={() => openEditModal(p)}>
+                        {p.name} · {browserStatus(p.flow_status)}
+                    </Button>)}
+                    <Button size="small" icon={<IconPlus />} onClick={() => openPresetModal(flowPreset)}>添加 Flow 连接</Button>
+                </div>
+            </section>}
 
             {/* SECTION 1: 4-ROLE MODEL ROUTING */}
             <section className="space-y-3">
@@ -350,7 +390,7 @@ export default function ModelsPage() {
                                             <Select.Option value="">
                                                 {r.role === 'vision_llm' ? '自动继承主模型' : '使用 .env 默认配置'}
                                             </Select.Option>
-                                            {providers.map((p) => (
+                                            {providers.filter(p => p.preset_key !== 'google_flow' && (p.preset_key !== 'google_flow_browser' || r.role === 'image_gen')).map((p) => (
                                                 <Select.Option key={p.id} value={p.id}>
                                                     {p.name}
                                                 </Select.Option>
@@ -457,7 +497,7 @@ export default function ModelsPage() {
                 </h2>
                 {providers.length === 0 ? (
                     <div className="rounded-[6px] border border-[var(--border)] bg-[var(--bg-panel)] py-8">
-                        <Empty description="尚未在网页端添加服务商（当前自动使用 .env 配置）。点击下方任意主流平台卡片，填个 API Key 即可一键接入。" />
+                        <Empty description="目前使用环境配置。选择下方服务商或本地连接器即可接入。" />
                     </div>
                 ) : (
                     <div className="divide-y divide-[var(--border)] rounded-[6px] border border-[var(--border)] bg-[var(--bg-panel)]">
@@ -476,7 +516,8 @@ export default function ModelsPage() {
                                             <span className="px-1.5 py-0.5 rounded-[4px] border border-[var(--border)] bg-[var(--bg-elevated)] font-mono text-[11px] text-[var(--text-muted)]">
                                                 {p.preset_key}
                                             </span>
-                                            {p.default_model && (
+                                            {p.preset_key === 'google_flow_browser' && <Tag size="small">漫画转视频</Tag>}
+                                            {p.default_model && p.preset_key !== 'google_flow_browser' && (
                                                 <span className="font-mono text-xs text-[var(--text-secondary)]">
                                                     默认：{p.default_model}
                                                 </span>
@@ -491,7 +532,9 @@ export default function ModelsPage() {
                                             <span className="truncate max-w-md">
                                                 {(p.base_url || '(默认端点)').replace(/^\/(?:home|Users)\/[^/]+\//, '~/')}
                                             </span>
-                                            <span>Key: {p.has_api_key ? p.api_key_masked : '无鉴权'}</span>
+                                            {p.preset_key === 'google_flow_browser' ? <span>{browserStatus(p.flow_status)}</span>
+                                                : p.preset_key === 'google_flow' ? <span>旧中转已停用</span>
+                                                : <span>Key: {p.has_api_key ? p.api_key_masked : '无鉴权'}</span>}
                                             {p.last_test_status && (
                                                 <span
                                                     style={{
@@ -510,8 +553,8 @@ export default function ModelsPage() {
                                         <Button size="small" onClick={() => handleQuickTestProvider(p)}>
                                             测试连接
                                         </Button>
-                                        <Button size="small" icon={<IconEdit />} onClick={() => openEditModal(p)}>
-                                            编辑
+                                        <Button disabled={p.preset_key === 'google_flow'} size="small" icon={<IconEdit />} onClick={() => openEditModal(p)}>
+                                            {p.preset_key === 'google_flow_browser' ? '配置连接' : '编辑'}
                                         </Button>
                                         <Popconfirm
                                             title={`确认移除服务商「${p.name}」？`}
@@ -531,7 +574,7 @@ export default function ModelsPage() {
             {/* SECTION 3: ONE-CLICK PRESET CATALOG */}
             <section className="space-y-5">
                 <h2 className="text-xs font-mono uppercase tracking-wider text-[var(--text-muted)] m-0">
-                    Quick-Connect Presets · 主流平台一键接入（填 API Key 即用）
+                    Quick-Connect Presets · 主流模型与本地连接器
                 </h2>
 
                 {CATEGORY_SECTIONS.map((cat) => {
@@ -606,14 +649,14 @@ export default function ModelsPage() {
 
             {/* CREATE / EDIT PROVIDER MODAL */}
             <Modal
-                title={editingProvider ? `编辑服务商 · ${editingProvider.name}` : `接入服务商 · ${activePreset?.name || '自定义'}`}
+                title={isFlow ? 'Google Flow 视频连接' : editingProvider ? `编辑服务商 · ${editingProvider.name}` : `接入服务商 · ${activePreset?.name || '自定义'}`}
                 visible={modalOpen}
                 onCancel={() => setModalOpen(false)}
                 width={620}
                 footer={
                     <div className="flex items-center justify-between gap-2">
                         <Button loading={testing} onClick={handleTestInModal}>
-                            测试连接 & 拉取模型
+                            {isFlow ? '测试 Flow 连接' : '测试连接 & 拉取模型'}
                         </Button>
                         <div className="flex gap-2">
                             <Button onClick={() => setModalOpen(false)}>取消</Button>
@@ -628,7 +671,7 @@ export default function ModelsPage() {
                     {activePreset?.description && (
                         <div className="rounded-[4px] border border-[var(--border)] bg-[var(--bg-elevated)] px-3 py-2 text-[var(--text-secondary)] flex items-center justify-between gap-2">
                             <span>{activePreset.description}</span>
-                            {activePreset.docs_url && (
+                            {activePreset.docs_url && !isFlow && (
                                 <a
                                     href={activePreset.docs_url}
                                     target="_blank"
@@ -641,14 +684,14 @@ export default function ModelsPage() {
                         </div>
                     )}
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className={isFlow ? '' : 'grid grid-cols-1 md:grid-cols-2 gap-3'}>
                         <div>
                             <label className="block text-[13px] font-medium text-[var(--text-primary)] mb-1">
                                 显示名称
                             </label>
                             <Input value={formName} onChange={setFormName} placeholder="例如：智谱 Coding Plan" />
                         </div>
-                        <div>
+                        {!isFlow && <div>
                             <label className="block text-[13px] font-medium text-[var(--text-primary)] mb-1">
                                 默认模型 ID（可手填任意最新模型）
                             </label>
@@ -657,17 +700,18 @@ export default function ModelsPage() {
                                 onChange={setFormDefaultModel}
                                 placeholder={activePreset?.default_model || '例如：glm-5.4 / gpt-4.1 / claude-sonnet-4-5'}
                             />
-                        </div>
+                        </div>}
                     </div>
 
                     <div>
                         <label className="block text-[13px] font-medium text-[var(--text-primary)] mb-1">
                             {(editingProvider?.interface_type || activePreset?.interface_type) === 'antigravity'
                                 ? 'agy 命令路径或桥接目录（可选，留空默认使用本机 agy）'
-                                : 'API Base URL'}
+                                : isFlow ? 'Google Flow 网页' : 'API Base URL'}
                         </label>
                         <Input
                             value={formBaseUrl}
+                            disabled={isFlow}
                             onChange={setFormBaseUrl}
                             placeholder={
                                 (editingProvider?.interface_type || activePreset?.interface_type) === 'antigravity'
@@ -677,7 +721,7 @@ export default function ModelsPage() {
                         />
                     </div>
 
-                    {(editingProvider?.interface_type || activePreset?.interface_type) !== 'antigravity' && (
+                    {!isFlow && (editingProvider?.interface_type || activePreset?.interface_type) !== 'antigravity' && (
                         <div>
                             <label className="block text-[13px] font-medium text-[var(--text-primary)] mb-1">
                                 API Key{' '}
@@ -697,7 +741,9 @@ export default function ModelsPage() {
                     )}
 
                     {/* Quick-pick model chips from preset + live /models discovery */}
-                    {(activePreset?.models.length || formModels.length) > 0 && (
+                    {isFlow && <FlowBrowserPair key={editingProvider?.id || 'new'} providerId={editingProvider?.id}
+                        status={providers.find(p => p.id === editingProvider?.id)?.flow_status} />}
+                    {!isFlow && (activePreset?.models.length || formModels.length) > 0 && (
                         <div className="space-y-1.5">
                             <div className="text-xs text-[var(--text-muted)]">点击快速填入推荐或已拉取的模型 ID：</div>
                             <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
@@ -750,7 +796,7 @@ export default function ModelsPage() {
                     )}
 
                     {/* Quick Role Activation when creating */}
-                    {!editingProvider && (
+                    {!editingProvider && !isFlow && (
                         <div className="pt-2 border-t border-[var(--border)] space-y-2">
                             <div className="text-xs font-medium text-[var(--text-primary)]">保存后立即绑定至角色：</div>
                             <div className="flex flex-wrap gap-4">

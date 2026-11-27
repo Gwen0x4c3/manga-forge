@@ -13,6 +13,8 @@ from app.routers import (
     assets,
     branches,
     episodes,
+    flow,
+    flow_browser,
     generation,
     imports,
     memory,
@@ -83,6 +85,8 @@ app.include_router(assets.router, prefix="/api/v1/projects", tags=["Assets"])
 app.include_router(pits.router, prefix="/api/v1/projects", tags=["Pits"])
 app.include_router(memory.router, prefix="/api/v1/projects", tags=["Memory"])
 app.include_router(generation.router, prefix="/api/v1/generation", tags=["Generation"])
+app.include_router(flow_browser.router, prefix="/api/v1/flow", tags=["Google Flow"])
+app.include_router(flow.router, prefix="/api/v1/flow", tags=["Google Flow"])
 app.include_router(storage.router, prefix="/api/v1/storage", tags=["Storage"])
 app.include_router(imports.router, prefix="/api/v1/imports", tags=["Imports"])
 app.include_router(usage.router, prefix="/api/v1/usage", tags=["Usage"])
